@@ -17,9 +17,11 @@ pub struct MleBs {
     broadcast: MleBroadcast,
 }
 
-/// Multiframe at which D-NWRK-BROADCAST is sent within each hyperframe, 1-60
-/// We don't want to use the first frame per se to avoid congestion with other hyperframe-triggered events.
-const MLE_BROADCAST_MULTIFRAME: u8 = 20;
+/// Multiframes at which D-NWRK-BROADCAST is sent within each hyperframe.
+/// Two broadcasts per hyperframe (~30.6s interval) for faster time/date display on terminals.
+/// BlueStation default was 1 per hyperframe (~61.2s) which is slow on cold attach.
+/// We don't use the first multiframe to avoid congestion with other hyperframe-triggered events.
+const MLE_BROADCAST_MULTIFRAMES: [u8; 2] = [20, 50];
 /// Frame at which D-NWRK-BROADCAST is sent within the broadcast multiframe.
 const MLE_BROADCAST_FRAME: u8 = 1;
 
@@ -339,10 +341,10 @@ impl TetraEntityTrait for MleBs {
     }
 
     fn tick_start(&mut self, queue: &mut MessageQueue, ts: TdmaTime) {
-        // Broadcast D-NWRK-BROADCAST once per hyperframe if timezone is configured.
-        // Use a constant multiframe/frame offset to avoid congestion with other
-        // hyperframe-triggered events.
-        if ts.m == MLE_BROADCAST_MULTIFRAME && ts.f == MLE_BROADCAST_FRAME && ts.t == 1 {
+        // Broadcast D-NWRK-BROADCAST twice per hyperframe (~30.6s interval) if timezone is configured.
+        // Two evenly-spaced slots [20, 50] avoid congestion with other hyperframe-triggered events
+        // and give terminals a faster time/date update after cold attach.
+        if MLE_BROADCAST_MULTIFRAMES.contains(&ts.m) && ts.f == MLE_BROADCAST_FRAME && ts.t == 1 {
             tracing::debug!(
                 "MLE: hyperframe broadcast slot (hf={} m={} f={} t={})",
                 ts.h, ts.m, ts.f, ts.t

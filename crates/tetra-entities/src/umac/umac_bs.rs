@@ -192,8 +192,12 @@ impl UmacBs {
             mnc: c.net.mnc,
             // Per ETSI EN 300 392-2 Table 18.17:
             // 0 = no broadcast, 1 = broadcast+enquiry, 2 = broadcast only, 3 = reserved
-            // Set dynamically: 2 if neighbor cells are configured, 0 otherwise.
-            neighbor_cell_broadcast: c.cell.neighbor_cell_broadcast,
+            // Hardcoded to 2 (broadcast only) to match BlueStation v0.5.9 behavior —
+            // required for Motorola terminals (MXP600, MTM800E, MTM5400) to accept
+            // and display network time/date received via D-NWRK-BROADCAST.
+            // Driving this from config (c.cell.neighbor_cell_broadcast) caused a
+            // regression where missing config field → unwrap_or(0) → terminals ignore broadcast.
+            neighbor_cell_broadcast: 2,
             cell_load_ca: 0,            // TODO implement dynamic setting. 0 = info unavailable
             late_entry_supported: c.cell.late_entry_supported,
         };
