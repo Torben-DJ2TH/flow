@@ -96,14 +96,11 @@ impl MleBroadcast {
 
         let neighbour_count = neighbour_cells.len() as u8;
 
-        // Per ETSI EN 300 392-2 clause 18.4.1.4.1 note 2:
-        // number_of_ca_neighbour_cells shall be ABSENT (None) when there are no neighbour cells.
-        // Some(0) has different semantics — it means "explicitly zero", not "no info".
-        let number_of_ca_neighbour_cells = if neighbour_count > 0 {
-            Some(neighbour_count)
-        } else {
-            None
-        };
+        // Always emit Some(count), including Some(0).
+        // Bit-for-bit identical to BlueStation v0.0.x wire format, validated against
+        // Motorola MXP600 / MTM800E / MTM5400. Omitting the field (None) when count==0
+        // causes those terminals to drop the PDU as malformed.
+        let number_of_ca_neighbour_cells = Some(neighbour_count);
 
         let pdu = DNwrkBroadcast {
             cell_re_select_parameters: 0,
