@@ -254,10 +254,10 @@ fn run_update(update: SharedUpdateState, config_path: String, source_dir_overrid
     log!(update, "--- Build successful. Restarting service in 2s... ---");
     update.lock().unwrap().finish(true);
 
-    std::thread::spawn(|| {
-        std::thread::sleep(std::time::Duration::from_secs(2));
-        let _ = std::process::Command::new("systemctl").args(["restart", "tetra"]).status();
-    });
+    crate::service_control::schedule_service_action(
+        crate::service_control::ServiceAction::Restart,
+        std::time::Duration::from_secs(2),
+    );
 }
 
 pub struct DashboardServer {
@@ -1070,11 +1070,29 @@ fn handle_ws_command(text: &str, state: &DashboardState, cmd_tx: &Arc<Mutex<Opti
             let msg_text = v.get("message").and_then(|m| m.as_str()).unwrap_or("").to_string();
             if dest == 0 || msg_text.is_empty() { return; }
             tracing::info!("Dashboard: SDS to {} = {}", dest, msg_text);
-            let payload = msg_text.as_bytes().to_vec();
+
+            // Encode text for SDS-TL TRANSFER:
+            //   - If all characters are in ISO-8859-1 range → coding scheme 0x01 (LATIN), 1 byte/char
+            //   - Otherwise → coding scheme 0x02 (UTF-16BE), 2 bytes/char (handles CJK, Arabic, etc.)
+            // First byte of payload is the text coding scheme identifier per ETSI EN 300 392-2.
+            let all_latin = msg_text.chars().all(|c| c as u32 <= 0xFF);
+            let (coding_scheme, text_bytes): (u8, Vec<u8>) = if all_latin {
+                let bytes: Vec<u8> = msg_text.chars().map(|c| c as u8).collect();
+                (0x01, bytes)
+            } else {
+                // UTF-16BE encoding
+                let bytes: Vec<u8> = msg_text.encode_utf16()
+                    .flat_map(|u| u.to_be_bytes())
+                    .collect();
+                (0x02, bytes)
+            };
+            let mut payload = vec![coding_scheme];
+            payload.extend_from_slice(&text_bytes);
             let len_bits = (payload.len() * 8) as u16;
+
             send_cmd(ControlCommand::SendSds {
                 handle: 0,
-                source_ssi: 9999,  // BS dispatcher ISSI
+                source_ssi: 9999,
                 dest_ssi: dest,
                 dest_is_group: false,
                 len_bits,

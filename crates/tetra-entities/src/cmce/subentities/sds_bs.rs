@@ -510,16 +510,16 @@ impl SdsBsSubentity {
 
         match entry.action.as_str() {
             "restart" => {
-                std::thread::spawn(|| {
-                    std::thread::sleep(std::time::Duration::from_millis(500));
-                    let _ = std::process::Command::new("systemctl").args(["restart", "tetra"]).status();
-                });
+                crate::service_control::schedule_service_action(
+                    crate::service_control::ServiceAction::Restart,
+                    std::time::Duration::from_millis(500),
+                );
             }
             "shutdown" => {
-                std::thread::spawn(|| {
-                    std::thread::sleep(std::time::Duration::from_millis(500));
-                    let _ = std::process::Command::new("systemctl").args(["stop", "tetra"]).status();
-                });
+                crate::service_control::schedule_service_action(
+                    crate::service_control::ServiceAction::Stop,
+                    std::time::Duration::from_millis(500),
+                );
             }
             "kick_all" => {
                 self.pending_actions.push(SdsPendingAction::KickAll);

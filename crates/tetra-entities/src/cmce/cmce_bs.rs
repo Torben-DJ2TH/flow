@@ -84,21 +84,17 @@ impl CmceBs {
             }
             ControlCommand::RestartService => {
                 tracing::info!("CMCE: RestartService requested");
-                std::thread::spawn(|| {
-                    std::thread::sleep(std::time::Duration::from_millis(500));
-                    let _ = std::process::Command::new("systemctl")
-                        .args(["restart", "tetra"])
-                        .status();
-                });
+                crate::service_control::schedule_service_action(
+                    crate::service_control::ServiceAction::Restart,
+                    std::time::Duration::from_millis(500),
+                );
             }
             ControlCommand::ShutdownService => {
                 tracing::info!("CMCE: ShutdownService requested");
-                std::thread::spawn(|| {
-                    std::thread::sleep(std::time::Duration::from_millis(500));
-                    let _ = std::process::Command::new("systemctl")
-                        .args(["stop", "tetra"])
-                        .status();
-                });
+                crate::service_control::schedule_service_action(
+                    crate::service_control::ServiceAction::Stop,
+                    std::time::Duration::from_millis(500),
+                );
             }
             ControlCommand::AddLiveSds { text, protocol_id, source_issi, repeat_count } => {
                 let mut state = sds.shared_config().state_write();

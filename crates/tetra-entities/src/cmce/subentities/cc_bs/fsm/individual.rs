@@ -450,8 +450,19 @@ impl CcBsSubentity {
             speech_service: cached.pdu.basic_service_information.speech_service,
             etee_encrypted: cached.pdu.basic_service_information.encryption_flag,
         };
-        let duplex_peer = if calling_ts != called_ts { Some(called_ts) } else { None };
-        Self::signal_umac_circuit_open(queue, &circuit_calling, duplex_peer, CircuitDlMediaSource::LocalLoopback);
+
+        // For P2P calls (both simplex and duplex) on different timeslots:
+        // peer_ts must be set on BOTH circuits so UMAC cross-routes audio in BOTH directions.
+        //
+        // Simplex: only one MS transmits at a time (UL inactivity + floor control), but the
+        // cross-routing path must be ready on both sides. Without peer_ts on called_ts,
+        // when the called MS takes the floor (U-TX-DEMAND), its UL goes to LocalLoopback
+        // instead of being routed to calling_ts — calling MS hears nothing; called MS hears
+        // their own voice echoed back.
+        let cross_peer_calling = if calling_ts != called_ts { Some(called_ts) } else { None };
+        let cross_peer_called  = if calling_ts != called_ts { Some(calling_ts) } else { None };
+
+        Self::signal_umac_circuit_open(queue, &circuit_calling, cross_peer_calling, CircuitDlMediaSource::LocalLoopback);
 
         if called_ts != calling_ts {
             let circuit_called = CmceCircuit {
@@ -466,7 +477,7 @@ impl CcBsSubentity {
                 speech_service: cached.pdu.basic_service_information.speech_service,
                 etee_encrypted: cached.pdu.basic_service_information.encryption_flag,
             };
-            Self::signal_umac_circuit_open(queue, &circuit_called, Some(calling_ts), CircuitDlMediaSource::LocalLoopback);
+            Self::signal_umac_circuit_open(queue, &circuit_called, cross_peer_called, CircuitDlMediaSource::LocalLoopback);
         }
 
         // D-CONNECT to calling MS:
@@ -631,6 +642,19 @@ impl CcBsSubentity {
                 | IndividualTransitionError::DuplicateCall(_)
                 | IndividualTransitionError::NotBrewOriginated(_)
                 | IndividualTransitionError::ConnectRequestAlreadySent(_) => {}
+            }
+        }
+
+        // Set initial floor_holder for simplex P2P:
+        // The CALLED MS gets TransmissionGrant::Granted in D-CONNECT-ACK (it answered, it speaks first).
+        // The CALLING MS gets TransmissionGrant::GrantedToOtherUser in D-CONNECT (must press PTT to speak).
+        // Without this, UL inactivity timeout on the called MS's TS would not match the floor_holder
+        // check in handle_ul_inactivity_timeout, leading to ignored timeouts and stuck calls.
+        // Duplex: floor_holder stays None — both MS can transmit anytime.
+        if !simplex_duplex {
+            if let Some(c) = self.individual_calls.get_mut(&call_id) {
+                c.floor_holder = Some(called_addr.ssi);
+                tracing::info!("Simplex P2P call_id={} initial floor_holder = called ISSI {}", call_id, called_addr.ssi);
             }
         }
     }

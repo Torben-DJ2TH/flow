@@ -358,8 +358,12 @@ fn main() {
         start_control_worker(cfg.clone(), cdispatchers);
     };
 
-    // Set up Ctrl+C handler for graceful shutdown
+    // Set up Ctrl+C handler for graceful shutdown.
+    // Also installs lifecycle control so RestartService / ShutdownService commands
+    // can request shutdown with the correct exit code (75 for restart, signaling
+    // systemd to restart us instead of treating it as a normal exit).
     let is_running = Arc::new(AtomicBool::new(true));
+    tetra_entities::service_control::install_lifecycle_control(is_running.clone());
     let is_running_clone = is_running.clone();
     ctrlc::set_handler(move || {
         is_running_clone.store(false, Ordering::SeqCst);
@@ -370,4 +374,9 @@ fn main() {
     router.run_stack(None, Some(is_running));
 
     // router drops here → entities are dropped, networked entities disconnect.
+    // If RestartService/ShutdownService was triggered, exit with the requested code
+    // so systemd can restart us (exit 75) or stop cleanly (exit 0).
+    if let Some(code) = tetra_entities::service_control::requested_exit_code() {
+        std::process::exit(code);
+    }
 }

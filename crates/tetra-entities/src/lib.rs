@@ -18,6 +18,8 @@ pub mod net_control;
 pub mod net_dashboard;
 pub mod net_telemetry;
 
+pub mod service_control;
+
 // Re-export commonly used items from router
 pub use entity_trait::TetraEntityTrait;
 pub use messagerouter::{MessagePrio, MessageQueue, MessageRouter};

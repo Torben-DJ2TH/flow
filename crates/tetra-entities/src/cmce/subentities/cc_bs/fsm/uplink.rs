@@ -60,6 +60,11 @@ impl CcBsSubentity {
             };
             tracing::info!("U-TX CEASED (individual) call_id={} from ISSI {} -> sending D-TX-CEASED to sender, D-TX-GRANTED to peer ISSI {}", call_id, sender.ssi, peer_addr.ssi);
 
+            // Update floor_holder: after TX-CEASED the peer gets the floor.
+            if let Some(c) = self.individual_calls.get_mut(&call_id) {
+                c.floor_holder = Some(peer_addr.ssi);
+            }
+
             // 1) D-TX-CEASED to sender so it knows floor was released and resets PTT state.
             tracing::info!("-> D-TX CEASED (individual simplex, FACCH) call_id={} to sender ISSI {}", call_id, sender.ssi);
             let ceased_pdu = DTxCeased {
@@ -223,6 +228,11 @@ impl CcBsSubentity {
             };
             tracing::info!("U-TX DEMAND (individual) call_id={} from ISSI {} -> granting floor, notifying peer ISSI {}", call_id, requesting_party.ssi, peer_addr.ssi);
 
+            // Update floor_holder so UL inactivity timeout knows who owns the floor.
+            if let Some(c) = self.individual_calls.get_mut(&call_id) {
+                c.floor_holder = Some(requesting_party.ssi);
+            }
+
             // D-TX-GRANTED to requester (Granted) — they may now transmit.
             // For simplex: give them UL-only so they transmit but don't receive their own TX.
             let dtg_req = DTxGranted {
@@ -252,8 +262,6 @@ impl CcBsSubentity {
 
             // D-TX-GRANTED to peer (GrantedToOtherUser) — they must listen.
             // ETSI 14.8.43: permission=false means "allowed to request transmission".
-            // Peer should still be allowed to U-TX-DEMAND once the current speaker releases
-            // the floor; sending true (= not allowed) would lock peer out of PTT permanently.
             let dtg_peer = DTxGranted {
                 call_identifier: call_id,
                 transmission_grant: TransmissionGrant::GrantedToOtherUser.into_raw() as u8,

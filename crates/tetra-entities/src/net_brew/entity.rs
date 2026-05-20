@@ -445,11 +445,14 @@ impl BrewEntity {
         match update.action {
             BrewSubscriberAction::Register => {
                 self.subscriber_groups.entry(issi).or_insert_with(HashSet::new);
-                if routable {
+                if routable && self.connected {
                     tracing::info!("BrewEntity: subscriber register issi={} → REGISTER", issi);
                     let _ = self.command_sender.send(BrewCommand::RegisterSubscriber { issi });
-                } else {
+                } else if !routable {
                     tracing::debug!("BrewEntity: subscriber register issi={} (filtered, not sent to Brew)", issi);
+                } else {
+                    // routable but disconnected — affiliations replayed on reconnect via resync
+                    tracing::debug!("BrewEntity: subscriber register issi={} cached until Brew reconnect", issi);
                 }
             }
             BrewSubscriberAction::Deregister => {
@@ -458,7 +461,7 @@ impl BrewEntity {
                     .remove(&issi)
                     .map(|g| g.into_iter().collect())
                     .unwrap_or_default();
-                if routable {
+                if routable && self.connected {
                     tracing::info!("BrewEntity: subscriber deregister issi={} → DEAFFILIATE + DEREGISTER", issi);
                     if !existing_groups.is_empty() {
                         let _ = self.command_sender.send(BrewCommand::DeaffiliateGroups {
@@ -467,8 +470,10 @@ impl BrewEntity {
                         });
                     }
                     let _ = self.command_sender.send(BrewCommand::DeregisterSubscriber { issi });
-                } else {
+                } else if !routable {
                     tracing::debug!("BrewEntity: subscriber deregister issi={} (filtered, not sent to Brew)", issi);
+                } else {
+                    tracing::debug!("BrewEntity: subscriber deregister issi={} cached while Brew disconnected", issi);
                 }
             }
             BrewSubscriberAction::Affiliate => {
@@ -479,12 +484,18 @@ impl BrewEntity {
                         new_groups.push(gssi);
                     }
                 }
-                if !new_groups.is_empty() && routable {
+                if !new_groups.is_empty() && routable && self.connected {
                     tracing::info!("BrewEntity: affiliate issi={} → AFFILIATE groups={:?}", issi, new_groups);
                     let _ = self.command_sender.send(BrewCommand::AffiliateGroups { issi, groups: new_groups });
-                } else if !routable {
+                } else if !new_groups.is_empty() && !routable {
                     tracing::debug!(
                         "BrewEntity: affiliate issi={} groups={:?} (filtered, not sent to Brew)",
+                        issi,
+                        new_groups
+                    );
+                } else if !new_groups.is_empty() {
+                    tracing::debug!(
+                        "BrewEntity: affiliate issi={} groups={:?} cached until Brew reconnect",
                         issi,
                         new_groups
                     );
@@ -499,15 +510,21 @@ impl BrewEntity {
                         }
                     }
                 }
-                if !removed_groups.is_empty() && routable {
+                if !removed_groups.is_empty() && routable && self.connected {
                     tracing::info!("BrewEntity: deaffiliate issi={} → DEAFFILIATE groups={:?}", issi, removed_groups);
                     let _ = self.command_sender.send(BrewCommand::DeaffiliateGroups {
                         issi,
                         groups: removed_groups,
                     });
-                } else if !routable {
+                } else if !removed_groups.is_empty() && !routable {
                     tracing::debug!(
                         "BrewEntity: deaffiliate issi={} groups={:?} (filtered, not sent to Brew)",
+                        issi,
+                        removed_groups
+                    );
+                } else if !removed_groups.is_empty() {
+                    tracing::debug!(
+                        "BrewEntity: deaffiliate issi={} groups={:?} cached while Brew disconnected",
                         issi,
                         removed_groups
                     );

@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use crate::{MessageQueue, TetraEntityTrait};
 use tetra_config::bluestation::SharedConfig;
 use tetra_core::tetra_entities::TetraEntity;
-use tetra_core::{BitBuffer, Layer2Service, Sap, SsiType, TdmaTime, TetraAddress, TxReporter, unimplemented_log};
+use tetra_core::{BitBuffer, Layer2Service, Sap, SsiType, TdmaTime, TetraAddress, TxReporter, TxState, unimplemented_log};
 use tetra_saps::lcmc::enums::alloc_type::ChanAllocType;
 use tetra_saps::lcmc::enums::ul_dl_assignment::UlDlAssignment;
 use tetra_saps::lcmc::fields::chan_alloc_req::CmceChanAllocReq;
@@ -625,7 +625,24 @@ impl Llc {
                     ack.addr.ssi,
                     ack.ns
                 );
-                ack.tx_reporter.mark_lost();
+                match ack.tx_reporter.get_state() {
+                    TxState::Transmitted => ack.tx_reporter.mark_lost(),
+                    TxState::Discarded => {
+                        tracing::warn!(
+                            "schedule_retransmissions: SSI {} N(S) {} expired after repeated UMAC discards; leaving reporter discarded",
+                            ack.addr.ssi,
+                            ack.ns
+                        );
+                    }
+                    state => {
+                        tracing::warn!(
+                            "schedule_retransmissions: SSI {} N(S) {} expired in unexpected reporter state {:?}",
+                            ack.addr.ssi,
+                            ack.ns,
+                            state
+                        );
+                    }
+                }
             }
             // The ack expires here
         }

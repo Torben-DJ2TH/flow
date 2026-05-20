@@ -49,15 +49,13 @@ impl CcBsSubentity {
                         if !cached.resend {
                             continue;
                         }
-                        // Update transmission_grant based on current call state:
-                        // During NoActiveSpeaker (nobody transmitting), use NotGranted;
-                        // during Transmitting, use GrantedToOtherUser.
-                        if let Some(active) = self.active_calls.get(&call_id) {
-                            cached.pdu.transmission_grant = if active.is_tx_active() {
-                                TransmissionGrant::GrantedToOtherUser
-                            } else {
-                                TransmissionGrant::NotGranted
-                            };
+                        // Late-entry D-SETUP keeps listeners attached to an established group call.
+                        // During hangtime there is no current speaker, but sending NotGranted makes
+                        // some terminals treat PTT as denied. Keep them in listener state and allow
+                        // floor requests via D-TX-CEASED/TRP=0.
+                        if self.active_calls.contains_key(&call_id) {
+                            cached.pdu.transmission_grant = TransmissionGrant::GrantedToOtherUser;
+                            cached.pdu.transmission_request_permission = false;
                         }
                         let dest_addr = cached.dest_addr;
                         let is_individual = cached.is_individual;
@@ -316,6 +314,99 @@ impl CcBsSubentity {
     /// Called when UMAC detects no voice frames on a traffic channel (UL side) for the timeout period.
     /// Corresponds to BS-side T323 expiry (ETSI EN 300 392-2 §14.9.2).
     pub(super) fn handle_ul_inactivity_timeout(&mut self, queue: &mut MessageQueue, ts: u8) {
+        // Check individual (P2P simplex) calls first — they were not checked before,
+        // causing UL inactivity to silently drop frames without forcing TX-CEASED on the radio.
+        let individual_call_id = self.individual_calls
+            .iter()
+            .find(|(_, call)| {
+                call.is_active()
+                    && !call.simplex_duplex
+                    && call.floor_holder.is_some()
+                    && {
+                        // Only trigger if the inactivity is on the floor holder's TS,
+                        // not on the listening party's TS (which is expected to be silent).
+                        let holder_ssi = call.floor_holder.unwrap();
+                        let holder_ts = if holder_ssi == call.calling_addr.ssi {
+                            call.calling_ts
+                        } else {
+                            call.called_ts
+                        };
+                        holder_ts == ts
+                    }
+            })
+            .map(|(id, _)| *id);
+
+        if let Some(call_id) = individual_call_id {
+            let call = self.individual_calls.get_mut(&call_id).unwrap();
+            let floor_holder_ssi = call.floor_holder.take(); // clear floor holder
+            let Some(holder_ssi) = floor_holder_ssi else { return; };
+
+            let (holder_addr, holder_ts, holder_usage, peer_addr, peer_ts, peer_usage) =
+                if holder_ssi == call.calling_addr.ssi {
+                    (call.calling_addr, call.calling_ts, call.calling_usage,
+                     call.called_addr,  call.called_ts,  call.called_usage)
+                } else {
+                    (call.called_addr,  call.called_ts,  call.called_usage,
+                     call.calling_addr, call.calling_ts, call.calling_usage)
+                };
+
+            tracing::warn!(
+                "UL inactivity timeout on ts={} for individual call_id={}, forcing TX-CEASED on ISSI {} and granting floor to peer ISSI {}",
+                ts, call_id, holder_ssi, peer_addr.ssi
+            );
+
+            // D-TX-CEASED to floor holder — confirms floor released.
+            let ceased_pdu = DTxCeased {
+                call_identifier: call_id,
+                transmission_request_permission: false,
+                notification_indicator: None,
+                facility: None,
+                dm_ms_address: None,
+                proprietary: None,
+            };
+            let mut ceased_sdu = BitBuffer::new_autoexpand(30);
+            ceased_pdu.to_bitbuf(&mut ceased_sdu).expect("serialize DTxCeased");
+            ceased_sdu.seek(0);
+            let ceased_msg = Self::build_sapmsg_stealing_ul_dl(ceased_sdu, holder_addr, holder_ts, Some(holder_usage), UlDlAssignment::Dl);
+            queue.push_back(ceased_msg);
+
+            // D-TX-GRANTED(Granted) to peer — they can now take the floor.
+            let granted_pdu = DTxGranted {
+                call_identifier: call_id,
+                transmission_grant: TransmissionGrant::Granted.into_raw() as u8,
+                transmission_request_permission: false,
+                encryption_control: false,
+                reserved: false,
+                notification_indicator: None,
+                transmitting_party_type_identifier: Some(1),
+                transmitting_party_address_ssi: Some(peer_addr.ssi as u64),
+                transmitting_party_extension: None,
+                external_subscriber_number: None,
+                facility: None,
+                dm_ms_address: None,
+                proprietary: None,
+            };
+            let mut granted_sdu = BitBuffer::new_autoexpand(50);
+            granted_pdu.to_bitbuf(&mut granted_sdu).expect("serialize DTxGranted");
+            granted_sdu.seek(0);
+            let granted_msg = Self::build_sapmsg_stealing_ul_dl(granted_sdu, peer_addr, peer_ts, Some(peer_usage), UlDlAssignment::Ul);
+            queue.push_back(granted_msg);
+
+            // Reset UMAC inactivity timer — floor granted to peer, expect new TX soon.
+            queue.push_back(SapMsg {
+                sap: Sap::Control,
+                src: TetraEntity::Cmce,
+                dest: TetraEntity::Umac,
+                msg: SapMsgInner::CmceCallControl(CallControl::FloorGranted {
+                    call_id,
+                    source_issi: peer_addr.ssi,
+                    dest_gssi: holder_ssi,
+                    ts: peer_ts,
+                }),
+            });
+            return;
+        }
+
         let call_entry = self
             .active_calls
             .iter()
@@ -329,7 +420,7 @@ impl CcBsSubentity {
                 if session.ts == ts {
                     tracing::debug!("UL inactivity timeout on echo ts={} — refreshing FloorGranted", ts);
                     let call_id = session.call_id;
-                    let fake_issi = 0u32; // echo has no real floor holder while idle
+                    let fake_issi = 0u32;
                     queue.push_back(tetra_saps::SapMsg {
                         sap: tetra_core::Sap::Control,
                         src: tetra_core::tetra_entities::TetraEntity::Cmce,
@@ -357,10 +448,8 @@ impl CcBsSubentity {
         call.tx_active = false;
         call.hangtime_start = Some(self.dltime);
 
-        // Send D-TX CEASED via FACCH to all group members
         self.send_d_tx_ceased_facch(queue, call_id, dest_gssi, ts);
 
-        // Notify UMAC to enter hangtime signalling mode
         queue.push_back(SapMsg {
             sap: Sap::Control,
             src: TetraEntity::Cmce,
@@ -368,7 +457,6 @@ impl CcBsSubentity {
             msg: SapMsgInner::CmceCallControl(CallControl::FloorReleased { call_id, ts }),
         });
 
-        // Notify Brew to stop forwarding audio
         if net_brew::is_brew_gssi_routable(&self.config, dest_gssi) {
             queue.push_back(SapMsg {
                 sap: Sap::Control,

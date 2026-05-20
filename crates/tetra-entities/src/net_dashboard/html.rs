@@ -692,7 +692,7 @@ td code{
   </div>
 
   <!-- Fallback config warning banner — hidden until JS shows it -->
-  <div id="fallback-banner" style="display:none;background:var(--danger);color:#fff;padding:10px 18px;font-size:13px;font-weight:600;display:flex;align-items:center;gap:10px;flex-shrink:0">
+  <div id="fallback-banner" style="display:none;background:var(--danger);color:#fff;padding:10px 18px;font-size:13px;font-weight:600;align-items:center;gap:10px;flex-shrink:0">
     <span style="font-size:18px">⚠️</span>
     <div>
       <div data-i18n="fallback_title">FALLBACK CONFIG ACTIVE — Primary config failed to load</div>

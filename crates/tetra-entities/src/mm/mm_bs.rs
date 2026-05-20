@@ -284,16 +284,18 @@ impl MmBs {
                 // terminal — a PTT press in that window gets "no listeners" and the terminal
                 // interprets it as a network error and fully disconnects.
                 //
-                // Heuristic: if the terminal was registered less than 60 seconds ago, treat
-                // RoamingLocationUpdating as a soft re-attach (no cleanup). If it's been longer,
-                // it's likely a genuine reboot or RF recovery.
+                // Heuristic: treat RoamingLocationUpdating as a soft re-attach (no cleanup) if:
+                //   a) The terminal registered less than 120 seconds ago, OR
+                //   b) The terminal has an active individual (P2P) call — tearing it down mid-call
+                //      causes audible interruptions and "unit not attached" on the peer radio.
+                // If neither condition holds, treat as a genuine reboot.
                 let recently_registered = self.client_mgr
                     .get_client_by_issi(issi)
-                    .map(|c| c.last_registration_time.elapsed().as_secs() < 60)
+                    .map(|c| c.last_registration_time.elapsed().as_secs() < 120)
                     .unwrap_or(false);
                 if recently_registered {
                     tracing::debug!(
-                        "MM: ISSI {} RoamingLocationUpdating within 60s of last register — treating as soft re-attach (Sepura post-PTT)",
+                        "MM: ISSI {} RoamingLocationUpdating within 120s of last register — treating as soft re-attach (Sepura post-PTT)",
                         issi
                     );
                     false
