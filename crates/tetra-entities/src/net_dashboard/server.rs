@@ -1511,27 +1511,59 @@ fn serve_system_info(mut stream: TcpStream, config_path: &str) {
             .filter(|&t| t > 0.0 && t < 150.0) // sanity check
     });
 
-    // RF / SoapySDR info — read from startup log or use SoapySDRUtil --probe (non-blocking, timeout)
-    let soapy_info = std::process::Command::new("SoapySDRUtil")
-        .args(["--probe"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| {
-            let out = String::from_utf8_lossy(&o.stdout).to_string();
-            // Extract just the driver/hardware lines — full probe is very verbose
-            let lines: Vec<&str> = out.lines()
-                .filter(|l| {
-                    let ll = l.to_lowercase();
-                    ll.contains("driver") || ll.contains("hardware") || ll.contains("serial")
-                    || ll.contains("fpga") || ll.contains("firmware") || ll.contains("manufacturer")
-                    || ll.contains("product") || ll.contains("name")
-                })
-                .take(12)
-                .collect();
-            if lines.is_empty() { "No device found".to_string() } else { lines.join("\n") }
-        })
-        .unwrap_or_else(|| "SoapySDRUtil not available".to_string());
+    // RF / SoapySDR info — first check the binary exists at all, then run --find
+    // (which is much cheaper than --probe and works even with no device attached;
+    // --probe can hang for seconds on some drivers like HackRF/Pluto, and exits
+    // with non-zero status when no device is found, which would have been
+    // misreported as "not available").
+    //
+    // Try a couple of well-known install paths in addition to PATH because when
+    // the stack runs under systemd it gets a minimal PATH that doesn't always
+    // include /usr/local/bin where SoapySDR sometimes lands.
+    let soapy_info = (|| -> String {
+        let candidates = ["SoapySDRUtil", "/usr/bin/SoapySDRUtil", "/usr/local/bin/SoapySDRUtil"];
+        for bin in &candidates {
+            // First: does the binary respond to --version at all? That's the
+            // canonical "is it installed?" check and doesn't depend on hardware.
+            let probe = std::process::Command::new(bin)
+                .arg("--version")
+                .output();
+            if let Ok(out) = probe {
+                if out.status.success() {
+                    // Now run --find to enumerate devices. Empty result means
+                    // "no SDR connected" which is a valid, useful state to show.
+                    let find = std::process::Command::new(bin)
+                        .arg("--find")
+                        .output()
+                        .ok()
+                        .filter(|o| o.status.success())
+                        .map(|o| String::from_utf8_lossy(&o.stdout).to_string());
+                    let version = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                    return match find {
+                        Some(text) if text.lines().any(|l| l.to_lowercase().contains("found device")) => {
+                            // Keep only the useful per-device lines (driver/serial/label) to
+                            // avoid dumping pages of advertising.
+                            let lines: Vec<&str> = text.lines()
+                                .filter(|l| {
+                                    let ll = l.to_lowercase();
+                                    ll.contains("found device") || ll.contains("driver")
+                                    || ll.contains("serial") || ll.contains("label")
+                                    || ll.contains("name") || ll.contains("manufacturer")
+                                })
+                                .take(20)
+                                .collect();
+                            format!("{}\n{}", version, lines.join("\n"))
+                        }
+                        Some(_) => format!("{}\nNo SDR device detected.", version),
+                        None    => format!("{}\nSoapySDRUtil --find failed.", version),
+                    };
+                }
+            }
+        }
+        // Falling through the loop without returning means no candidate path
+        // successfully ran `--version` — the binary is genuinely missing.
+        "SoapySDRUtil not installed (apt install soapysdr-tools).".to_string()
+    })();
 
     // Auto-detected SDR name — set by `phy::components::soapy_settings::get_settings()`
     // at stack startup. None if no SoapySDR-backed phy is in use (file backend etc).
