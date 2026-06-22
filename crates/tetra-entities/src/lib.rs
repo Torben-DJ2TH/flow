@@ -21,6 +21,7 @@ pub mod net_telegram;
 pub mod net_telemetry;
 pub mod net_dapnet;
 pub mod net_echolink;
+pub mod net_snom;
 
 pub mod backlight;
 pub mod health;

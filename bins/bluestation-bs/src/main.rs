@@ -18,6 +18,7 @@ use tetra_entities::net_brew::new_websocket_transport;
 use tetra_entities::net_dapnet::spawn_dapnet_worker;
 use tetra_entities::net_dashboard::DashboardServer;
 use tetra_entities::net_echolink::{EcholinkEntity, echolink_channel};
+use tetra_entities::net_snom::{snom_notify_channel, spawn_snom_notify_worker};
 use tetra_entities::net_telegram::{TelegramAlertSink, TelegramAlerter, telegram_alert_channel};
 use tetra_entities::net_telemetry::worker::TelemetryWorker;
 use tetra_entities::net_telemetry::{
@@ -152,7 +153,8 @@ fn build_bs_stack(
     // Build telemetry sink/source — always create if either telemetry or dashboard is enabled
     let needs_telemetry = cfg.config().telemetry.is_some()
         || cfg.config().dashboard.is_some()
-        || cfg.config().telegram.is_some();
+        || cfg.config().telegram.is_some()
+        || cfg.config().snom_notify.enabled;
     let (tsink, tsource) = if needs_telemetry {
         let (a, b) = telemetry_channel();
         (Some(a), Some(b))
@@ -362,6 +364,20 @@ fn main() {
         .map(|dispatcher| dispatcher.clone_sender());
     let mut dapnet_telegram_sink: Option<TelegramAlertSink> = None;
 
+    let snom_notify_sink = if cfg.config().snom_notify.enabled {
+        let (sink, source) = snom_notify_channel();
+        spawn_snom_notify_worker(cfg.clone(), source);
+        eprintln!(
+            " -> Snom NOTIFY integration enabled (AMI {}:{}, endpoints={})",
+            cfg.config().snom_notify.ami_host,
+            cfg.config().snom_notify.ami_port,
+            cfg.config().snom_notify.endpoints.join(",")
+        );
+        Some(sink)
+    } else {
+        None
+    };
+
     // Start Telemetry and Control threads, if enabled
     // If dashboard is also enabled, tee the telemetry events to both.
     if let Some(telemetry_source) = tsource {
@@ -375,8 +391,11 @@ fn main() {
         let alert_sink = if has_telegram {
             let (sink, alert_source) = telegram_alert_channel();
             let alert_cfg = cfg.clone();
+            let snom_for_alerts = snom_notify_sink.clone();
             thread::Builder::new().name("telegram-alerter".into()).spawn(move || {
-                TelegramAlerter::new(alert_cfg, alert_source).run();
+                TelegramAlerter::new(alert_cfg, alert_source)
+                    .with_snom_sink(snom_for_alerts)
+                    .run();
             }).expect("failed to spawn telegram-alerter thread");
             Some(sink)
         } else {
@@ -474,6 +493,7 @@ fn main() {
         {
             let dash = dashboard.clone();
             let alert = alert_sink.clone();
+            let snom = snom_notify_sink.clone();
             thread::Builder::new().name("telemetry-fanout".into()).spawn(move || {
                 use tetra_entities::health::registry as health_registry;
                 use tetra_entities::net_telemetry::TelemetryEvent;
@@ -501,6 +521,7 @@ fn main() {
                             }
                             if let Some(d) = &dash { d.handle_telemetry(event.clone()); }
                             if let Some(s) = &alert { s.send_event(event.clone()); }
+                            if let Some(s) = &snom { s.send_event(event.clone()); }
                             if let Some(t) = &tee_sink { t.send(event); }
                         }
                         None => break,

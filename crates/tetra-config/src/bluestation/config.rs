@@ -4,7 +4,7 @@ use tetra_core::freqs::FreqInfo;
 
 use crate::bluestation::{
     CfgAsterisk, CfgCellInfo, CfgControl, CfgDapnet, CfgEcholink, CfgEmergency, CfgHealth, CfgNetInfo,
-    CfgPhyIo, CfgRecovery, CfgSecurity, CfgTpg2200Action, CfgWxService, PhyBackend,
+    CfgPhyIo, CfgRecovery, CfgSecurity, CfgSnomNotify, CfgTpg2200Action, CfgWxService, PhyBackend,
     StackState,
 };
 
@@ -87,6 +87,9 @@ pub struct StackConfig {
 
     /// Token-protected ActionURL trigger for Motorola TPG2200 Call-Out.
     pub tpg2200_action: CfgTpg2200Action,
+
+    /// Snom XML minibrowser notifications via Asterisk AMI PJSIPNotify.
+    pub snom_notify: CfgSnomNotify,
 
     /// Dashboard HTTP server configuration (None = disabled)
     pub dashboard: Option<CfgDashboard>,

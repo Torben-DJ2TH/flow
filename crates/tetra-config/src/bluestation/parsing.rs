@@ -19,6 +19,7 @@ use super::sec_echolink::{CfgEcholinkDto, apply_echolink_patch};
 use super::sec_tpg2200_action::{
     CfgTpg2200ActionDto, apply_tpg2200_action_patch,
 };
+use super::sec_snom_notify::{CfgSnomNotifyDto, apply_snom_notify_patch};
 use super::sec_dashboard::{CfgDashboardDto, apply_dashboard_patch};
 use super::sec_security::{CfgSecurityDto, apply_security_patch};
 use super::sec_wx::{CfgWxServiceDto, apply_wx_service_patch};
@@ -146,6 +147,12 @@ pub fn from_toml_str(toml_str: &str) -> Result<StackConfig, Box<dyn std::error::
             return Err(format!("Unrecognized fields in tpg2200_action config: {:?}", sorted_keys(&action.extra)).into());
         }
 
+    // Optional snom_notify section
+    if let Some(ref snom) = root.snom_notify
+        && !snom.extra.is_empty() {
+            return Err(format!("Unrecognized fields in snom_notify config: {:?}", sorted_keys(&snom.extra)).into());
+        }
+
     // Optional telemetry section
     if let Some(ref telemetry) = root.telemetry
         && !telemetry.extra.is_empty() {
@@ -209,6 +216,7 @@ pub fn from_toml_str(toml_str: &str) -> Result<StackConfig, Box<dyn std::error::
         dapnet: apply_dapnet_patch(root.dapnet.unwrap_or_default())?,
         echolink: apply_echolink_patch(root.echolink.unwrap_or_default())?,
         tpg2200_action: apply_tpg2200_action_patch(root.tpg2200_action.unwrap_or_default())?,
+        snom_notify: apply_snom_notify_patch(root.snom_notify.unwrap_or_default())?,
         dashboard: None,
         telemetry: None,
         control: None,
@@ -284,6 +292,7 @@ struct TomlConfigRoot {
     dapnet: Option<CfgDapnetDto>,
     echolink: Option<CfgEcholinkDto>,
     tpg2200_action: Option<CfgTpg2200ActionDto>,
+    snom_notify: Option<CfgSnomNotifyDto>,
     dashboard: Option<CfgDashboardDto>,
     telemetry: Option<CfgTelemetryDto>,
     command: Option<CfgControlDto>,
@@ -478,6 +487,24 @@ incident_base = 1
 default_text = "ALARM"
 max_text_chars = 80
 
+[snom_notify]
+enabled = true
+ami_host = "127.0.0.1"
+ami_port = 5038
+ami_username = "flowstation"
+ami_password = "example"
+endpoints = ["385"]
+notify_sds = true
+notify_dapnet = true
+notify_telegram = true
+sds_directions = ["rx", "net"]
+title_prefix = "FlowStation"
+notify_event = "xml"
+content_type = "application/snomxml"
+subscription_state = "active;expires=30000"
+max_text_chars = 240
+connect_timeout_secs = 3
+
 [recovery]
 enabled = true
 issi_allowlist = []
@@ -504,6 +531,10 @@ sds_queue_critical = 128
         assert!(cfg.recovery.enabled);
         assert!(cfg.tpg2200_action.enabled);
         assert_eq!(cfg.tpg2200_action.dest_issi, 1234567);
+        assert!(cfg.snom_notify.enabled);
+        assert_eq!(cfg.snom_notify.endpoints, vec!["385"]);
+        assert!(cfg.snom_notify.notify_sds);
+        assert_eq!(cfg.snom_notify.content_type, "application/snomxml");
         assert_eq!(cfg.recovery.max_replay_attempts, 150);
         assert!(cfg.health.enabled);
         assert_eq!(cfg.health.core_stall_secs, 10);

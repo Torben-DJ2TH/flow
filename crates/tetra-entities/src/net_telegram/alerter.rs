@@ -20,6 +20,7 @@ use tetra_config::bluestation::{CfgTelegram, SharedConfig};
 use super::client::TelegramClient;
 use super::format::{self, StationInfo};
 use super::{TelegramAlertMsg, TelegramAlertSource};
+use crate::net_snom::SnomNotifySink;
 use crate::net_telemetry::TelemetryEvent;
 
 /// SDS protocol identifier for the Location Information Protocol (LIP / APRS-style beacons).
@@ -73,6 +74,8 @@ pub struct TelegramAlerter {
     /// ISSIs currently in active emergency — alert only on the idle→emergency transition so the
     /// radio's periodic emergency re-sends don't re-fire the alert.
     emergency_issis: HashSet<u32>,
+    /// Optional Snom display fanout. Receives the same already-formatted alert once per alert.
+    snom_sink: Option<SnomNotifySink>,
 }
 
 impl TelegramAlerter {
@@ -93,7 +96,13 @@ impl TelegramAlerter {
             log_window_start: None,
             last_health: None,
             emergency_issis: HashSet::new(),
+            snom_sink: None,
         }
+    }
+
+    pub fn with_snom_sink(mut self, sink: Option<SnomNotifySink>) -> Self {
+        self.snom_sink = sink;
+        self
     }
 
     pub fn run(&mut self) {
@@ -270,6 +279,9 @@ impl TelegramAlerter {
     /// Deliver one HTML message to every configured chat. Failures are logged at `debug!` (never
     /// WARN/ERROR) so the critical-log catch-all cannot re-feed them as alerts.
     fn send_all(&self, tg: &CfgTelegram, html: &str) {
+        if let Some(sink) = &self.snom_sink {
+            sink.send_telegram_html(html.to_string());
+        }
         let token = tg.bot_token.as_ref();
         for &chat_id in &tg.chat_ids {
             if let Err(e) = self.client.send_message_html(token, chat_id, html) {

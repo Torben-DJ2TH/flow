@@ -31,6 +31,9 @@ pub use sec_echolink::*;
 pub mod sec_tpg2200_action;
 pub use sec_tpg2200_action::*;
 
+pub mod sec_snom_notify;
+pub use sec_snom_notify::*;
+
 pub mod sec_dashboard;
 pub use sec_dashboard::*;
 
