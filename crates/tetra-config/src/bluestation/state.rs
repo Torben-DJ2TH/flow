@@ -262,6 +262,33 @@ pub struct EcholinkRuntimeOverride {
     pub max_session_secs: u64,
 }
 
+/// Runtime override for Snom XML NOTIFY settings, edited from the dashboard.
+///
+/// Mirrors `[snom_notify]`. When present, it takes precedence over the config file so
+/// notification routing edits apply immediately; the dashboard also writes the values
+/// back to TOML for persistence.
+#[derive(Debug, Clone, Default)]
+pub struct SnomNotifyRuntimeOverride {
+    pub enabled: bool,
+    pub ami_host: String,
+    pub ami_port: u16,
+    pub ami_username: String,
+    pub ami_password: String,
+    pub endpoints: Vec<String>,
+    pub notify_sds: bool,
+    pub notify_dapnet: bool,
+    pub notify_telegram: bool,
+    pub sds_directions: Vec<String>,
+    pub dapnet_allowed_rics: std::collections::BTreeSet<u32>,
+    pub sds_allowed_issis: std::collections::BTreeSet<u32>,
+    pub title_prefix: String,
+    pub notify_event: String,
+    pub content_type: String,
+    pub subscription_state: String,
+    pub max_text_chars: usize,
+    pub connect_timeout_secs: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct AsteriskRuntimeStatus {
     pub configured: bool,
@@ -391,6 +418,8 @@ pub struct StackState {
     pub dapnet_override: Option<DapnetRuntimeOverride>,
     /// Runtime override for EchoLink settings (dashboard editing). See EcholinkRuntimeOverride.
     pub echolink_override: Option<EcholinkRuntimeOverride>,
+    /// Runtime override for Snom XML NOTIFY settings. See SnomNotifyRuntimeOverride.
+    pub snom_notify_override: Option<SnomNotifyRuntimeOverride>,
     /// Next TPG2200 ActionURL incident number. Initialised lazily from `[tpg2200_action]`.
     pub tpg2200_action_next_incident: Option<u16>,
     /// Runtime Asterisk SIP/RTP bridge status for `/api/asterisk/status` and the dashboard tab.
@@ -533,6 +562,7 @@ impl Default for StackState {
             telegram_override: None,
             dapnet_override: None,
             echolink_override: None,
+            snom_notify_override: None,
             tpg2200_action_next_incident: None,
             asterisk_status: AsteriskRuntimeStatus::default(),
             dapnet_status: DapnetRuntimeStatus::default(),

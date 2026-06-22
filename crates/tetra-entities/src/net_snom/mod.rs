@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use tetra_config::bluestation::{CfgSnomNotify, SharedConfig};
+use tetra_config::bluestation::{CfgSnomNotify, SharedConfig, parse_ric_route_key};
 
 use crate::net_telemetry::TelemetryEvent;
 
@@ -85,7 +85,7 @@ impl SnomNotifyWorker {
     fn run(&self) {
         tracing::info!("Snom notify worker started");
         while let Ok(msg) = self.source.recv() {
-            let cfg = self.cfg.config().snom_notify.clone();
+            let cfg = self.cfg.effective_snom_notify();
             if !cfg.enabled {
                 continue;
             }
@@ -116,6 +116,9 @@ impl SnomNotifyWorker {
                 if !cfg.notify_sds || !direction_allowed(cfg, &direction) {
                     return None;
                 }
+                if !sds_issi_allowed(cfg, source_issi, dest_issi) {
+                    return None;
+                }
                 let mut lines = vec![
                     format!("Dir: {}", direction.to_ascii_uppercase()),
                     format!("From: {source_issi}"),
@@ -140,6 +143,9 @@ impl SnomNotifyWorker {
                 paths,
             }) => {
                 if !cfg.notify_dapnet {
+                    return None;
+                }
+                if !dapnet_ric_allowed(cfg, &recipient) {
                     return None;
                 }
                 let mut lines = vec![
@@ -185,6 +191,28 @@ fn direction_allowed(cfg: &CfgSnomNotify, direction: &str) -> bool {
             .sds_directions
             .iter()
             .any(|d| d.eq_ignore_ascii_case(direction.trim()))
+}
+
+fn sds_issi_allowed(cfg: &CfgSnomNotify, source_issi: u32, dest_issi: u32) -> bool {
+    cfg.sds_allowed_issis.is_empty()
+        || cfg.sds_allowed_issis.contains(&source_issi)
+        || cfg.sds_allowed_issis.contains(&dest_issi)
+}
+
+fn dapnet_ric_allowed(cfg: &CfgSnomNotify, recipient: &str) -> bool {
+    if cfg.dapnet_allowed_rics.is_empty() {
+        return true;
+    }
+    dapnet_recipient_ric(recipient)
+        .map(|ric| cfg.dapnet_allowed_rics.contains(&ric))
+        .unwrap_or(false)
+}
+
+fn dapnet_recipient_ric(recipient: &str) -> Option<u32> {
+    let trimmed = recipient.trim();
+    let rest = trimmed.strip_prefix("RIC ")?;
+    let token = rest.split_whitespace().next()?;
+    parse_ric_route_key(token).ok()
 }
 
 fn prefixed_title(prefix: &str, title: &str) -> String {
@@ -458,5 +486,11 @@ mod tests {
     #[test]
     fn ami_value_is_single_line() {
         assert_eq!(sanitize_ami_value("a\r\nb"), "a  b");
+    }
+
+    #[test]
+    fn dapnet_ric_filter_extracts_decimal_ric() {
+        assert_eq!(dapnet_recipient_ric("RIC 0632585 / func 3"), Some(632585));
+        assert_eq!(dapnet_recipient_ric("DJ2TH"), None);
     }
 }

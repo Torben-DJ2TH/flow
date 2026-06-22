@@ -575,8 +575,10 @@ voice_service = true
 # endpoints = ["385"]
 # notify_sds = true
 # notify_dapnet = true
-# notify_telegram = false
+# notify_telegram = true
 # sds_directions = ["rx", "net", "tx"]  # rx=TETRA uplink, net=Brew/network, tx=FlowStation/dashboard
+# dapnet_allowed_rics = []              # empty = every DAPNET RIC; example: ["0632585", "0000200"]
+# sds_allowed_issis = []                # empty = every SDS; source or destination ISSI may match
 # title_prefix = "FlowStation"
 # notify_event = "xml"
 # content_type = "application/snomxml"

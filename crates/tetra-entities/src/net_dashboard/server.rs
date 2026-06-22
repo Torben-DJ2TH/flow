@@ -1702,6 +1702,13 @@ fn handle_connection(
         let mut s = stream;
         drain_http_headers(&mut s);
         serve_asterisk_status(s, &shared_config);
+    } else if req_line.contains("GET /api/snom-notify") {
+        let mut s = stream;
+        drain_http_headers(&mut s);
+        serve_snom_notify_get(s, &shared_config);
+    } else if req_line.contains("POST /api/snom-notify") {
+        let (inner, body_str) = read_post_body(stream);
+        serve_snom_notify_post(inner, &shared_config, &config_path, &body_str);
     } else if req_line.contains("GET /api/whitelist") {
         let mut buf = BufReader::new(stream);
         loop {
@@ -2465,6 +2472,178 @@ fn serve_asterisk_status(
         }),
     };
     http_json_response(stream, 200, &body.to_string());
+}
+
+/// GET /api/snom-notify — return effective Snom XML NOTIFY settings.
+fn serve_snom_notify_get(
+    stream: TcpStream,
+    shared_config: &Option<tetra_config::bluestation::SharedConfig>,
+) {
+    let snom = shared_config
+        .as_ref()
+        .map(|cfg| cfg.effective_snom_notify())
+        .unwrap_or_default();
+    let password = snom.ami_password.as_ref();
+    let body = serde_json::json!({
+        "enabled": snom.enabled,
+        "ami_host": snom.ami_host.clone(),
+        "ami_port": snom.ami_port,
+        "ami_username": snom.ami_username.clone(),
+        "ami_password_masked": crate::net_dashboard::snom_notify::mask_secret(password),
+        "ami_password_set": !password.trim().is_empty(),
+        "endpoints": snom.endpoints.clone(),
+        "notify_sds": snom.notify_sds,
+        "notify_dapnet": snom.notify_dapnet,
+        "notify_telegram": snom.notify_telegram,
+        "sds_directions": snom.sds_directions.clone(),
+        "dapnet_allowed_rics": dapnet_ric_set_as_json(&snom.dapnet_allowed_rics),
+        "sds_allowed_issis": snom.sds_allowed_issis.iter().copied().collect::<Vec<u32>>(),
+        "title_prefix": snom.title_prefix.clone(),
+        "notify_event": snom.notify_event.clone(),
+        "content_type": snom.content_type.clone(),
+        "subscription_state": snom.subscription_state.clone(),
+        "max_text_chars": snom.max_text_chars,
+        "connect_timeout_secs": snom.connect_timeout_secs,
+    });
+    http_json_response(stream, 200, &body.to_string());
+}
+
+/// POST /api/snom-notify — update Snom XML NOTIFY settings live and persist to config.toml.
+fn serve_snom_notify_post(
+    stream: TcpStream,
+    shared_config: &Option<tetra_config::bluestation::SharedConfig>,
+    config_path: &str,
+    body: &str,
+) {
+    use tetra_config::bluestation::SnomNotifyRuntimeOverride;
+
+    let json: serde_json::Value = match serde_json::from_str(body.trim()) {
+        Ok(v) => v,
+        Err(e) => {
+            http_response(stream, 400, &format!("Invalid JSON: {e}"));
+            return;
+        }
+    };
+    let Some(cfg) = shared_config else {
+        http_response(stream, 503, "Config not available");
+        return;
+    };
+
+    let cur = cfg.effective_snom_notify();
+    let dapnet_allowed_rics =
+        match dapnet_ric_set_from_json(&json, "dapnet_allowed_rics", &cur.dapnet_allowed_rics) {
+            Ok(rics) => rics,
+            Err(err) => {
+                http_response(stream, 400, &format!("Invalid Snom DAPNET RIC filter: {err}"));
+                return;
+            }
+        };
+    let sds_allowed_issis =
+        match snom_issi_set_from_json(&json, "sds_allowed_issis", &cur.sds_allowed_issis) {
+            Ok(issis) => issis,
+            Err(err) => {
+                http_response(stream, 400, &format!("Invalid Snom SDS ISSI filter: {err}"));
+                return;
+            }
+        };
+
+    let enabled = dapnet_as_bool(&json, "enabled", cur.enabled);
+    let ami_host = snom_non_empty_or(dapnet_as_string(&json, "ami_host", &cur.ami_host), "127.0.0.1");
+    let ami_port = dapnet_as_u16(&json, "ami_port", cur.ami_port);
+    if ami_port == 0 {
+        http_response(stream, 400, "Invalid Snom NOTIFY setting: AMI port cannot be 0");
+        return;
+    }
+    if enabled && ami_host.trim().is_empty() {
+        http_response(stream, 400, "Invalid Snom NOTIFY setting: AMI host is required when enabled");
+        return;
+    }
+
+    let endpoints = snom_string_list(&json, "endpoints", &cur.endpoints);
+    let sds_directions = snom_string_list(&json, "sds_directions", &cur.sds_directions)
+        .into_iter()
+        .map(|d| d.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    let ov = SnomNotifyRuntimeOverride {
+        enabled,
+        ami_host,
+        ami_port,
+        ami_username: dapnet_as_string(&json, "ami_username", &cur.ami_username),
+        ami_password: dapnet_resolve_secret(&json, "ami_password", cur.ami_password.as_ref()),
+        endpoints,
+        notify_sds: dapnet_as_bool(&json, "notify_sds", cur.notify_sds),
+        notify_dapnet: dapnet_as_bool(&json, "notify_dapnet", cur.notify_dapnet),
+        notify_telegram: dapnet_as_bool(&json, "notify_telegram", cur.notify_telegram),
+        sds_directions,
+        dapnet_allowed_rics,
+        sds_allowed_issis,
+        title_prefix: snom_non_empty_or(
+            dapnet_as_string(&json, "title_prefix", &cur.title_prefix),
+            "FlowStation",
+        ),
+        notify_event: snom_non_empty_or(dapnet_as_string(&json, "notify_event", &cur.notify_event), "xml"),
+        content_type: snom_non_empty_or(
+            dapnet_as_string(&json, "content_type", &cur.content_type),
+            "application/snomxml",
+        ),
+        subscription_state: snom_non_empty_or(
+            dapnet_as_string(&json, "subscription_state", &cur.subscription_state),
+            "active;expires=30000",
+        ),
+        max_text_chars: dapnet_as_usize(&json, "max_text_chars", cur.max_text_chars).clamp(40, 2000),
+        connect_timeout_secs: dapnet_as_u64(
+            &json,
+            "connect_timeout_secs",
+            cur.connect_timeout_secs,
+        )
+        .clamp(1, 30),
+    };
+
+    let mut text_fields = vec![
+        ov.ami_host.as_str(),
+        ov.ami_username.as_str(),
+        ov.ami_password.as_str(),
+        ov.title_prefix.as_str(),
+        ov.notify_event.as_str(),
+        ov.content_type.as_str(),
+        ov.subscription_state.as_str(),
+    ];
+    text_fields.extend(ov.endpoints.iter().map(String::as_str));
+    text_fields.extend(ov.sds_directions.iter().map(String::as_str));
+    if !text_fields.iter().all(|v| dapnet_text_acceptable(v)) {
+        http_response(stream, 400, "Invalid Snom NOTIFY setting: control characters are not allowed");
+        return;
+    }
+
+    {
+        let mut state = cfg.state_write();
+        state.snom_notify_override = Some(ov.clone());
+    }
+
+    if let Err(e) = crate::net_dashboard::snom_notify::write_snom_notify_to_toml(config_path, &ov) {
+        tracing::warn!("Dashboard: Snom NOTIFY applied at runtime but failed to persist to TOML: {}", e);
+        http_response(stream, 200, "Applied at runtime; failed to write config file (check permissions)");
+        return;
+    }
+
+    tracing::info!(
+        "Dashboard: Snom NOTIFY updated (enabled={} endpoints={} sds={} dapnet={} telegram={})",
+        ov.enabled,
+        ov.endpoints.len(),
+        ov.notify_sds,
+        ov.notify_dapnet,
+        ov.notify_telegram
+    );
+    http_response(stream, 200, "OK");
+}
+
+fn snom_non_empty_or(value: String, fallback: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        fallback.to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 fn serve_whitelist_get(
@@ -3476,6 +3655,57 @@ fn echolink_u32_list(json: &serde_json::Value, key: &str, default: &[u32]) -> Ve
             .collect();
     }
     default.to_vec()
+}
+
+fn snom_string_list(json: &serde_json::Value, key: &str, default: &[String]) -> Vec<String> {
+    echolink_string_list(json, key, default)
+}
+
+fn snom_issi_set_from_json(
+    json: &serde_json::Value,
+    key: &str,
+    current: &BTreeSet<u32>,
+) -> Result<BTreeSet<u32>, String> {
+    let Some(value) = json.get(key) else {
+        return Ok(current.clone());
+    };
+    let mut out = BTreeSet::new();
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                let issi = if let Some(n) = item.as_u64() {
+                    n
+                } else if let Some(s) = item.as_str() {
+                    s.trim()
+                        .parse::<u64>()
+                        .map_err(|_| format!("{key}: ISSI must be numeric"))?
+                } else {
+                    return Err(format!("{key}: ISSI must be a positive integer"));
+                };
+                if issi > 16_777_215 {
+                    return Err(format!("{key}: ISSI {} out of range", issi));
+                }
+                out.insert(issi as u32);
+            }
+        }
+        serde_json::Value::String(text) => {
+            for part in text.split(|c: char| c == ',' || c.is_whitespace()) {
+                let part = part.trim();
+                if part.is_empty() {
+                    continue;
+                }
+                let issi = part
+                    .parse::<u64>()
+                    .map_err(|_| format!("{key}: ISSI must be numeric"))?;
+                if issi > 16_777_215 {
+                    return Err(format!("{key}: ISSI {} out of range", issi));
+                }
+                out.insert(issi as u32);
+            }
+        }
+        _ => return Err(format!("{key} must be an array or text list")),
+    }
+    Ok(out)
 }
 
 fn echolink_routes_from_json(

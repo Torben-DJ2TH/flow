@@ -4,6 +4,7 @@ pub mod echolink;
 pub mod html;
 pub mod radioid;
 pub mod server;
+pub mod snom_notify;
 pub mod state;
 pub mod telegram;
 pub mod update_check;

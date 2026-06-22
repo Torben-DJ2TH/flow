@@ -2393,6 +2393,67 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
           </div>
         </div>
       </div>
+
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title">Snom SIP NOTIFY</div>
+          <div class="card-actions">
+            <button class="btn btn-sm" onclick="loadSnomNotify()" data-i18n="refresh">⟳ Refresh</button>
+            <button class="btn btn-primary" onclick="saveSnomNotify()" data-i18n="save">Save</button>
+          </div>
+        </div>
+        <div class="card-body">
+          <label class="sw-row">
+            <span class="sw-text">Enable SnomIPPhoneText notifications</span>
+            <span class="sw"><input type="checkbox" id="snom-enabled"><i></i></span>
+          </label>
+
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;align-items:center;margin-top:14px">
+            <label style="color:var(--muted);font-size:13px">AMI host</label>
+            <input type="text" id="snom-ami-host" class="form-input" placeholder="127.0.0.1">
+            <label style="color:var(--muted);font-size:13px">AMI port</label>
+            <input type="number" id="snom-ami-port" class="form-input" min="1" max="65535" placeholder="5038">
+            <label style="color:var(--muted);font-size:13px">AMI user</label>
+            <input type="text" id="snom-ami-user" class="form-input" autocomplete="off" spellcheck="false" placeholder="flowstation">
+            <label style="color:var(--muted);font-size:13px">AMI password</label>
+            <input type="password" id="snom-ami-password" class="form-input" autocomplete="new-password" spellcheck="false" oninput="snomPasswordDirty=true">
+            <label style="color:var(--muted);font-size:13px;align-self:flex-start;padding-top:8px">PJSIP endpoints</label>
+            <textarea id="snom-endpoints" class="form-input" rows="3" placeholder="385&#10;386"></textarea>
+          </div>
+
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;margin-top:16px">
+            <div>
+              <label class="sw-row"><span class="sw-text">Notify TETRA SDS</span><span class="sw"><input type="checkbox" id="snom-notify-sds"><i></i></span></label>
+              <div style="display:flex;gap:14px;flex-wrap:wrap;margin:8px 0 10px;color:var(--muted);font-size:13px">
+                <label><input type="checkbox" id="snom-dir-rx"> RX</label>
+                <label><input type="checkbox" id="snom-dir-net"> NET</label>
+                <label><input type="checkbox" id="snom-dir-tx"> TX</label>
+              </div>
+              <label style="color:var(--muted);font-size:13px">SDS ISSI whitelist</label>
+              <textarea id="snom-sds-issis" class="form-input" rows="4" placeholder="2632585&#10;9999"></textarea>
+              <div class="help-text">Empty = every SDS. A match on source or destination ISSI is enough.</div>
+            </div>
+            <div>
+              <label class="sw-row"><span class="sw-text">Notify DAPNET</span><span class="sw"><input type="checkbox" id="snom-notify-dapnet"><i></i></span></label>
+              <label style="color:var(--muted);font-size:13px">DAPNET RIC whitelist</label>
+              <textarea id="snom-dapnet-rics" class="form-input" rows="4" placeholder="0632585&#10;0000200"></textarea>
+              <div class="help-text">Empty = every DAPNET message. Leading zeros are preserved in config.</div>
+            </div>
+            <div>
+              <label class="sw-row"><span class="sw-text">Notify Telegram</span><span class="sw"><input type="checkbox" id="snom-notify-telegram"><i></i></span></label>
+              <div style="display:grid;grid-template-columns:130px 1fr;gap:10px;align-items:center;margin-top:10px">
+                <label style="color:var(--muted);font-size:13px">Title prefix</label>
+                <input type="text" id="snom-title-prefix" class="form-input" placeholder="FlowStation">
+                <label style="color:var(--muted);font-size:13px">Max text chars</label>
+                <input type="number" id="snom-max-text" class="form-input" min="40" max="2000" placeholder="240">
+                <label style="color:var(--muted);font-size:13px">Timeout (s)</label>
+                <input type="number" id="snom-timeout" class="form-input" min="1" max="30" placeholder="3">
+              </div>
+            </div>
+          </div>
+          <div class="config-msg" id="snom-msg"></div>
+        </div>
+      </div>
     </div>
 
     <!-- ── DAPNET ── -->
@@ -3842,7 +3903,7 @@ function showPage(name,el){
   if(name==='stations'){loadBtsInfo();}
   if(name==='sdslog'){loadSdsLog();}
   if(name==='health'){loadHealthIntegrations();}
-  if(name==='asterisk'){loadAsteriskStatus();}
+  if(name==='asterisk'){loadAsteriskStatus();loadSnomNotify();}
   if(name==='dapnet'){loadDapnet();loadDapnetLog();}
   if(name==='echolink'){loadEcholink();}
   if(name==='config'){loadConfig();loadWhitelist();loadWx();}
@@ -5139,6 +5200,109 @@ async function loadAsteriskStatus(){
     set('ast-configured','—');set('ast-enabled','status unavailable');set('ast-register','—');
     set('ast-last-error',t('conn_error'));
   }
+}
+
+let snomPasswordDirty=false;
+function setSnomMsg(txt,ok){
+  const el=document.getElementById('snom-msg');
+  if(!el)return;
+  el.textContent=txt||'';
+  el.style.color=ok?'var(--accent)':'var(--danger)';
+}
+function snomListText(values){return (values||[]).join('\n');}
+function snomListBody(id){
+  return (document.getElementById(id)?.value||'')
+    .split(/[\s,]+/)
+    .map(v=>v.trim())
+    .filter(Boolean);
+}
+function snomRicListBody(id,label){
+  const out=[],seen=new Set();
+  for(const rawLine of (document.getElementById(id)?.value||'').split(/\r?\n/)){
+    const line=rawLine.split('#')[0].trim();
+    if(!line)continue;
+    for(const raw of line.split(/[\s,]+/)){
+      const part=raw.trim();
+      if(!part)continue;
+      if(!/^(?:0x[0-9a-f]+|[0-9]+)$/i.test(part)){setSnomMsg(`Invalid ${label} RIC: ${part}`,false);return null;}
+      if(!seen.has(part)){seen.add(part);out.push(part);}
+    }
+  }
+  return out;
+}
+function snomIssiListBody(id,label){
+  const out=[],seen=new Set();
+  for(const raw of snomListBody(id)){
+    const n=Number(raw);
+    if(!Number.isInteger(n)||n<0||n>16777215){setSnomMsg(`Invalid ${label} ISSI: ${raw}`,false);return null;}
+    if(!seen.has(n)){seen.add(n);out.push(n);}
+  }
+  return out;
+}
+function snomSetDirections(values){
+  const dirs=new Set((values&&values.length?values:['rx','net','tx']).map(v=>String(v).toLowerCase()));
+  dapCheck('snom-dir-rx',dirs.has('rx'));
+  dapCheck('snom-dir-net',dirs.has('net'));
+  dapCheck('snom-dir-tx',dirs.has('tx'));
+}
+function snomDirectionsBody(){
+  const dirs=[];
+  if(document.getElementById('snom-dir-rx')?.checked)dirs.push('rx');
+  if(document.getElementById('snom-dir-net')?.checked)dirs.push('net');
+  if(document.getElementById('snom-dir-tx')?.checked)dirs.push('tx');
+  return dirs;
+}
+async function loadSnomNotify(){
+  try{
+    const r=await fetch('/api/snom-notify');
+    if(!r.ok){setSnomMsg(t('conn_error'),false);return;}
+    const d=await r.json();
+    dapCheck('snom-enabled',d.enabled);
+    dapSet('snom-ami-host',d.ami_host||'127.0.0.1');
+    dapSet('snom-ami-port',d.ami_port||5038);
+    dapSet('snom-ami-user',d.ami_username||'');
+    dapSet('snom-ami-password',d.ami_password_set?(d.ami_password_masked||''):'');
+    snomPasswordDirty=false;
+    dapSet('snom-endpoints',snomListText(d.endpoints));
+    dapCheck('snom-notify-sds',d.notify_sds);
+    dapCheck('snom-notify-dapnet',d.notify_dapnet);
+    dapCheck('snom-notify-telegram',d.notify_telegram);
+    snomSetDirections(d.sds_directions);
+    dapSet('snom-dapnet-rics',dapRicListText(d.dapnet_allowed_rics));
+    dapSet('snom-sds-issis',snomListText(d.sds_allowed_issis));
+    dapSet('snom-title-prefix',d.title_prefix||'FlowStation');
+    dapSet('snom-max-text',d.max_text_chars||240);
+    dapSet('snom-timeout',d.connect_timeout_secs||3);
+    setSnomMsg('',true);
+  }catch{setSnomMsg(t('conn_error'),false);}
+}
+async function saveSnomNotify(){
+  const dapnetRics=snomRicListBody('snom-dapnet-rics','DAPNET');
+  if(dapnetRics===null)return;
+  const sdsIssis=snomIssiListBody('snom-sds-issis','SDS');
+  if(sdsIssis===null)return;
+  const body={
+    enabled:document.getElementById('snom-enabled').checked,
+    ami_host:dapVal('snom-ami-host')||'127.0.0.1',
+    ami_port:dapNum('snom-ami-port',5038,1,65535),
+    ami_username:dapVal('snom-ami-user'),
+    endpoints:snomListBody('snom-endpoints'),
+    notify_sds:document.getElementById('snom-notify-sds').checked,
+    notify_dapnet:document.getElementById('snom-notify-dapnet').checked,
+    notify_telegram:document.getElementById('snom-notify-telegram').checked,
+    sds_directions:snomDirectionsBody(),
+    dapnet_allowed_rics:dapnetRics,
+    sds_allowed_issis:sdsIssis,
+    title_prefix:dapVal('snom-title-prefix')||'FlowStation',
+    max_text_chars:dapNum('snom-max-text',240,40,2000),
+    connect_timeout_secs:dapNum('snom-timeout',3,1,30)
+  };
+  if(snomPasswordDirty)body.ami_password=dapVal('snom-ami-password');
+  try{
+    const r=await fetch('/api/snom-notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(r.ok){setSnomMsg('✓ Saved',true);loadSnomNotify();}
+    else setSnomMsg(t('save_fail')+': '+await r.text(),false);
+  }catch{setSnomMsg(t('conn_error'),false);}
 }
 
 // ── Config ────────────────────────────────────────────────────────────────

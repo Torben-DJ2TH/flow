@@ -402,4 +402,35 @@ impl SharedConfig {
             base
         }
     }
+
+    /// Effective Snom XML NOTIFY settings: the dashboard runtime override if present, otherwise
+    /// the config file values. Returns an owned [`CfgSnomNotify`] so callers don't hold the
+    /// state lock while sending AMI requests.
+    pub fn effective_snom_notify(&self) -> crate::bluestation::CfgSnomNotify {
+        let base = self.cfg.snom_notify.clone();
+        if let Some(o) = self.state_read().snom_notify_override.as_ref() {
+            crate::bluestation::CfgSnomNotify {
+                enabled: o.enabled,
+                ami_host: o.ami_host.clone(),
+                ami_port: o.ami_port,
+                ami_username: o.ami_username.clone(),
+                ami_password: crate::bluestation::SecretField::from(o.ami_password.clone()),
+                endpoints: o.endpoints.clone(),
+                notify_sds: o.notify_sds,
+                notify_dapnet: o.notify_dapnet,
+                notify_telegram: o.notify_telegram,
+                sds_directions: o.sds_directions.clone(),
+                dapnet_allowed_rics: o.dapnet_allowed_rics.clone(),
+                sds_allowed_issis: o.sds_allowed_issis.clone(),
+                title_prefix: o.title_prefix.clone(),
+                notify_event: o.notify_event.clone(),
+                content_type: o.content_type.clone(),
+                subscription_state: o.subscription_state.clone(),
+                max_text_chars: o.max_text_chars.clamp(40, 2000),
+                connect_timeout_secs: o.connect_timeout_secs.clamp(1, 30),
+            }
+        } else {
+            base
+        }
+    }
 }

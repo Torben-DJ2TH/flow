@@ -497,7 +497,9 @@ endpoints = ["385"]
 notify_sds = true
 notify_dapnet = true
 notify_telegram = true
-sds_directions = ["rx", "net"]
+sds_directions = ["rx", "net", "tx"]
+dapnet_allowed_rics = ["0632585", "0000200"]
+sds_allowed_issis = [2632585, 9999]
 title_prefix = "FlowStation"
 notify_event = "xml"
 content_type = "application/snomxml"
@@ -534,6 +536,9 @@ sds_queue_critical = 128
         assert!(cfg.snom_notify.enabled);
         assert_eq!(cfg.snom_notify.endpoints, vec!["385"]);
         assert!(cfg.snom_notify.notify_sds);
+        assert!(cfg.snom_notify.sds_directions.iter().any(|d| d == "tx"));
+        assert!(cfg.snom_notify.dapnet_allowed_rics.contains(&632585));
+        assert!(cfg.snom_notify.sds_allowed_issis.contains(&2632585));
         assert_eq!(cfg.snom_notify.content_type, "application/snomxml");
         assert_eq!(cfg.recovery.max_replay_attempts, 150);
         assert!(cfg.health.enabled);

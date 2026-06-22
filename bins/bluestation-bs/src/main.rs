@@ -154,7 +154,7 @@ fn build_bs_stack(
     let needs_telemetry = cfg.config().telemetry.is_some()
         || cfg.config().dashboard.is_some()
         || cfg.config().telegram.is_some()
-        || cfg.config().snom_notify.enabled;
+        || cfg.effective_snom_notify().enabled;
     let (tsink, tsource) = if needs_telemetry {
         let (a, b) = telemetry_channel();
         (Some(a), Some(b))
@@ -364,19 +364,18 @@ fn main() {
         .map(|dispatcher| dispatcher.clone_sender());
     let mut dapnet_telegram_sink: Option<TelegramAlertSink> = None;
 
-    let snom_notify_sink = if cfg.config().snom_notify.enabled {
-        let (sink, source) = snom_notify_channel();
-        spawn_snom_notify_worker(cfg.clone(), source);
+    let (snom_sink, snom_source) = snom_notify_channel();
+    spawn_snom_notify_worker(cfg.clone(), snom_source);
+    let snom_notify_sink = Some(snom_sink);
+    if cfg.effective_snom_notify().enabled {
+        let snom = cfg.effective_snom_notify();
         eprintln!(
             " -> Snom NOTIFY integration enabled (AMI {}:{}, endpoints={})",
-            cfg.config().snom_notify.ami_host,
-            cfg.config().snom_notify.ami_port,
-            cfg.config().snom_notify.endpoints.join(",")
+            snom.ami_host,
+            snom.ami_port,
+            snom.endpoints.join(",")
         );
-        Some(sink)
-    } else {
-        None
-    };
+    }
 
     // Start Telemetry and Control threads, if enabled
     // If dashboard is also enabled, tee the telemetry events to both.
