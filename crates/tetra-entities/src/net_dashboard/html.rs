@@ -2218,6 +2218,8 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
           <div class="card-title" data-i18n="sdslog">SDS Log</div>
           <div class="card-actions">
             <button class="btn btn-sm" onclick="loadSdsLog()" data-i18n="sds_refresh">⟳ Refresh</button>
+            <button class="btn btn-sm" onclick="exportSdsLog()" data-i18n="export">⤓ Export</button>
+            <button class="btn btn-sm btn-danger" onclick="clearSdsLog()" data-i18n="clear">Clear</button>
           </div>
         </div>
         <div class="card-body">
@@ -2232,6 +2234,11 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
               </tr></thead>
               <tbody id="sdslog-tbody"></tbody>
             </table>
+          </div>
+          <div class="log-controls">
+            <button class="btn btn-sm" onclick="sdsLogPrevPage()">‹ Prev</button>
+            <span class="sds-empty" id="sdslog-page">Page 1 / 1</span>
+            <button class="btn btn-sm" onclick="sdsLogNextPage()">Next ›</button>
           </div>
         </div>
       </div>
@@ -2391,6 +2398,8 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
           <div class="card-title" data-i18n="dapnet_log">DAPNET Log</div>
           <div class="card-actions">
             <button class="btn btn-sm" onclick="loadDapnetLog()" data-i18n="refresh">⟳ Refresh</button>
+            <button class="btn btn-sm" onclick="exportDapnetLog()" data-i18n="export">⤓ Export</button>
+            <button class="btn btn-sm btn-danger" onclick="clearDapnetLog()" data-i18n="clear">Clear</button>
           </div>
         </div>
         <div class="card-body">
@@ -2406,6 +2415,11 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
               </tr></thead>
               <tbody id="dapnetlog-tbody"></tbody>
             </table>
+          </div>
+          <div class="log-controls">
+            <button class="btn btn-sm" onclick="dapnetLogPrevPage()">‹ Prev</button>
+            <span class="sds-empty" id="dapnetlog-page">Page 1 / 1</span>
+            <button class="btn btn-sm" onclick="dapnetLogNextPage()">Next ›</button>
           </div>
         </div>
       </div>
@@ -4515,6 +4529,33 @@ function _p2(n){return String(n).padStart(2,'0');}
 // Local "YYYY-MM-DD HH:MM:SS" stamp matching the server's persisted format. Used only for
 // live rows arriving over the WS; rows fetched from /api/sds-log already carry a server stamp.
 function nowStamp(){const d=new Date();return `${d.getFullYear()}-${_p2(d.getMonth()+1)}-${_p2(d.getDate())} ${_p2(d.getHours())}:${_p2(d.getMinutes())}:${_p2(d.getSeconds())}`;}
+const LOG_PAGE_SIZE=50;
+let sdsLogPageIndex=0,dapnetLogPageIndex=0;
+function setLogPager(id,page,total){
+  const el=document.getElementById(id);if(!el)return;
+  if(!total){el.textContent='Page 0 / 0 · 0';return;}
+  const pages=Math.max(1,Math.ceil(total/LOG_PAGE_SIZE));
+  el.textContent=`Page ${page+1} / ${pages} · ${total}`;
+}
+function clampLogPage(page,total){
+  const pages=Math.max(1,Math.ceil(total/LOG_PAGE_SIZE));
+  return Math.max(0,Math.min(page,pages-1));
+}
+function logExportStamp(){
+  const d=new Date();
+  return `${d.getFullYear()}${_p2(d.getMonth()+1)}${_p2(d.getDate())}-${_p2(d.getHours())}${_p2(d.getMinutes())}${_p2(d.getSeconds())}`;
+}
+function logExportCell(v){
+  return String(v??'').replace(/\r?\n/g,' ').replace(/\t/g,' ').trim();
+}
+function downloadTextFile(filename,text){
+  const blob=new Blob([text],{type:'text/plain;charset=utf-8'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download=filename;
+  document.body.appendChild(a);a.click();
+  setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},0);
+}
 // Human label for known SDS protocol-identifier bytes so binary payloads (no decoded text)
 // still read meaningfully. 0x02/0x09/0x82/0x89 = text; 0x0A = LIP position; 0xDC = Home Mode Display.
 function pidLabel(pid){const m={2:'text',9:'text',10:'LIP position',12:'concat',128:'text',130:'text',137:'text',218:'status',220:'home-display'};return m[pid]||('PID '+pid);}
@@ -4547,11 +4588,37 @@ function sdsRow(e){
 function renderSdsLog(){
   const tb=document.getElementById('sdslog-tbody');if(!tb)return;
   const rows=state.sdsLog||[];
+  sdsLogPageIndex=clampLogPage(sdsLogPageIndex,rows.length);
+  setLogPager('sdslog-page',sdsLogPageIndex,rows.length);
   if(!rows.length){tb.innerHTML=`<tr><td colspan="5" class="sds-empty" style="text-align:center;padding:24px">${t('no_sds')}</td></tr>`;return;}
-  tb.innerHTML=rows.map(sdsRow).join('');
+  const start=sdsLogPageIndex*LOG_PAGE_SIZE;
+  tb.innerHTML=rows.slice(start,start+LOG_PAGE_SIZE).map(sdsRow).join('');
 }
 async function loadSdsLog(){
-  try{const r=await fetch('/api/sds-log');if(!r.ok)return;state.sdsLog=await r.json();renderSdsLog();refreshCallsigns();}catch{}
+  try{const r=await fetch('/api/sds-log');if(!r.ok)return;state.sdsLog=await r.json();sdsLogPageIndex=0;renderSdsLog();refreshCallsigns();}catch{}
+}
+function sdsLogPrevPage(){sdsLogPageIndex--;renderSdsLog();}
+function sdsLogNextPage(){sdsLogPageIndex++;renderSdsLog();}
+async function clearSdsLog(){
+  if(!confirm('Clear SDS Log?'))return;
+  try{const r=await fetch('/api/sds-log',{method:'DELETE'});if(!r.ok)return;state.sdsLog=[];sdsLogPageIndex=0;renderSdsLog();}catch{}
+}
+function exportSdsLog(){
+  const rows=state.sdsLog||[];
+  if(!rows.length)return;
+  const lines=['TIME\tDIR\tFROM\tTO\tGROUP\tPID\tMESSAGE'];
+  for(const e of rows){
+    lines.push([
+      e.ts||'',
+      (e.direction||'').toUpperCase(),
+      e.source_issi||'',
+      e.dest_issi||'',
+      e.is_group?'yes':'no',
+      e.protocol_id??'',
+      logExportCell(e.text||pidLabel(e.protocol_id))
+    ].map(logExportCell).join('\t'));
+  }
+  downloadTextFile(`flowstation-sds-log-${logExportStamp()}.txt`,lines.join('\n')+'\n');
 }
 
 // ── DAPNET ────────────────────────────────────────────────────────────────
@@ -4616,11 +4683,36 @@ function dapnetRow(e){
 function renderDapnetLog(){
   const tb=document.getElementById('dapnetlog-tbody');if(!tb)return;
   const rows=state.dapnetLog||[];
+  dapnetLogPageIndex=clampLogPage(dapnetLogPageIndex,rows.length);
+  setLogPager('dapnetlog-page',dapnetLogPageIndex,rows.length);
   if(!rows.length){tb.innerHTML=`<tr><td colspan="6" class="sds-empty" style="text-align:center;padding:24px">No DAPNET messages yet</td></tr>`;return;}
-  tb.innerHTML=rows.map(dapnetRow).join('');
+  const start=dapnetLogPageIndex*LOG_PAGE_SIZE;
+  tb.innerHTML=rows.slice(start,start+LOG_PAGE_SIZE).map(dapnetRow).join('');
 }
 async function loadDapnetLog(){
-  try{const r=await fetch('/api/dapnet-log');if(!r.ok)return;state.dapnetLog=await r.json();renderDapnetLog();}catch{}
+  try{const r=await fetch('/api/dapnet-log');if(!r.ok)return;state.dapnetLog=await r.json();dapnetLogPageIndex=0;renderDapnetLog();}catch{}
+}
+function dapnetLogPrevPage(){dapnetLogPageIndex--;renderDapnetLog();}
+function dapnetLogNextPage(){dapnetLogPageIndex++;renderDapnetLog();}
+async function clearDapnetLog(){
+  if(!confirm('Clear DAPNET Log?'))return;
+  try{const r=await fetch('/api/dapnet-log',{method:'DELETE'});if(!r.ok)return;state.dapnetLog=[];dapnetLogPageIndex=0;renderDapnetLog();}catch{}
+}
+function exportDapnetLog(){
+  const rows=state.dapnetLog||[];
+  if(!rows.length)return;
+  const lines=['TIME\tDIR\tCALLSIGN\tRECIPIENT\tPATHS\tMESSAGE'];
+  for(const e of rows){
+    lines.push([
+      e.ts||'',
+      (e.direction||'').toUpperCase(),
+      e.callsign||'',
+      e.recipient||'',
+      (e.paths||[]).join(','),
+      e.text||''
+    ].map(logExportCell).join('\t'));
+  }
+  downloadTextFile(`flowstation-dapnet-log-${logExportStamp()}.txt`,lines.join('\n')+'\n');
 }
 async function loadDapnet(){
   try{

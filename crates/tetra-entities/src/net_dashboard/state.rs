@@ -309,6 +309,11 @@ impl DashboardStateInner {
         }
     }
 
+    pub fn clear_sds_log(&mut self) {
+        self.sds_log.clear();
+        self.persist_sds_log();
+    }
+
     /// Append one DAPNET event to the log, evicting the oldest past DAPNET_LOG_MAX, then persist
     /// the ring to disk. Best-effort only: write failures never affect radio operation.
     pub fn push_dapnet_log(
@@ -345,6 +350,11 @@ impl DashboardStateInner {
         if let Ok(text) = serde_json::to_string(&self.dapnet_log) {
             let _ = std::fs::write(&self.dapnet_log_path, text);
         }
+    }
+
+    pub fn clear_dapnet_log(&mut self) {
+        self.dapnet_log.clear();
+        self.persist_dapnet_log();
     }
 
     pub fn snapshot_ms(&self) -> Vec<MsState> {

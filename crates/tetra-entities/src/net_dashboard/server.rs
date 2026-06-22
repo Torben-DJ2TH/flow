@@ -1104,6 +1104,14 @@ fn serve_sds_log(stream: TcpStream, state: &DashboardState) {
     http_json_response(stream, 200, &body);
 }
 
+/// DELETE /api/sds-log — clear the persisted SDS Log.
+fn serve_sds_log_clear(stream: TcpStream, state: &DashboardState) {
+    if let Ok(mut s) = state.write() {
+        s.clear_sds_log();
+    }
+    http_json_response(stream, 200, "{\"ok\":true}");
+}
+
 /// GET /api/dapnet-log — the persisted DAPNET Log as a JSON array, newest entry first.
 fn serve_dapnet_log(stream: TcpStream, state: &DashboardState) {
     let body = {
@@ -1116,6 +1124,14 @@ fn serve_dapnet_log(stream: TcpStream, state: &DashboardState) {
         }
     };
     http_json_response(stream, 200, &body);
+}
+
+/// DELETE /api/dapnet-log — clear the persisted DAPNET Log.
+fn serve_dapnet_log_clear(stream: TcpStream, state: &DashboardState) {
+    if let Ok(mut s) = state.write() {
+        s.clear_dapnet_log();
+    }
+    http_json_response(stream, 200, "{\"ok\":true}");
 }
 
 /// Serialize the current live SDS queue to JSON and serve it.
@@ -1743,6 +1759,10 @@ fn handle_connection(
     } else if req_line.contains("POST /api/telegram") {
         let (inner, body_str) = read_post_body(stream);
         serve_telegram_post(inner, &shared_config, &config_path, &body_str);
+    } else if req_line.contains("DELETE /api/dapnet-log") {
+        let mut s = stream;
+        drain_http_headers(&mut s);
+        serve_dapnet_log_clear(s, &state);
     } else if req_line.contains("GET /api/dapnet-log") {
         let mut s = stream;
         drain_http_headers(&mut s);
@@ -1765,6 +1785,14 @@ fn handle_connection(
             if line == "\r\n" || line.is_empty() || line == "\n" { break; }
         }
         serve_config_get(buf.into_inner(), &config_path);
+    } else if req_line.contains("DELETE /api/sds-log") {
+        let mut buf = BufReader::new(stream);
+        loop {
+            let mut line = String::new();
+            let _ = buf.read_line(&mut line);
+            if line == "\r\n" || line.is_empty() || line == "\n" { break; }
+        }
+        serve_sds_log_clear(buf.into_inner(), &state);
     } else if req_line.contains("GET /api/sds-log") {
         // Return the persisted SDS Log (newest first) as JSON.
         let mut buf = BufReader::new(stream);
