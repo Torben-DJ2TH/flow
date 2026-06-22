@@ -315,4 +315,40 @@ impl SharedConfig {
             base
         }
     }
+
+    /// Effective DAPNET settings: the dashboard runtime override if present, otherwise the config
+    /// file values. Returns an owned [`CfgDapnet`] so callers don't hold the state lock.
+    pub fn effective_dapnet(&self) -> crate::bluestation::CfgDapnet {
+        let base = self.cfg.dapnet.clone();
+        if let Some(o) = self.state_read().dapnet_override.as_ref() {
+            crate::bluestation::CfgDapnet {
+                enabled: o.enabled,
+                api_url: o.api_url.clone(),
+                username: o.username.clone(),
+                password: crate::bluestation::SecretField::from(o.password.clone()),
+                poll_interval_secs: o.poll_interval_secs.max(1),
+                forward_sds: o.forward_sds,
+                forward_callout: o.forward_callout,
+                forward_telegram: o.forward_telegram,
+                sds_source_issi: o.sds_source_issi,
+                sds_dest_issi: o.sds_dest_issi,
+                sds_dest_is_group: o.sds_dest_is_group,
+                callout_source_issi: o.callout_source_issi,
+                callout_dest_issi: o.callout_dest_issi,
+                callout_incident_base: o.callout_incident_base.clamp(1, 256),
+                callout_text_prefix: o.callout_text_prefix.clone(),
+                telegram_prefix: o.telegram_prefix.clone(),
+                rwth_core_enabled: o.rwth_core_enabled,
+                rwth_core_host: o.rwth_core_host.clone(),
+                rwth_core_port: o.rwth_core_port,
+                rwth_core_device: o.rwth_core_device.clone(),
+                rwth_core_version: o.rwth_core_version.clone(),
+                rwth_core_callsign: o.rwth_core_callsign.clone(),
+                rwth_core_authkey: crate::bluestation::SecretField::from(o.rwth_core_authkey.clone()),
+                rwth_messages_limit: o.rwth_messages_limit.max(1),
+            }
+        } else {
+            base
+        }
+    }
 }

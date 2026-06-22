@@ -20,7 +20,7 @@ use tetra_entities::net_dashboard::DashboardServer;
 use tetra_entities::net_telegram::{TelegramAlertSink, TelegramAlerter, telegram_alert_channel};
 use tetra_entities::net_telemetry::worker::TelemetryWorker;
 use tetra_entities::net_telemetry::{
-    TELEMETRY_HEARTBEAT_INTERVAL, TELEMETRY_HEARTBEAT_TIMEOUT, TELEMETRY_PROTOCOL_VERSION, TelemetrySource, telemetry_channel,
+    TELEMETRY_HEARTBEAT_INTERVAL, TELEMETRY_HEARTBEAT_TIMEOUT, TELEMETRY_PROTOCOL_VERSION, TelemetrySink, TelemetrySource, telemetry_channel,
 };
 use tetra_entities::network::transports::websocket::{WebSocketTransport, WebSocketTransportConfig};
 use tetra_entities::{
@@ -141,7 +141,7 @@ fn start_control_worker(cfg: SharedConfig, command_dispatchers: HashMap<TetraEnt
 }
 
 /// Start base station stack
-fn build_bs_stack(cfg: &mut SharedConfig, config_path: &str) -> (MessageRouter, Option<TelemetrySource>, HashMap<TetraEntity, CommandDispatcher>) {
+fn build_bs_stack(cfg: &mut SharedConfig, config_path: &str) -> (MessageRouter, Option<TelemetrySource>, HashMap<TetraEntity, CommandDispatcher>, Option<TelemetrySink>) {
     let mut router = MessageRouter::new(cfg.clone());
 
     // Build telemetry sink/source — always create if either telemetry or dashboard is enabled
@@ -278,7 +278,7 @@ fn build_bs_stack(cfg: &mut SharedConfig, config_path: &str) -> (MessageRouter, 
     // Init network time
     router.set_dl_time(TdmaTime::default());
 
-    (router, tsource, c_d)
+    (router, tsource, c_d, tsink)
 }
 
 #[derive(Parser, Debug)]
@@ -344,7 +344,7 @@ fn main() {
         );
     }
 
-    let (mut router, tsource, cdispatchers) = build_bs_stack(&mut cfg, &args.config);
+    let (mut router, tsource, cdispatchers, dapnet_telemetry_sink) = build_bs_stack(&mut cfg, &args.config);
     let dapnet_cmd_tx = cdispatchers
         .get(&TetraEntity::Cmce)
         .map(|dispatcher| dispatcher.clone_sender());
@@ -504,7 +504,7 @@ fn main() {
         start_control_worker(cfg.clone(), cdispatchers);
     };
 
-    spawn_dapnet_worker(cfg.clone(), dapnet_cmd_tx, dapnet_telegram_sink);
+    spawn_dapnet_worker(cfg.clone(), dapnet_cmd_tx, dapnet_telegram_sink, dapnet_telemetry_sink);
 
     // Set up Ctrl+C handler for graceful shutdown.
     // Also installs lifecycle control so RestartService / ShutdownService commands

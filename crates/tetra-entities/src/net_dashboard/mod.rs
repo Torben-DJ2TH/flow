@@ -1,4 +1,5 @@
 pub mod callsign;
+pub mod dapnet;
 pub mod html;
 pub mod radioid;
 pub mod server;

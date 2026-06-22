@@ -193,6 +193,38 @@ pub struct TelegramRuntimeOverride {
     pub alert_critical_logs: bool,
 }
 
+/// Runtime override for DAPNET receive/send/forwarding settings, edited from the dashboard.
+///
+/// Mirrors `[dapnet]`. When present, it takes precedence over the config file so routing edits
+/// apply immediately; the dashboard also writes the values back to TOML for persistence.
+#[derive(Debug, Clone, Default)]
+pub struct DapnetRuntimeOverride {
+    pub enabled: bool,
+    pub api_url: String,
+    pub username: String,
+    pub password: String,
+    pub poll_interval_secs: u64,
+    pub forward_sds: bool,
+    pub forward_callout: bool,
+    pub forward_telegram: bool,
+    pub sds_source_issi: u32,
+    pub sds_dest_issi: u32,
+    pub sds_dest_is_group: bool,
+    pub callout_source_issi: u32,
+    pub callout_dest_issi: u32,
+    pub callout_incident_base: u16,
+    pub callout_text_prefix: String,
+    pub telegram_prefix: String,
+    pub rwth_core_enabled: bool,
+    pub rwth_core_host: String,
+    pub rwth_core_port: u16,
+    pub rwth_core_device: String,
+    pub rwth_core_version: String,
+    pub rwth_core_callsign: String,
+    pub rwth_core_authkey: String,
+    pub rwth_messages_limit: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct AsteriskRuntimeStatus {
     pub configured: bool,
@@ -250,6 +282,8 @@ pub struct StackState {
     pub wx_override: Option<WxRuntimeOverride>,
     /// Runtime override for Telegram alerts (dashboard editing). See TelegramRuntimeOverride.
     pub telegram_override: Option<TelegramRuntimeOverride>,
+    /// Runtime override for DAPNET settings (dashboard editing). See DapnetRuntimeOverride.
+    pub dapnet_override: Option<DapnetRuntimeOverride>,
     /// Runtime Asterisk SIP/RTP bridge status for `/api/asterisk/status` and the dashboard tab.
     pub asterisk_status: AsteriskRuntimeStatus,
     /// Live map "identity currently reachable on a traffic channel" → (DL timeslot, usage_marker),
@@ -384,6 +418,7 @@ impl Default for StackState {
             issi_whitelist_override: None,
             wx_override: None,
             telegram_override: None,
+            dapnet_override: None,
             asterisk_status: AsteriskRuntimeStatus::default(),
             active_call_ts: std::collections::HashMap::new(),
             ee_monitoring_windows: std::collections::HashMap::new(),

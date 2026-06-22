@@ -879,6 +879,17 @@ impl DashboardServer {
                         }
                     }
                 }
+                TelemetryEvent::DapnetLog { direction, id, callsign, recipient, text, priority, paths } => {
+                    s.push_dapnet_log(
+                        direction,
+                        id.clone(),
+                        callsign.clone(),
+                        recipient.clone(),
+                        text.clone(),
+                        *priority,
+                        paths.clone(),
+                    );
+                }
             }
         }
         if let Some(json) = msg {
@@ -1008,6 +1019,8 @@ fn event_to_ws_msg(event: &TelemetryEvent) -> Option<String> {
         // Emergency add/remove are broadcast explicitly (transition-gated) from handle_telemetry,
         // so the generic path stays silent — otherwise every periodic re-send would re-broadcast.
         TelemetryEvent::EmergencyAlarm { .. } | TelemetryEvent::EmergencyCancel { .. } => return None,
+        TelemetryEvent::DapnetLog { direction, id, callsign, recipient, text, priority, paths } =>
+            serde_json::json!({"type":"dapnet_log","direction":direction,"id":id,"callsign":callsign,"recipient":recipient,"text":text,"priority":priority,"paths":paths}),
     };
     serde_json::to_string(&v).ok()
 }
@@ -1087,6 +1100,20 @@ fn serve_sds_log(stream: TcpStream, state: &DashboardState) {
         let s = state.read().unwrap();
         let list: Vec<_> = s.sds_log.iter().rev().cloned().collect();
         serde_json::to_string(&list).unwrap_or_else(|_| "[]".to_string())
+    };
+    http_json_response(stream, 200, &body);
+}
+
+/// GET /api/dapnet-log — the persisted DAPNET Log as a JSON array, newest entry first.
+fn serve_dapnet_log(stream: TcpStream, state: &DashboardState) {
+    let body = {
+        match state.read() {
+            Ok(s) => {
+                let list: Vec<_> = s.dapnet_log.iter().rev().cloned().collect();
+                serde_json::to_string(&list).unwrap_or_else(|_| "[]".to_string())
+            }
+            Err(_) => "[]".to_string(),
+        }
     };
     http_json_response(stream, 200, &body);
 }
@@ -1559,6 +1586,20 @@ fn handle_connection(
     } else if req_line.contains("POST /api/telegram") {
         let (inner, body_str) = read_post_body(stream);
         serve_telegram_post(inner, &shared_config, &config_path, &body_str);
+    } else if req_line.contains("GET /api/dapnet-log") {
+        let mut s = stream;
+        drain_http_headers(&mut s);
+        serve_dapnet_log(s, &state);
+    } else if req_line.contains("POST /api/dapnet/send") {
+        let (inner, body_str) = read_post_body(stream);
+        serve_dapnet_send(inner, &shared_config, &state, &clients, &body_str);
+    } else if req_line.contains("GET /api/dapnet") {
+        let mut s = stream;
+        drain_http_headers(&mut s);
+        serve_dapnet_get(s, &shared_config);
+    } else if req_line.contains("POST /api/dapnet") {
+        let (inner, body_str) = read_post_body(stream);
+        serve_dapnet_post(inner, &shared_config, &config_path, &body_str);
     } else if req_line.contains("GET /api/config") {
         let mut buf = BufReader::new(stream);
         loop {
@@ -2536,6 +2577,358 @@ fn serve_telegram_post(
         ov.chat_ids.len()
     );
     http_response(stream, 200, "OK");
+}
+
+fn dapnet_resolve_secret(json: &serde_json::Value, key: &str, current: &str) -> String {
+    match json.get(key).and_then(|v| v.as_str()) {
+        Some(v) if !v.contains('…') => v.trim().to_string(),
+        _ => current.to_string(),
+    }
+}
+
+fn dapnet_text_acceptable(s: &str) -> bool {
+    s.chars().all(|c| !c.is_control())
+}
+
+fn dapnet_as_bool(json: &serde_json::Value, key: &str, default: bool) -> bool {
+    json.get(key).and_then(|x| x.as_bool()).unwrap_or(default)
+}
+
+fn dapnet_as_u32(json: &serde_json::Value, key: &str, default: u32) -> u32 {
+    json.get(key)
+        .and_then(|x| x.as_u64())
+        .map(|n| n.min(16_777_215) as u32)
+        .unwrap_or(default)
+}
+
+fn dapnet_as_u64(json: &serde_json::Value, key: &str, default: u64) -> u64 {
+    json.get(key).and_then(|x| x.as_u64()).unwrap_or(default)
+}
+
+fn dapnet_as_u16(json: &serde_json::Value, key: &str, default: u16) -> u16 {
+    json.get(key)
+        .and_then(|x| x.as_u64())
+        .map(|n| n.min(u16::MAX as u64) as u16)
+        .unwrap_or(default)
+}
+
+fn dapnet_as_usize(json: &serde_json::Value, key: &str, default: usize) -> usize {
+    json.get(key)
+        .and_then(|x| x.as_u64())
+        .map(|n| n.max(1) as usize)
+        .unwrap_or(default)
+}
+
+fn dapnet_as_string(json: &serde_json::Value, key: &str, default: &str) -> String {
+    json.get(key)
+        .and_then(|x| x.as_str())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| default.to_string())
+}
+
+/// GET /api/dapnet — return effective DAPNET settings as JSON. Secrets are masked and are never
+/// echoed in the clear.
+fn serve_dapnet_get(
+    stream: TcpStream,
+    shared_config: &Option<tetra_config::bluestation::SharedConfig>,
+) {
+    let dapnet = match shared_config {
+        Some(cfg) => cfg.effective_dapnet(),
+        None => tetra_config::bluestation::CfgDapnet::default(),
+    };
+    let password = dapnet.password.as_ref();
+    let authkey = dapnet.rwth_core_authkey.as_ref();
+    let body = serde_json::json!({
+        "enabled": dapnet.enabled,
+        "api_url": dapnet.api_url.clone(),
+        "username": dapnet.username.clone(),
+        "password_masked": crate::net_dashboard::dapnet::mask_secret(password),
+        "password_set": !password.trim().is_empty(),
+        "poll_interval_secs": dapnet.poll_interval_secs,
+        "forward_sds": dapnet.forward_sds,
+        "forward_callout": dapnet.forward_callout,
+        "forward_telegram": dapnet.forward_telegram,
+        "sds_source_issi": dapnet.sds_source_issi,
+        "sds_dest_issi": dapnet.sds_dest_issi,
+        "sds_dest_is_group": dapnet.sds_dest_is_group,
+        "callout_source_issi": dapnet.callout_source_issi,
+        "callout_dest_issi": dapnet.callout_dest_issi,
+        "callout_incident_base": dapnet.callout_incident_base,
+        "callout_text_prefix": dapnet.callout_text_prefix.clone(),
+        "telegram_prefix": dapnet.telegram_prefix.clone(),
+        "rwth_core_enabled": dapnet.rwth_core_enabled,
+        "rwth_core_host": dapnet.rwth_core_host.clone(),
+        "rwth_core_port": dapnet.rwth_core_port,
+        "rwth_core_device": dapnet.rwth_core_device.clone(),
+        "rwth_core_version": dapnet.rwth_core_version.clone(),
+        "rwth_core_callsign": dapnet.rwth_core_callsign.clone(),
+        "rwth_core_authkey_masked": crate::net_dashboard::dapnet::mask_secret(authkey),
+        "rwth_core_authkey_set": !authkey.trim().is_empty(),
+        "rwth_messages_limit": dapnet.rwth_messages_limit,
+    });
+    http_json_response(stream, 200, &body.to_string());
+}
+
+/// POST /api/dapnet — update DAPNET settings. Applies immediately through StackState override
+/// and rewrites `[dapnet]` in config.toml. Secrets are changed only when a fresh, non-masked
+/// value is supplied.
+fn serve_dapnet_post(
+    stream: TcpStream,
+    shared_config: &Option<tetra_config::bluestation::SharedConfig>,
+    config_path: &str,
+    body: &str,
+) {
+    use tetra_config::bluestation::DapnetRuntimeOverride;
+
+    let json: serde_json::Value = match serde_json::from_str(body.trim()) {
+        Ok(v) => v,
+        Err(e) => {
+            http_response(stream, 400, &format!("Invalid JSON: {e}"));
+            return;
+        }
+    };
+    let Some(cfg) = shared_config else {
+        http_response(stream, 503, "Config not available");
+        return;
+    };
+
+    let cur = cfg.effective_dapnet();
+    let password = dapnet_resolve_secret(&json, "password", cur.password.as_ref());
+    let rwth_core_authkey = dapnet_resolve_secret(&json, "rwth_core_authkey", cur.rwth_core_authkey.as_ref());
+
+    let ov = DapnetRuntimeOverride {
+        enabled: dapnet_as_bool(&json, "enabled", cur.enabled),
+        api_url: dapnet_as_string(&json, "api_url", &cur.api_url),
+        username: dapnet_as_string(&json, "username", &cur.username),
+        password,
+        poll_interval_secs: dapnet_as_u64(&json, "poll_interval_secs", cur.poll_interval_secs).max(1),
+        forward_sds: dapnet_as_bool(&json, "forward_sds", cur.forward_sds),
+        forward_callout: dapnet_as_bool(&json, "forward_callout", cur.forward_callout),
+        forward_telegram: dapnet_as_bool(&json, "forward_telegram", cur.forward_telegram),
+        sds_source_issi: dapnet_as_u32(&json, "sds_source_issi", cur.sds_source_issi).max(1),
+        sds_dest_issi: dapnet_as_u32(&json, "sds_dest_issi", cur.sds_dest_issi),
+        sds_dest_is_group: dapnet_as_bool(&json, "sds_dest_is_group", cur.sds_dest_is_group),
+        callout_source_issi: dapnet_as_u32(&json, "callout_source_issi", cur.callout_source_issi).max(1),
+        callout_dest_issi: dapnet_as_u32(&json, "callout_dest_issi", cur.callout_dest_issi),
+        callout_incident_base: dapnet_as_u16(&json, "callout_incident_base", cur.callout_incident_base).clamp(1, 256),
+        callout_text_prefix: dapnet_as_string(&json, "callout_text_prefix", &cur.callout_text_prefix),
+        telegram_prefix: dapnet_as_string(&json, "telegram_prefix", &cur.telegram_prefix),
+        rwth_core_enabled: dapnet_as_bool(&json, "rwth_core_enabled", cur.rwth_core_enabled),
+        rwth_core_host: dapnet_as_string(&json, "rwth_core_host", &cur.rwth_core_host),
+        rwth_core_port: dapnet_as_u16(&json, "rwth_core_port", cur.rwth_core_port),
+        rwth_core_device: dapnet_as_string(&json, "rwth_core_device", &cur.rwth_core_device),
+        rwth_core_version: dapnet_as_string(&json, "rwth_core_version", &cur.rwth_core_version),
+        rwth_core_callsign: dapnet_as_string(&json, "rwth_core_callsign", &cur.rwth_core_callsign),
+        rwth_core_authkey,
+        rwth_messages_limit: dapnet_as_usize(&json, "rwth_messages_limit", cur.rwth_messages_limit),
+    };
+
+    let text_fields = [
+        ov.api_url.as_str(),
+        ov.username.as_str(),
+        ov.password.as_str(),
+        ov.callout_text_prefix.as_str(),
+        ov.telegram_prefix.as_str(),
+        ov.rwth_core_host.as_str(),
+        ov.rwth_core_device.as_str(),
+        ov.rwth_core_version.as_str(),
+        ov.rwth_core_callsign.as_str(),
+        ov.rwth_core_authkey.as_str(),
+    ];
+    if !text_fields.iter().all(|v| dapnet_text_acceptable(v)) {
+        http_response(stream, 400, "Invalid DAPNET setting: control characters are not allowed");
+        return;
+    }
+
+    {
+        let mut state = cfg.state_write();
+        state.dapnet_override = Some(ov.clone());
+    }
+
+    if let Err(e) = crate::net_dashboard::dapnet::write_dapnet_to_toml(config_path, &ov) {
+        tracing::warn!("Dashboard: DAPNET applied at runtime but failed to persist to TOML: {}", e);
+        http_response(stream, 200, "Applied at runtime; failed to write config file (check permissions)");
+        return;
+    }
+
+    tracing::info!(
+        "Dashboard: DAPNET updated (enabled={} rwth_core={} routes=sds:{} callout:{} telegram:{})",
+        ov.enabled,
+        ov.rwth_core_enabled,
+        ov.forward_sds,
+        ov.forward_callout,
+        ov.forward_telegram
+    );
+    http_response(stream, 200, "OK");
+}
+
+fn dapnet_string_list(json: &serde_json::Value, keys: &[&str]) -> Vec<String> {
+    for key in keys {
+        if let Some(arr) = json.get(*key).and_then(|v| v.as_array()) {
+            return arr
+                .iter()
+                .filter_map(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+        }
+        if let Some(s) = json.get(*key).and_then(|v| v.as_str()) {
+            return s
+                .split(|c: char| c == ',' || c.is_whitespace())
+                .map(|p| p.trim().to_string())
+                .filter(|p| !p.is_empty())
+                .collect();
+        }
+    }
+    Vec::new()
+}
+
+fn push_dapnet_log_and_broadcast(
+    state: &DashboardState,
+    clients: &WsClients,
+    direction: &str,
+    id: String,
+    callsign: String,
+    recipient: String,
+    text: String,
+    priority: Option<u8>,
+    paths: Vec<String>,
+) {
+    {
+        if let Ok(mut s) = state.write() {
+            s.push_dapnet_log(
+                direction,
+                id.clone(),
+                callsign.clone(),
+                recipient.clone(),
+                text.clone(),
+                priority,
+                paths.clone(),
+            );
+        }
+    }
+    if let Ok(json) = serde_json::to_string(&serde_json::json!({
+        "type": "dapnet_log",
+        "direction": direction,
+        "id": id,
+        "callsign": callsign,
+        "recipient": recipient,
+        "text": text,
+        "priority": priority,
+        "paths": paths,
+    })) {
+        if let Ok(mut clients) = clients.lock() {
+            clients.retain(|tx| tx.send(json.clone()).is_ok());
+        }
+    }
+}
+
+/// POST /api/dapnet/send — send one outbound DAPNET message through the configured Hampager API.
+fn serve_dapnet_send(
+    stream: TcpStream,
+    shared_config: &Option<tetra_config::bluestation::SharedConfig>,
+    state: &DashboardState,
+    clients: &WsClients,
+    body: &str,
+) {
+    let json: serde_json::Value = match serde_json::from_str(body.trim()) {
+        Ok(v) => v,
+        Err(e) => {
+            http_json_response(stream, 400, &serde_json::json!({"ok":false,"error":format!("Invalid JSON: {e}")}).to_string());
+            return;
+        }
+    };
+    let Some(cfg) = shared_config else {
+        http_json_response(stream, 503, "{\"ok\":false,\"error\":\"Config not available\"}");
+        return;
+    };
+    let dapnet = cfg.effective_dapnet();
+    if !dapnet.enabled {
+        http_json_response(stream, 200, "{\"ok\":false,\"error\":\"DAPNET is disabled\"}");
+        return;
+    }
+    let text = json.get("text").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    if text.is_empty() {
+        http_json_response(stream, 200, "{\"ok\":false,\"error\":\"Message text is empty\"}");
+        return;
+    }
+    if !dapnet_text_acceptable(&text) {
+        http_json_response(stream, 200, "{\"ok\":false,\"error\":\"Message contains control characters\"}");
+        return;
+    }
+    let api_url = dapnet.api_url.trim();
+    if api_url.is_empty() {
+        http_json_response(stream, 200, "{\"ok\":false,\"error\":\"DAPNET api_url is empty\"}");
+        return;
+    }
+    let callsigns = dapnet_string_list(&json, &["callSignNames", "callsigns", "call_signs"]);
+    let groups = dapnet_string_list(&json, &["transmitterGroupNames", "transmitter_groups", "groups"]);
+    if callsigns.is_empty() && groups.is_empty() {
+        http_json_response(stream, 200, "{\"ok\":false,\"error\":\"Set at least one callsign or transmitter group\"}");
+        return;
+    }
+    let emergency = json.get("emergency").and_then(|v| v.as_bool()).unwrap_or(false);
+    let req_body = serde_json::json!({
+        "text": text.clone(),
+        "callSignNames": callsigns,
+        "transmitterGroupNames": groups,
+        "emergency": emergency,
+    });
+
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+    {
+        Ok(client) => client,
+        Err(e) => {
+            http_json_response(stream, 200, &serde_json::json!({"ok":false,"error":format!("HTTP client error: {e}")}).to_string());
+            return;
+        }
+    };
+    let mut request = client.post(api_url).json(&req_body);
+    if !dapnet.username.trim().is_empty() {
+        request = request.basic_auth(dapnet.username.trim().to_string(), Some(dapnet.password.as_ref().to_string()));
+    }
+    match request.send() {
+        Ok(resp) => {
+            let status = resp.status();
+            if status.is_success() {
+                tracing::info!(
+                    "Dashboard: DAPNET outbound sent via {} (callsigns={} groups={} emergency={})",
+                    api_url,
+                    req_body["callSignNames"].as_array().map(|a| a.len()).unwrap_or(0),
+                    req_body["transmitterGroupNames"].as_array().map(|a| a.len()).unwrap_or(0),
+                    emergency
+                );
+                push_dapnet_log_and_broadcast(
+                    state,
+                    clients,
+                    "tx",
+                    format!("api:{}", chrono::Utc::now().timestamp_millis()),
+                    req_body["callSignNames"].as_array()
+                        .and_then(|a| a.first())
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    req_body["transmitterGroupNames"].as_array()
+                        .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(","))
+                        .unwrap_or_default(),
+                    text,
+                    if emergency { Some(1) } else { None },
+                    vec!["dapnet-api".to_string()],
+                );
+                http_json_response(stream, 200, "{\"ok\":true}");
+            } else {
+                let err = format!("DAPNET API returned HTTP {}", status.as_u16());
+                tracing::warn!("Dashboard: {}", err);
+                http_json_response(stream, 200, &serde_json::json!({"ok":false,"error":err}).to_string());
+            }
+        }
+        Err(e) => {
+            tracing::warn!("Dashboard: DAPNET outbound send failed: {}", e);
+            http_json_response(stream, 200, &serde_json::json!({"ok":false,"error":format!("Network error: {e}")}).to_string());
+        }
+    }
 }
 
 /// POST /api/telegram/verify — validate the token via getMe and return the bot @username.

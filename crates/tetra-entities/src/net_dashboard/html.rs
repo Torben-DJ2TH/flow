@@ -695,6 +695,7 @@ input[type="radio"]{accent-color:var(--accent);}
    except the full-bleed code editor, which stays edge-to-edge. */
 #page-telegram .card-body,
 #page-config .card-body,
+#page-dapnet .card-body,
 #page-wifi .card-body{padding:16px 18px;}
 #page-config .card-body:has(#config-editor){padding:0;}
 
@@ -1788,6 +1789,10 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
       <span class="nav-icon">☎</span>
       <span class="nav-label" data-i18n="asterisk">Asterisk SIP</span>
     </div>
+    <div class="nav-item" onclick="showPage('dapnet',this)" id="nav-dapnet">
+      <span class="nav-icon">📟</span>
+      <span class="nav-label" data-i18n="dapnet">DAPNET</span>
+    </div>
     <div class="nav-item" onclick="showPage('config',this)" id="nav-config">
       <span class="nav-icon">⚙</span>
       <span class="nav-label" data-i18n="config">CONFIG</span>
@@ -2379,6 +2384,152 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
       </div>
     </div>
 
+    <!-- ── DAPNET ── -->
+    <div class="page" id="page-dapnet">
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title" data-i18n="dapnet_log">DAPNET Log</div>
+          <div class="card-actions">
+            <button class="btn btn-sm" onclick="loadDapnetLog()" data-i18n="refresh">⟳ Refresh</button>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="table-wrap">
+            <table>
+              <thead><tr>
+                <th data-i18n="th_time">Time</th>
+                <th data-i18n="th_dir">Dir</th>
+                <th>Callsign</th>
+                <th>Recipient</th>
+                <th>Paths</th>
+                <th data-i18n="th_message">Message</th>
+              </tr></thead>
+              <tbody id="dapnetlog-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title" data-i18n="dapnet_title">DAPNET</div>
+          <div class="card-actions">
+            <button class="btn btn-primary" onclick="saveDapnet()" data-i18n="save">Save</button>
+          </div>
+        </div>
+        <div class="card-body">
+          <label class="sw-row">
+            <span class="sw-text">Enable DAPNET integration</span>
+            <span class="sw"><input type="checkbox" id="dap-enabled"><i></i></span>
+          </label>
+          <label class="sw-row">
+            <span class="sw-text">Enable RWTH core receive feed</span>
+            <span class="sw"><input type="checkbox" id="dap-rwth-enabled"><i></i></span>
+          </label>
+
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;align-items:center;margin-top:14px">
+            <label style="color:var(--muted);font-size:13px">Poll interval (s)</label>
+            <input type="number" id="dap-poll" class="form-input" min="1" placeholder="30">
+            <label style="color:var(--muted);font-size:13px">Messages limit</label>
+            <input type="number" id="dap-limit" class="form-input" min="1" placeholder="100">
+
+            <label style="color:var(--muted);font-size:13px">Hampager API URL</label>
+            <input type="text" id="dap-api-url" class="form-input" placeholder="https://www.hampager.de/api/messages" style="grid-column:1 / -1;min-width:0">
+
+            <label style="color:var(--muted);font-size:13px">API username</label>
+            <input type="text" id="dap-username" class="form-input" autocomplete="off" spellcheck="false">
+            <label style="color:var(--muted);font-size:13px">API password</label>
+            <input type="password" id="dap-password" class="form-input" autocomplete="new-password" spellcheck="false" oninput="dapPasswordDirty=true">
+
+            <label style="color:var(--muted);font-size:13px">RWTH host</label>
+            <input type="text" id="dap-rwth-host" class="form-input" placeholder="dapnet.afu.rwth-aachen.de">
+            <label style="color:var(--muted);font-size:13px">RWTH port</label>
+            <input type="number" id="dap-rwth-port" class="form-input" min="1" max="65535" placeholder="43434">
+
+            <label style="color:var(--muted);font-size:13px">Device</label>
+            <input type="text" id="dap-rwth-device" class="form-input" placeholder="FlowStation">
+            <label style="color:var(--muted);font-size:13px">Version</label>
+            <input type="text" id="dap-rwth-version" class="form-input" placeholder="1.0">
+
+            <label style="color:var(--muted);font-size:13px">RWTH callsign</label>
+            <input type="text" id="dap-rwth-callsign" class="form-input" autocomplete="off" spellcheck="false" style="text-transform:uppercase">
+            <label style="color:var(--muted);font-size:13px">RWTH authkey</label>
+            <input type="password" id="dap-rwth-authkey" class="form-input" autocomplete="new-password" spellcheck="false" oninput="dapAuthDirty=true">
+          </div>
+          <div class="config-msg" id="dap-msg"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title" data-i18n="dapnet_routing">Routing</div>
+          <div class="card-actions">
+            <button class="btn btn-primary" onclick="saveDapnet()" data-i18n="save">Save</button>
+          </div>
+        </div>
+        <div class="card-body">
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px">
+            <div>
+              <label class="sw-row"><span class="sw-text">Forward to SDS</span><span class="sw"><input type="checkbox" id="dap-forward-sds"><i></i></span></label>
+              <div style="display:grid;grid-template-columns:130px 1fr;gap:10px;align-items:center;margin-top:10px">
+                <label style="color:var(--muted);font-size:13px">Source ISSI</label>
+                <input type="number" id="dap-sds-source" class="form-input" min="1" max="16777215" placeholder="9999">
+                <label style="color:var(--muted);font-size:13px">Destination</label>
+                <input type="number" id="dap-sds-dest" class="form-input" min="0" max="16777215" placeholder="ISSI or GSSI">
+                <label style="color:var(--muted);font-size:13px">Destination is group</label>
+                <label style="display:flex;align-items:center;gap:10px"><span class="sw"><input type="checkbox" id="dap-sds-group"><i></i></span><span style="color:var(--muted);font-size:12px">GSSI</span></label>
+              </div>
+            </div>
+
+            <div>
+              <label class="sw-row"><span class="sw-text">Forward to TPG2200 Call-Out</span><span class="sw"><input type="checkbox" id="dap-forward-callout"><i></i></span></label>
+              <div style="display:grid;grid-template-columns:130px 1fr;gap:10px;align-items:center;margin-top:10px">
+                <label style="color:var(--muted);font-size:13px">Source ISSI</label>
+                <input type="number" id="dap-callout-source" class="form-input" min="1" max="16777215" placeholder="9999">
+                <label style="color:var(--muted);font-size:13px">Destination</label>
+                <input type="number" id="dap-callout-dest" class="form-input" min="0" max="16777215" placeholder="TPG2200 ISSI">
+                <label style="color:var(--muted);font-size:13px">Incident base</label>
+                <input type="number" id="dap-callout-incident" class="form-input" min="1" max="256" placeholder="2">
+                <label style="color:var(--muted);font-size:13px">Text prefix</label>
+                <input type="text" id="dap-callout-prefix" class="form-input" placeholder="DAPNET">
+              </div>
+            </div>
+
+            <div>
+              <label class="sw-row"><span class="sw-text">Forward to Telegram</span><span class="sw"><input type="checkbox" id="dap-forward-telegram"><i></i></span></label>
+              <div style="display:grid;grid-template-columns:130px 1fr;gap:10px;align-items:center;margin-top:10px">
+                <label style="color:var(--muted);font-size:13px">Telegram prefix</label>
+                <input type="text" id="dap-telegram-prefix" class="form-input" placeholder="DAPNET">
+              </div>
+              <div class="help-text" style="margin-top:10px">Uses the existing Telegram alert configuration and recipients.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title" data-i18n="dapnet_send">Send DAPNET Message</div>
+          <div class="card-actions">
+            <button class="btn btn-primary" onclick="sendDapnetMessage()">Send</button>
+          </div>
+        </div>
+        <div class="card-body">
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;align-items:center">
+            <label style="color:var(--muted);font-size:13px">Callsign recipients</label>
+            <input type="text" id="dap-out-callsigns" class="form-input" placeholder="DJ2TH, DB0ABC">
+            <label style="color:var(--muted);font-size:13px">Transmitter groups</label>
+            <input type="text" id="dap-out-groups" class="form-input" placeholder="dl-all, regional">
+            <label style="color:var(--muted);font-size:13px">Emergency</label>
+            <label style="display:flex;align-items:center;gap:10px"><span class="sw"><input type="checkbox" id="dap-out-emergency"><i></i></span><span style="color:var(--muted);font-size:12px">Set emergency flag</span></label>
+            <label style="color:var(--muted);font-size:13px;align-self:flex-start;padding-top:8px">Message</label>
+            <textarea id="dap-out-text" class="form-input" rows="3" maxlength="240" placeholder="Message text"></textarea>
+          </div>
+          <div class="config-msg" id="dap-send-msg"></div>
+        </div>
+      </div>
+    </div>
+
     <!-- ── CONFIG ── -->
     <div class="page" id="page-config">
       <div class="card">
@@ -2941,7 +3092,7 @@ const LANGS={
   en:{
     bts_ip:'BTS IP',offline:'OFFLINE',online:'ONLINE',
     brew_online:'ONLINE',brew_offline:'OFFLINE',
-    stations:'Radios',calls:'Calls',lastheard:'Last Heard',log:'Log',rf:'RF',asterisk:'Asterisk SIP',config:'Config',
+    stations:'Radios',calls:'Calls',lastheard:'Last Heard',log:'Log',rf:'RF',asterisk:'Asterisk SIP',dapnet:'DAPNET',config:'Config',
     sdslog:'SDS Log',th_dir:'Dir',th_from:'From',th_to:'To',th_message:'Message',no_sds:'No SDS messages yet',sds_refresh:'⟳ Refresh',
     rf_freq:'Center freq',rf_rate:'Sample rate',rf_rms:'RMS',rf_peak:'Peak',rf_age:'Snapshot',
     rf_waiting:'waiting…',rf_live:'live',rf_stale:'stale',
@@ -2959,6 +3110,7 @@ const LANGS={
     asterisk_title:'Asterisk SIP',ast_configured:'Configured',ast_register:'REGISTER',ast_sip_listen:'SIP listen',
     ast_remote:'Remote Asterisk',ast_rtp:'RTP ports',ast_codec:'Codec',ast_last_rx:'Last RX',
     ast_last_tx:'Last TX',ast_last_error:'Last error',
+    dapnet_title:'DAPNET',dapnet_log:'DAPNET Log',dapnet_routing:'Routing',dapnet_send:'Send DAPNET Message',dapnet_saved:'✓ Saved',
     terminals:'Radios',registered:'registered',
     active_calls:'Active Calls',circuits:'circuits in use',
     registered_terminals:'Registered Radios',
@@ -3149,7 +3301,7 @@ const LANGS={
   de:{
     bts_ip:'BTS-IP',offline:'OFFLINE',online:'ONLINE',
     brew_online:'ONLINE',brew_offline:'OFFLINE',
-    stations:'Radios',calls:'Anrufe',lastheard:'Zuletzt Gehört',log:'Log',rf:'RF',asterisk:'Asterisk SIP',config:'Config',
+    stations:'Radios',calls:'Anrufe',lastheard:'Zuletzt Gehört',log:'Log',rf:'RF',asterisk:'Asterisk SIP',dapnet:'DAPNET',config:'Config',
     sdslog:'SDS-Log',th_dir:'Ri.',th_from:'Von',th_to:'An',th_message:'Nachricht',no_sds:'Noch keine SDS-Nachrichten',sds_refresh:'⟳ Aktualisieren',
     rf_freq:'Mittenfrequenz',rf_rate:'Abtastrate',rf_rms:'RMS',rf_peak:'Spitze',rf_age:'Aufnahme',
     rf_waiting:'wartet…',rf_live:'live',rf_stale:'veraltet',
@@ -3167,6 +3319,7 @@ const LANGS={
     asterisk_title:'Asterisk SIP',ast_configured:'Konfiguriert',ast_register:'REGISTER',ast_sip_listen:'SIP hört auf',
     ast_remote:'Remote Asterisk',ast_rtp:'RTP-Ports',ast_codec:'Codec',ast_last_rx:'Letztes RX',
     ast_last_tx:'Letztes TX',ast_last_error:'Letzter Fehler',
+    dapnet_title:'DAPNET',dapnet_log:'DAPNET-Log',dapnet_routing:'Routing',dapnet_send:'DAPNET-Nachricht senden',dapnet_saved:'✓ Gespeichert',
     terminals:'Radios',registered:'registriert',
     active_calls:'Aktive Anrufe',circuits:'Schaltkreise aktiv',
     registered_terminals:'Registrierte Radios',
@@ -3528,7 +3681,7 @@ function closeMobileSidebar(){
 }
 
 // ── Page navigation ───────────────────────────────────────────────────────
-const PAGE_TITLES={stations:'stations',calls:'calls',lastheard:'lastheard',log:'log',sdslog:'sdslog',rf:'rf',asterisk:'asterisk',config:'config',system:'system'};
+const PAGE_TITLES={stations:'stations',calls:'calls',lastheard:'lastheard',log:'log',sdslog:'sdslog',rf:'rf',asterisk:'asterisk',dapnet:'dapnet',config:'config',system:'system'};
 function showPage(name,el){
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
@@ -3539,6 +3692,7 @@ function showPage(name,el){
   if(name==='stations'){loadBtsInfo();}
   if(name==='sdslog'){loadSdsLog();}
   if(name==='asterisk'){loadAsteriskStatus();}
+  if(name==='dapnet'){loadDapnet();loadDapnetLog();}
   if(name==='config'){loadConfig();loadWhitelist();loadWx();}
   if(name==='telegram'){loadTelegram();}
   if(name==='system'){loadSystemInfo();loadConfigProfiles();loadLiveSds();loadBrightness();}
@@ -3859,7 +4013,7 @@ async function wifiCall(url, body){
 function escAttr(s){ return String(s).replace(/&/g,'&amp;').replace(/'/g,"&#39;").replace(/"/g,'&quot;'); }
 
 // ── State + WS ────────────────────────────────────────────────────────────
-let ws=null,state={ms:{},calls:{},emergencies:{},lastHeard:[],sdsLog:[],brewOnline:false,brewVer:0},sdsDest=0;
+let ws=null,state={ms:{},calls:{},emergencies:{},lastHeard:[],sdsLog:[],dapnetLog:[],brewOnline:false,brewVer:0},sdsDest=0;
 
 // ── RadioID callsigns (indicativ) ──────────────────────────────────────────────
 // issi -> {cs:"CALLSIGN", fl:"🇷🇴"} (found; fl is the country flag emoji from the prefix, or "")
@@ -4064,6 +4218,11 @@ function handleMsg(msg){
       state.sdsLog.unshift({ts:nowStamp(),direction:msg.direction,source_issi:msg.source_issi,dest_issi:msg.dest_issi,is_group:msg.is_group,protocol_id:msg.protocol_id,text:msg.text});
       if(state.sdsLog.length>500)state.sdsLog.pop();
       renderSdsLog();refreshCallsigns();break;
+    case 'dapnet_log':
+      if(!state.dapnetLog)state.dapnetLog=[];
+      state.dapnetLog.unshift({ts:nowStamp(),direction:msg.direction,id:msg.id,callsign:msg.callsign,recipient:msg.recipient,text:msg.text,priority:msg.priority,paths:msg.paths||[]});
+      if(state.dapnetLog.length>500)state.dapnetLog.pop();
+      renderDapnetLog();break;
     case 'tx_visual':handleTxVisual(msg);break;
     case 'tx_quality':handleTxQuality(msg);break;
     case 'sdr_health':handleSdrHealth(msg);break;
@@ -4384,6 +4543,121 @@ function renderSdsLog(){
 async function loadSdsLog(){
   try{const r=await fetch('/api/sds-log');if(!r.ok)return;state.sdsLog=await r.json();renderSdsLog();refreshCallsigns();}catch{}
 }
+
+// ── DAPNET ────────────────────────────────────────────────────────────────
+let dapPasswordDirty=false,dapAuthDirty=false;
+function dapSet(id,v){const el=document.getElementById(id);if(el)el.value=(v===null||v===undefined)?'':v;}
+function dapCheck(id,v){const el=document.getElementById(id);if(el)el.checked=!!v;}
+function dapVal(id){const el=document.getElementById(id);return el?(el.value||'').trim():'';}
+function dapNum(id,def,min,max){
+  const n=parseInt(dapVal(id),10);
+  if(!Number.isFinite(n))return def;
+  return Math.max(min,Math.min(max,n));
+}
+function dapList(id){return dapVal(id).split(/[\s,]+/).map(s=>s.trim()).filter(Boolean);}
+function dapPaths(paths){
+  const p=paths||[];
+  if(!p.length)return '<span class="sds-empty">—</span>';
+  return p.map(x=>`<span class="badge badge-blue" style="font-size:10px">${escHtml(x)}</span>`).join(' ');
+}
+function dapnetRow(e){
+  return `<tr><td class="sds-time">${escHtml(e.ts||'')}</td><td>${dirBadge(e.direction)}</td><td>${escHtml(e.callsign||'')}</td><td>${escHtml(e.recipient||'')}</td><td>${dapPaths(e.paths)}</td><td class="sds-msg">${escHtml(e.text||'')}</td></tr>`;
+}
+function renderDapnetLog(){
+  const tb=document.getElementById('dapnetlog-tbody');if(!tb)return;
+  const rows=state.dapnetLog||[];
+  if(!rows.length){tb.innerHTML=`<tr><td colspan="6" class="sds-empty" style="text-align:center;padding:24px">No DAPNET messages yet</td></tr>`;return;}
+  tb.innerHTML=rows.map(dapnetRow).join('');
+}
+async function loadDapnetLog(){
+  try{const r=await fetch('/api/dapnet-log');if(!r.ok)return;state.dapnetLog=await r.json();renderDapnetLog();}catch{}
+}
+async function loadDapnet(){
+  try{
+    const r=await fetch('/api/dapnet');
+    if(!r.ok){setDapMsg(t('conn_error'),false);return;}
+    const d=await r.json();
+    dapCheck('dap-enabled',d.enabled);
+    dapCheck('dap-rwth-enabled',d.rwth_core_enabled);
+    dapSet('dap-poll',d.poll_interval_secs||30);
+    dapSet('dap-limit',d.rwth_messages_limit||100);
+    dapSet('dap-api-url',d.api_url||'');
+    dapSet('dap-username',d.username||'');
+    dapSet('dap-password',d.password_set?(d.password_masked||''):'');
+    dapPasswordDirty=false;
+    dapSet('dap-rwth-host',d.rwth_core_host||'');
+    dapSet('dap-rwth-port',d.rwth_core_port||43434);
+    dapSet('dap-rwth-device',d.rwth_core_device||'FlowStation');
+    dapSet('dap-rwth-version',d.rwth_core_version||'1.0');
+    dapSet('dap-rwth-callsign',d.rwth_core_callsign||'');
+    dapSet('dap-rwth-authkey',d.rwth_core_authkey_set?(d.rwth_core_authkey_masked||''):'');
+    dapAuthDirty=false;
+    dapCheck('dap-forward-sds',d.forward_sds);
+    dapCheck('dap-forward-callout',d.forward_callout);
+    dapCheck('dap-forward-telegram',d.forward_telegram);
+    dapSet('dap-sds-source',d.sds_source_issi||9999);
+    dapSet('dap-sds-dest',d.sds_dest_issi||0);
+    dapCheck('dap-sds-group',d.sds_dest_is_group);
+    dapSet('dap-callout-source',d.callout_source_issi||9999);
+    dapSet('dap-callout-dest',d.callout_dest_issi||0);
+    dapSet('dap-callout-incident',d.callout_incident_base||2);
+    dapSet('dap-callout-prefix',d.callout_text_prefix||'DAPNET');
+    dapSet('dap-telegram-prefix',d.telegram_prefix||'DAPNET');
+    setDapMsg('',true);
+  }catch{setDapMsg(t('conn_error'),false);}
+}
+async function saveDapnet(){
+  const body={
+    enabled:document.getElementById('dap-enabled').checked,
+    rwth_core_enabled:document.getElementById('dap-rwth-enabled').checked,
+    poll_interval_secs:dapNum('dap-poll',30,1,86400),
+    rwth_messages_limit:dapNum('dap-limit',100,1,10000),
+    api_url:dapVal('dap-api-url'),
+    username:dapVal('dap-username'),
+    rwth_core_host:dapVal('dap-rwth-host'),
+    rwth_core_port:dapNum('dap-rwth-port',43434,1,65535),
+    rwth_core_device:dapVal('dap-rwth-device')||'FlowStation',
+    rwth_core_version:dapVal('dap-rwth-version')||'1.0',
+    rwth_core_callsign:dapVal('dap-rwth-callsign').toUpperCase(),
+    forward_sds:document.getElementById('dap-forward-sds').checked,
+    forward_callout:document.getElementById('dap-forward-callout').checked,
+    forward_telegram:document.getElementById('dap-forward-telegram').checked,
+    sds_source_issi:dapNum('dap-sds-source',9999,1,16777215),
+    sds_dest_issi:dapNum('dap-sds-dest',0,0,16777215),
+    sds_dest_is_group:document.getElementById('dap-sds-group').checked,
+    callout_source_issi:dapNum('dap-callout-source',9999,1,16777215),
+    callout_dest_issi:dapNum('dap-callout-dest',0,0,16777215),
+    callout_incident_base:dapNum('dap-callout-incident',2,1,256),
+    callout_text_prefix:dapVal('dap-callout-prefix')||'DAPNET',
+    telegram_prefix:dapVal('dap-telegram-prefix')||'DAPNET'
+  };
+  if(dapPasswordDirty)body.password=dapVal('dap-password');
+  if(dapAuthDirty)body.rwth_core_authkey=dapVal('dap-rwth-authkey');
+  try{
+    const r=await fetch('/api/dapnet',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(r.ok){setDapMsg(t('dapnet_saved'),true);loadDapnet();}
+    else setDapMsg(t('save_fail')+': '+await r.text(),false);
+  }catch{setDapMsg(t('conn_error'),false);}
+}
+async function sendDapnetMessage(){
+  const body={
+    callSignNames:dapList('dap-out-callsigns'),
+    transmitterGroupNames:dapList('dap-out-groups'),
+    emergency:document.getElementById('dap-out-emergency').checked,
+    text:document.getElementById('dap-out-text').value.trim()
+  };
+  if(!body.text){setDapSendMsg('Message text is empty',false);return;}
+  if(!body.callSignNames.length&&!body.transmitterGroupNames.length){setDapSendMsg('Set callsign or transmitter group',false);return;}
+  setDapSendMsg('Sending…',true);
+  try{
+    const r=await fetch('/api/dapnet/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const d=await r.json();
+    if(d.ok){setDapSendMsg('✓ Sent',true);document.getElementById('dap-out-text').value='';loadDapnetLog();}
+    else setDapSendMsg('✗ '+(d.error||'Send failed'),false);
+  }catch{setDapSendMsg(t('conn_error'),false);}
+}
+function setDapMsg(txt,ok){const el=document.getElementById('dap-msg');if(!el)return;el.textContent=txt;el.style.color=ok?'var(--accent)':'var(--danger)';if(txt)setTimeout(()=>{if(el.textContent===txt)el.textContent='';},5000);}
+function setDapSendMsg(txt,ok){const el=document.getElementById('dap-send-msg');if(!el)return;el.textContent=txt;el.style.color=ok?'var(--accent)':'var(--danger)';if(txt)setTimeout(()=>{if(el.textContent===txt)el.textContent='';},5000);}
 
 function appendLog(msg){
   const f=logFilter(),lv={'':0,DEBUG:0,INFO:1,WARN:2,ERROR:3};

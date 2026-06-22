@@ -14,6 +14,7 @@ use tetra_config::bluestation::{CfgDapnet, SharedConfig};
 
 use crate::net_control::commands::ControlCommand;
 use crate::net_telegram::TelegramAlertSink;
+use crate::net_telemetry::{TelemetryEvent, TelemetrySink};
 use crate::tpg2200::{build_sds_text_payload, build_tpg2200_callout_payload, format_hex_bytes};
 
 type CmdSender = crossbeam_channel::Sender<ControlCommand>;
@@ -39,16 +40,11 @@ pub fn spawn_dapnet_worker(
     cfg: SharedConfig,
     cmce_cmd_tx: Option<CmdSender>,
     telegram_sink: Option<TelegramAlertSink>,
+    telemetry_sink: Option<TelemetrySink>,
 ) -> Option<thread::JoinHandle<()>> {
-    let dapnet = cfg.config().dapnet.clone();
-    if !dapnet.enabled {
-        tracing::info!("DAPNET integration disabled");
-        return None;
-    }
-
     match thread::Builder::new()
         .name("dapnet-worker".into())
-        .spawn(move || DapnetWorker::new(cfg, cmce_cmd_tx, telegram_sink).run())
+        .spawn(move || DapnetWorker::new(cfg, cmce_cmd_tx, telegram_sink, telemetry_sink).run())
     {
         Ok(handle) => Some(handle),
         Err(err) => {
@@ -62,9 +58,12 @@ struct DapnetWorker {
     cfg: SharedConfig,
     cmce_cmd_tx: Option<CmdSender>,
     telegram_sink: Option<TelegramAlertSink>,
+    telemetry_sink: Option<TelemetrySink>,
     seen: HashSet<String>,
     seen_order: VecDeque<String>,
     next_callout_incident: u16,
+    last_callout_incident_base: Option<u16>,
+    last_enabled: Option<bool>,
 }
 
 impl DapnetWorker {
@@ -72,38 +71,53 @@ impl DapnetWorker {
         cfg: SharedConfig,
         cmce_cmd_tx: Option<CmdSender>,
         telegram_sink: Option<TelegramAlertSink>,
+        telemetry_sink: Option<TelemetrySink>,
     ) -> Self {
-        let next_callout_incident = cfg.config().dapnet.callout_incident_base.clamp(1, 256);
+        let next_callout_incident = cfg.effective_dapnet().callout_incident_base.clamp(1, 256);
         Self {
             cfg,
             cmce_cmd_tx,
             telegram_sink,
+            telemetry_sink,
             seen: HashSet::new(),
             seen_order: VecDeque::new(),
             next_callout_incident,
+            last_callout_incident_base: None,
+            last_enabled: None,
         }
     }
 
     fn run(&mut self) {
-        let initial = self.cfg.config().dapnet.clone();
-        tracing::info!(
-            "DAPNET integration enabled (rwth_core={}, forward_sds={}, forward_callout={}, forward_telegram={})",
-            initial.rwth_core_enabled,
-            initial.forward_sds,
-            initial.forward_callout,
-            initial.forward_telegram
-        );
-        if !(initial.forward_sds || initial.forward_callout || initial.forward_telegram) {
-            tracing::warn!("DAPNET: enabled but no forwarding target is enabled");
-        }
-
         loop {
-            let dapnet = self.cfg.config().dapnet.clone();
+            let dapnet = self.cfg.effective_dapnet();
             let sleep = Duration::from_secs(dapnet.effective_poll_interval_secs());
 
             if !dapnet.enabled {
+                if self.last_enabled != Some(false) {
+                    tracing::info!("DAPNET integration disabled");
+                    self.last_enabled = Some(false);
+                }
                 thread::sleep(sleep);
                 continue;
+            }
+            if self.last_enabled != Some(true) {
+                tracing::info!(
+                    "DAPNET integration enabled (rwth_core={}, forward_sds={}, forward_callout={}, forward_telegram={})",
+                    dapnet.rwth_core_enabled,
+                    dapnet.forward_sds,
+                    dapnet.forward_callout,
+                    dapnet.forward_telegram
+                );
+                if !(dapnet.forward_sds || dapnet.forward_callout || dapnet.forward_telegram) {
+                    tracing::warn!("DAPNET: enabled but no forwarding target is enabled");
+                }
+                self.last_callout_incident_base = None;
+                self.last_enabled = Some(true);
+            }
+            let incident_base = dapnet.callout_incident_base.clamp(1, 256);
+            if self.last_callout_incident_base != Some(incident_base) {
+                self.next_callout_incident = incident_base;
+                self.last_callout_incident_base = Some(incident_base);
             }
 
             if dapnet.rwth_core_enabled {
@@ -314,6 +328,17 @@ impl DapnetWorker {
                 msg.timestamp,
                 msg.priority
             );
+        }
+        if let Some(sink) = &self.telemetry_sink {
+            sink.send(TelemetryEvent::DapnetLog {
+                direction: "rx".to_string(),
+                id: msg.id.clone(),
+                callsign: msg.callsign.clone(),
+                recipient: msg.recipient.clone(),
+                text: msg.text.clone(),
+                priority: msg.priority,
+                paths: paths.into_iter().map(|p| p.to_string()).collect(),
+            });
         }
     }
 
