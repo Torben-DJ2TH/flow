@@ -523,7 +523,7 @@ impl CcBsSubentity {
             );
             network_call.number = number;
             network_call.destination = 0;
-            network_call.duplex = 0;
+            network_call.duplex = 1;
         } else {
             if !net_brew::is_active(&self.config) {
                 tracing::info!(

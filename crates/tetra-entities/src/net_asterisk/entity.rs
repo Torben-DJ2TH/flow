@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use tetra_config::bluestation::{AsteriskRuntimeStatus, CfgAsterisk, SharedConfig};
 use tetra_core::{Sap, TdmaTime, tetra_entities::TetraEntity};
+use tetra_pdus::cmce::enums::call_timeout::CallTimeout;
 use tetra_saps::{
     SapMsg, SapMsgInner,
     control::call_control::{CallControl, NetworkCircuitCall},
@@ -767,12 +768,12 @@ impl AsteriskEntity {
             priority: 0,
             service: 0,
             mode: 0,
-            duplex: 0,
+            duplex: 1,
             method: 0,
             communication: 0,
             grant: 0,
             permission: 0,
-            timeout: 7,
+            timeout: CallTimeout::Infinite.into_raw() as u8,
             ownership: 0,
             queued: 0,
         };

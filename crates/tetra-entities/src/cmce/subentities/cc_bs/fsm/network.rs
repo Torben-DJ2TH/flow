@@ -77,8 +77,17 @@ impl CcBsSubentity {
         let communication = CommunicationType::try_from(call.communication as u64).unwrap_or(CommunicationType::P2p);
         let network_requested_duplex = call.duplex != 0;
         let ms_duplex_capable = self.config.state_read().subscribers.duplex_capable(called_addr.ssi);
-        let simplex_duplex = network_requested_duplex && ms_duplex_capable.unwrap_or(false);
-        if network_requested_duplex && ms_duplex_capable != Some(true) {
+        let asterisk_forces_duplex = network_entity == TetraEntity::Asterisk && network_requested_duplex;
+        let simplex_duplex = network_requested_duplex && (asterisk_forces_duplex || ms_duplex_capable.unwrap_or(false));
+        if asterisk_forces_duplex && ms_duplex_capable != Some(true) {
+            tracing::info!(
+                "CMCE: keeping inbound Asterisk setup uuid={} dst={} as duplex despite ms_duplex_capable={:?} (number='{}')",
+                brew_uuid,
+                call.destination,
+                ms_duplex_capable,
+                call.number
+            );
+        } else if network_requested_duplex && ms_duplex_capable != Some(true) {
             tracing::info!(
                 "CMCE: downgrading inbound {:?} setup uuid={} dst={} to simplex (ms_duplex_capable={:?}, number='{}')",
                 network_entity,
