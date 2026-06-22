@@ -1099,7 +1099,7 @@ impl AsteriskEntity {
                             continue;
                         };
                         if payload_type != PCMU_PAYLOAD_TYPE {
-                            tracing::warn!(
+                            tracing::trace!(
                                 "AsteriskEntity: dropping unsupported RTP payload type {} uuid={}",
                                 payload_type,
                                 dialog.uuid
