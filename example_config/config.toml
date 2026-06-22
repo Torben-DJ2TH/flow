@@ -519,6 +519,32 @@ voice_service = true
 
 ###############################################################################
 
+# OPTIONAL: Snom/desk-phone ActionURL trigger for Motorola TPG2200 Call-Out
+#
+# Configure a Snom function key / ActionURL to call:
+#   http://<flowstation>:<dashboard_port>/api/action/tpg2200?token=<token>
+#
+# Optional text override:
+#   http://<flowstation>:<dashboard_port>/api/action/tpg2200?token=<token>&text=ALARM
+#
+# Every accepted request sends a Type-4 SDS Call-Out to `dest_issi`.
+# The incident number starts at `incident_base` and increments in memory
+# on every trigger, wrapping after 256.
+#
+# This endpoint intentionally does not require the dashboard cookie session because phones cannot
+# reliably hold it. Keep `token` long/random and do not expose the dashboard port publicly.
+#
+# [tpg2200_action]
+# enabled = false
+# token = ""
+# source_issi = 9999
+# dest_issi = 0
+# incident_base = 1
+# default_text = "ALARM"
+# max_text_chars = 80
+
+###############################################################################
+
 # OPTIONAL: Emergency-state handling (FlowStation)
 #
 # A radio signals emergency with a U-STATUS PDU (pre_coded_status = Emergency, status 0,

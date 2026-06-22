@@ -1140,6 +1140,155 @@ fn serve_live_sds_list(mut stream: TcpStream, cfg: &Option<tetra_config::bluesta
     let _ = stream.write_all(body.as_bytes());
 }
 
+fn request_path(req_line: &str) -> Option<&str> {
+    req_line.split_whitespace().nth(1)
+}
+
+fn is_tpg2200_action_request(req_line: &str) -> bool {
+    let mut parts = req_line.split_whitespace();
+    let method = parts.next().unwrap_or("");
+    let path = parts.next().unwrap_or("");
+    let route = path.split_once('?').map(|(route, _)| route).unwrap_or(path);
+    matches!(method, "GET" | "POST") && route == "/api/action/tpg2200"
+}
+
+fn query_params(path: &str) -> HashMap<String, String> {
+    let Some((_, query)) = path.split_once('?') else {
+        return HashMap::new();
+    };
+    query
+        .split('&')
+        .filter_map(|part| {
+            if part.is_empty() {
+                return None;
+            }
+            let (key, value) = part.split_once('=').unwrap_or((part, ""));
+            Some((url_decode(key), url_decode(value)))
+        })
+        .collect()
+}
+
+fn truncate_action_text(text: &str, max: usize) -> (String, bool) {
+    match text.char_indices().nth(max) {
+        Some((idx, _)) => (text[..idx].to_string(), true),
+        None => (text.to_string(), false),
+    }
+}
+
+fn next_tpg2200_action_incident(
+    cfg: &tetra_config::bluestation::SharedConfig,
+    base: u16,
+) -> u16 {
+    let base = base.clamp(1, 256);
+    let mut state = cfg.state_write();
+    let incident = state.tpg2200_action_next_incident.unwrap_or(base).clamp(1, 256);
+    state.tpg2200_action_next_incident = Some(if incident >= 256 { 1 } else { incident + 1 });
+    incident
+}
+
+/// GET /api/action/tpg2200?token=...&text=...
+///
+/// Public-by-design ActionURL endpoint for phones that cannot hold the dashboard session cookie.
+/// The dedicated token is mandatory and configured in `[tpg2200_action]`.
+fn serve_tpg2200_action_url(
+    stream: TcpStream,
+    req_line: &str,
+    shared_config: &Option<tetra_config::bluestation::SharedConfig>,
+    cmd_tx: &Arc<Mutex<Option<CmdSender>>>,
+    state: &DashboardState,
+) {
+    let Some(cfg) = shared_config else {
+        http_response(stream, 503, "Config not available");
+        return;
+    };
+    let action = cfg.config().tpg2200_action.clone();
+    if !action.enabled {
+        http_response(stream, 404, "TPG2200 ActionURL disabled");
+        return;
+    }
+    let Some(path) = request_path(req_line) else {
+        http_response(stream, 400, "Invalid request");
+        return;
+    };
+    let params = query_params(path);
+    let supplied_token = params.get("token").map(|s| s.as_str()).unwrap_or("");
+    let expected_token = action.token.as_ref();
+    if expected_token.trim().is_empty()
+        || !timing_safe_eq(supplied_token.as_bytes(), expected_token.as_bytes())
+    {
+        tracing::warn!("TPG2200 ActionURL rejected: invalid token");
+        http_response(stream, 403, "Forbidden");
+        return;
+    }
+    if action.dest_issi == 0 || action.source_issi == 0 {
+        http_response(stream, 500, "TPG2200 ActionURL not fully configured");
+        return;
+    }
+
+    let requested_text = params
+        .get("text")
+        .or_else(|| params.get("message"))
+        .or_else(|| params.get("msg"))
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(action.default_text.trim());
+    let message = if requested_text.is_empty() { "ALARM" } else { requested_text };
+    let (message, truncated) = truncate_action_text(message, action.max_text_chars.max(1));
+    if truncated {
+        tracing::warn!(
+            "TPG2200 ActionURL text truncated to {} chars",
+            action.max_text_chars
+        );
+    }
+
+    let tx = match cmd_tx.lock() {
+        Ok(guard) => guard.clone(),
+        Err(_) => None,
+    };
+    let Some(tx) = tx else {
+        http_response(stream, 503, "CMCE control channel unavailable");
+        return;
+    };
+
+    let incident = next_tpg2200_action_incident(cfg, action.incident_base);
+    let payload = build_tpg2200_callout_payload(incident, &message);
+    if payload.len() > (u16::MAX as usize / 8) {
+        http_response(stream, 500, "TPG2200 payload too large");
+        return;
+    }
+    let len_bits = (payload.len() * 8) as u16;
+    let cmd = ControlCommand::SendRawSdsType4 {
+        handle: 0,
+        source_ssi: action.source_issi,
+        dest_ssi: action.dest_issi,
+        dest_is_group: false,
+        len_bits,
+        payload,
+    };
+    if tx.send(cmd).is_err() {
+        http_response(stream, 503, "CMCE control channel unavailable");
+        return;
+    }
+
+    tracing::info!(
+        "TPG2200 ActionURL sent: dest={} source={} incident={} text={:?}",
+        action.dest_issi,
+        action.source_issi,
+        incident,
+        message
+    );
+    if let Ok(mut s) = state.write() {
+        s.push_log(
+            "INFO",
+            format!(
+                "TPG2200 ActionURL sent to {}: incident {} text {}",
+                action.dest_issi, incident, message
+            ),
+        );
+    }
+    http_response(stream, 200, &format!("OK incident={incident}"));
+}
+
 fn handle_connection(
     mut stream: TcpStream,
     state: DashboardState,
@@ -1168,6 +1317,14 @@ fn handle_connection(
     }
     let header_str = String::from_utf8_lossy(&header_buf);
     let req_line = header_str.lines().next().unwrap_or("").to_string();
+
+    // Snom/desk-phone ActionURL endpoint. It has its own token and must work without the
+    // dashboard cookie session, so handle it before the normal dashboard auth gate.
+    if is_tpg2200_action_request(&req_line) {
+        drain_http_headers(&mut stream);
+        serve_tpg2200_action_url(stream, &req_line, &shared_config, &cmd_tx, &state);
+        return;
+    }
 
     // ── Cookie-session auth ──────────────────────────────────────────────────
     // We replaced the browser-native Basic Auth dialog with a form-based login at
@@ -3580,7 +3737,10 @@ fn serve_login_page(mut stream: TcpStream) {
 
 #[cfg(test)]
 mod tests {
-    use super::{binary_built_from, DashboardServer};
+    use super::{
+        binary_built_from, is_tpg2200_action_request, query_params, truncate_action_text,
+        DashboardServer,
+    };
     use crate::net_telemetry::TelemetryEvent;
     use crate::tpg2200::{build_tpg2200_callout_payload, parse_hex_payload, tpg2200_incident_byte};
 
@@ -3670,5 +3830,31 @@ mod tests {
             ]
         );
         assert_eq!(build_tpg2200_callout_payload(2, "ALARM")[5], 0x21);
+    }
+
+    #[test]
+    fn tpg2200_action_request_matches_exact_route_only() {
+        assert!(is_tpg2200_action_request(
+            "GET /api/action/tpg2200?token=abc HTTP/1.1"
+        ));
+        assert!(is_tpg2200_action_request(
+            "POST /api/action/tpg2200?token=abc HTTP/1.1"
+        ));
+        assert!(!is_tpg2200_action_request(
+            "GET /api/action/tpg2200-extra?token=abc HTTP/1.1"
+        ));
+        assert!(!is_tpg2200_action_request(
+            "DELETE /api/action/tpg2200?token=abc HTTP/1.1"
+        ));
+    }
+
+    #[test]
+    fn tpg2200_action_query_and_text_helpers_are_snom_friendly() {
+        let params = query_params("/api/action/tpg2200?token=a%2Bb&text=Hello+World");
+        assert_eq!(params.get("token").map(String::as_str), Some("a+b"));
+        assert_eq!(params.get("text").map(String::as_str), Some("Hello World"));
+
+        assert_eq!(truncate_action_text("ABCDE", 3), ("ABC".to_string(), true));
+        assert_eq!(truncate_action_text("ABC", 3), ("ABC".to_string(), false));
     }
 }

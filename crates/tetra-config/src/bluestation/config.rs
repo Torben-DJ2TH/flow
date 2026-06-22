@@ -3,8 +3,9 @@ use std::sync::{Arc, RwLock};
 use tetra_core::freqs::FreqInfo;
 
 use crate::bluestation::{
-    CfgAsterisk, CfgCellInfo, CfgControl, CfgDapnet, CfgEmergency, CfgHealth, CfgNetInfo, CfgPhyIo, CfgRecovery, CfgSecurity,
-    CfgWxService, PhyBackend, StackState,
+    CfgAsterisk, CfgCellInfo, CfgControl, CfgDapnet, CfgEmergency, CfgHealth, CfgNetInfo,
+    CfgPhyIo, CfgRecovery, CfgSecurity, CfgTpg2200Action, CfgWxService, PhyBackend,
+    StackState,
 };
 
 use super::sec_dashboard::CfgDashboard;
@@ -80,6 +81,9 @@ pub struct StackConfig {
 
     /// DAPNET inbound-message forwarding configuration.
     pub dapnet: CfgDapnet,
+
+    /// Token-protected ActionURL trigger for Motorola TPG2200 Call-Out.
+    pub tpg2200_action: CfgTpg2200Action,
 
     /// Dashboard HTTP server configuration (None = disabled)
     pub dashboard: Option<CfgDashboard>,

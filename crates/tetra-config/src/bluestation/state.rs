@@ -284,6 +284,8 @@ pub struct StackState {
     pub telegram_override: Option<TelegramRuntimeOverride>,
     /// Runtime override for DAPNET settings (dashboard editing). See DapnetRuntimeOverride.
     pub dapnet_override: Option<DapnetRuntimeOverride>,
+    /// Next TPG2200 ActionURL incident number. Initialised lazily from `[tpg2200_action]`.
+    pub tpg2200_action_next_incident: Option<u16>,
     /// Runtime Asterisk SIP/RTP bridge status for `/api/asterisk/status` and the dashboard tab.
     pub asterisk_status: AsteriskRuntimeStatus,
     /// Live map "identity currently reachable on a traffic channel" → (DL timeslot, usage_marker),
@@ -419,6 +421,7 @@ impl Default for StackState {
             wx_override: None,
             telegram_override: None,
             dapnet_override: None,
+            tpg2200_action_next_incident: None,
             asterisk_status: AsteriskRuntimeStatus::default(),
             active_call_ts: std::collections::HashMap::new(),
             ee_monitoring_windows: std::collections::HashMap::new(),

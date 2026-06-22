@@ -15,6 +15,9 @@ use super::config::{StackConfig, StackMode};
 use super::sec_asterisk::{CfgAsteriskDto, apply_asterisk_patch};
 use super::sec_brew::{CfgBrewDto, apply_brew_patch};
 use super::sec_dapnet::{CfgDapnetDto, apply_dapnet_patch};
+use super::sec_tpg2200_action::{
+    CfgTpg2200ActionDto, apply_tpg2200_action_patch,
+};
 use super::sec_dashboard::{CfgDashboardDto, apply_dashboard_patch};
 use super::sec_security::{CfgSecurityDto, apply_security_patch};
 use super::sec_wx::{CfgWxServiceDto, apply_wx_service_patch};
@@ -130,6 +133,12 @@ pub fn from_toml_str(toml_str: &str) -> Result<StackConfig, Box<dyn std::error::
             return Err(format!("Unrecognized fields in dapnet config: {:?}", sorted_keys(&dapnet.extra)).into());
         }
 
+    // Optional tpg2200_action section
+    if let Some(ref action) = root.tpg2200_action
+        && !action.extra.is_empty() {
+            return Err(format!("Unrecognized fields in tpg2200_action config: {:?}", sorted_keys(&action.extra)).into());
+        }
+
     // Optional telemetry section
     if let Some(ref telemetry) = root.telemetry
         && !telemetry.extra.is_empty() {
@@ -191,6 +200,7 @@ pub fn from_toml_str(toml_str: &str) -> Result<StackConfig, Box<dyn std::error::
         brew: None,
         asterisk: apply_asterisk_patch(root.asterisk.unwrap_or_default())?,
         dapnet: apply_dapnet_patch(root.dapnet.unwrap_or_default()),
+        tpg2200_action: apply_tpg2200_action_patch(root.tpg2200_action.unwrap_or_default())?,
         dashboard: None,
         telemetry: None,
         control: None,
@@ -264,6 +274,7 @@ struct TomlConfigRoot {
     brew: Option<CfgBrewDto>,
     asterisk: Option<CfgAsteriskDto>,
     dapnet: Option<CfgDapnetDto>,
+    tpg2200_action: Option<CfgTpg2200ActionDto>,
     dashboard: Option<CfgDashboardDto>,
     telemetry: Option<CfgTelemetryDto>,
     command: Option<CfgControlDto>,
@@ -418,6 +429,15 @@ rwth_core_callsign = "DL1ABC"
 rwth_core_authkey = "example"
 rwth_messages_limit = 100
 
+[tpg2200_action]
+enabled = true
+token = "example-token"
+source_issi = 9999
+dest_issi = 1234567
+incident_base = 1
+default_text = "ALARM"
+max_text_chars = 80
+
 [recovery]
 enabled = true
 issi_allowlist = []
@@ -442,6 +462,8 @@ sds_queue_critical = 128
         let cfg = from_toml_str(toml)
             .unwrap_or_else(|e| panic!("documented optional blocks must parse when uncommented: {e}"));
         assert!(cfg.recovery.enabled);
+        assert!(cfg.tpg2200_action.enabled);
+        assert_eq!(cfg.tpg2200_action.dest_issi, 1234567);
         assert_eq!(cfg.recovery.max_replay_attempts, 150);
         assert!(cfg.health.enabled);
         assert_eq!(cfg.health.core_stall_secs, 10);

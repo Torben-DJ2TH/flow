@@ -25,6 +25,9 @@ pub use sec_asterisk::*;
 pub mod sec_dapnet;
 pub use sec_dapnet::*;
 
+pub mod sec_tpg2200_action;
+pub use sec_tpg2200_action::*;
+
 pub mod sec_dashboard;
 pub use sec_dashboard::*;
 
