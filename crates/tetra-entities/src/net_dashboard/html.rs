@@ -1544,6 +1544,8 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
 #page-sdslog .sds-time{ white-space:nowrap; color:var(--text2); font-variant-numeric:tabular-nums; }
 #page-sdslog .sds-msg{ word-break:break-word; max-width:560px; }
 .sds-empty{ color:var(--text3); font-style:italic; }
+.sds-map-link{ color:var(--accent2); font-weight:700; text-decoration:none; }
+.sds-map-link:hover{ text-decoration:underline; }
 /* Signal cell: centre the bar+value as a unit, and keep the dBFS reading on one line
    (it was wrapping to two, which read as "toy-like"). */
 #page-stations .rssi-bar{ justify-content:center; }
@@ -4349,9 +4351,28 @@ function nowStamp(){const d=new Date();return `${d.getFullYear()}-${_p2(d.getMon
 function pidLabel(pid){const m={2:'text',9:'text',10:'LIP position',12:'concat',128:'text',130:'text',137:'text',218:'status',220:'home-display'};return m[pid]||('PID '+pid);}
 const SDS_DIR={rx:['badge-green','RX'],net:['badge-blue','NET'],tx:['badge-yellow','TX']};
 function dirBadge(dir){const x=SDS_DIR[dir]||['badge-dim',(dir||'?').toUpperCase()];return `<span class="badge ${x[0]}">${x[1]}</span>`;}
+function lipPositionFromText(text){
+  const m=String(text||'').match(/^LIP position:\s*(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/);
+  if(!m)return null;
+  const lat=Number(m[1]),lon=Number(m[2]);
+  if(!Number.isFinite(lat)||!Number.isFinite(lon)||lat<-90||lat>90||lon<-180||lon>180)return null;
+  return {lat,lon};
+}
+function sdsMessageBody(e){
+  if(e.text&&e.text.length){
+    const lip=lipPositionFromText(e.text);
+    if(lip){
+      const label=`LIP position: ${lip.lat.toFixed(6)}, ${lip.lon.toFixed(6)}`;
+      const url=`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${lip.lat.toFixed(6)},${lip.lon.toFixed(6)}`)}`;
+      return `<a class="sds-map-link" href="${url}" target="_blank" rel="noopener noreferrer">${escHtml(label)}</a>`;
+    }
+    return escHtml(e.text);
+  }
+  return `<span class="sds-empty">[${escHtml(pidLabel(e.protocol_id))}]</span>`;
+}
 function sdsRow(e){
   const to=e.is_group?`<code>${e.dest_issi}</code> <span class="sds-empty">grp</span>`:idCell(e.dest_issi);
-  const body=(e.text&&e.text.length)?escHtml(e.text):`<span class="sds-empty">[${escHtml(pidLabel(e.protocol_id))}]</span>`;
+  const body=sdsMessageBody(e);
   return `<tr><td class="sds-time">${escHtml(e.ts||'')}</td><td>${dirBadge(e.direction)}</td><td>${idCell(e.source_issi)}</td><td>${to}</td><td class="sds-msg">${body}</td></tr>`;
 }
 function renderSdsLog(){

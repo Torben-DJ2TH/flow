@@ -63,6 +63,13 @@ const SDS_DEFER_DEADLINE: std::time::Duration = std::time::Duration::from_secs(1
 /// codeplug-dependent. If a radio ignores it, it still falls back to its own delivery-report
 /// timeout (also "failed"), and we never deliver the message late, so the two cannot contradict.
 const SDS_TL_STATUS_UNDELIVERABLE: u8 = 0x02;
+const SDS_PROTOCOL_LIP: u8 = 0x0A;
+
+#[derive(Debug, Clone, Copy)]
+struct LipPosition {
+    latitude: f64,
+    longitude: f64,
+}
 
 /// One active status-based emergency session (keyed by source ISSI in `emergency_sessions`).
 /// The radio re-sends the emergency status periodically while active and goes silent on exit, so
@@ -836,14 +843,19 @@ impl SdsBsSubentity {
     /// "simple text" wrapper (PID 0x82/0x80/0x8A, msg-type byte, message-ref, encoding,
     /// then text) and a bare text-coding-scheme prefix (0x01..=0x03).
     ///
-    /// Any OTHER protocol identifier is treated as non-text and yields an empty string:
-    /// LIP/APRS position beacons (PID 0x0A), status/precoded messages, and unknown PIDs are
-    /// binary, and interpreting their bytes as ASCII produced garbage in the dashboard SDS Log
-    /// (FH-BUG-045 — e.g. a LIP payload `[10, 48, ..]` decoded to the stray text "0"). Returning
-    /// empty lets the dashboard fall back to the protocol-id label (e.g. "[LIP position]")
-    /// instead of showing mojibake. Returns an ASCII string (best-effort).
+    /// LIP/APRS position beacons (PID 0x0A) are decoded only when their binary payload exposes a
+    /// plausible WGS84 position; otherwise they still fall back to "[LIP position]". Any OTHER
+    /// protocol identifier is treated as non-text and yields an empty string so binary payloads do
+    /// not show up as mojibake. Returns an ASCII string (best-effort).
     fn extract_sds_text(data: &SdsUserData) -> String {
         let bytes = data.to_arr();
+        if bytes.first() == Some(&SDS_PROTOCOL_LIP) {
+            let lip_bits = data.length_bits().saturating_sub(8) as usize;
+            return Self::decode_lip_position(&bytes[1..], lip_bits)
+                .map(|pos| format!("LIP position: {:.6}, {:.6}", pos.latitude, pos.longitude))
+                .unwrap_or_default();
+        }
+
         // SDS-TL text messaging PIDs: 0x82 (text), 0x80/0x8A (text w/ variants). When the
         // first byte is one of these and there is a 4-byte header, skip it. A bare text-coding-
         // scheme byte (0x01..=0x03) is followed directly by text. Everything else is binary.
@@ -859,6 +871,92 @@ impl SdsBsSubentity {
             .collect::<String>()
             .trim()
             .to_string()
+    }
+
+    fn read_lip_bits(bytes: &[u8], total_bits: usize, offset: usize, len: usize) -> Option<u32> {
+        if len > 32 || offset.checked_add(len)? > total_bits {
+            return None;
+        }
+        let mut value = 0u32;
+        for bit in offset..offset + len {
+            let byte = *bytes.get(bit / 8)?;
+            let bit_value = (byte >> (7 - (bit % 8))) & 1;
+            value = (value << 1) | bit_value as u32;
+        }
+        Some(value)
+    }
+
+    fn lip_latitude(raw: u32) -> f64 {
+        let scale = (1u32 << 24) as f64;
+        if raw & (1 << 23) != 0 {
+            -(((1u32 << 24) - raw) as f64 * 180.0 / scale)
+        } else {
+            raw as f64 * 180.0 / scale
+        }
+    }
+
+    fn lip_longitude(raw: u32) -> f64 {
+        let scale = (1u32 << 24) as f64;
+        if raw & (1 << 24) != 0 {
+            -(((1u32 << 25) - raw) as f64 * 180.0 / scale)
+        } else {
+            raw as f64 * 180.0 / scale
+        }
+    }
+
+    fn lip_position_from_raw(longitude: u32, latitude: u32) -> Option<LipPosition> {
+        let pos = LipPosition {
+            latitude: Self::lip_latitude(latitude),
+            longitude: Self::lip_longitude(longitude),
+        };
+        if !pos.latitude.is_finite()
+            || !pos.longitude.is_finite()
+            || pos.latitude < -90.0
+            || pos.latitude > 90.0
+            || pos.longitude < -180.0
+            || pos.longitude > 180.0
+            || ((pos.latitude.abs() - 90.0).abs() < 0.000001 && pos.longitude.abs() < 0.000001)
+        {
+            return None;
+        }
+        Some(pos)
+    }
+
+    fn decode_lip_position(payload: &[u8], total_bits: usize) -> Option<LipPosition> {
+        let pdu_type = Self::read_lip_bits(payload, total_bits, 0, 2)?;
+        match pdu_type {
+            0 => {
+                // Short Location Report: type(2), time(2), longitude(25), latitude(24), ...
+                let longitude = Self::read_lip_bits(payload, total_bits, 4, 25)?;
+                let latitude = Self::read_lip_bits(payload, total_bits, 29, 24)?;
+                Self::lip_position_from_raw(longitude, latitude)
+            }
+            1 => {
+                let extension = Self::read_lip_bits(payload, total_bits, 2, 4)?;
+                if extension != 3 {
+                    return None;
+                }
+                let time_data = Self::read_lip_bits(payload, total_bits, 6, 2)?;
+                let mut offset = 8usize;
+                match time_data {
+                    0 => {}
+                    1 => offset += 2,
+                    2 => offset += 22,
+                    _ => return None,
+                }
+                let location_shape = Self::read_lip_bits(payload, total_bits, offset, 4)?;
+                offset += 4;
+                match location_shape {
+                    1..=7 | 9 | 10 => {
+                        let longitude = Self::read_lip_bits(payload, total_bits, offset, 25)?;
+                        let latitude = Self::read_lip_bits(payload, total_bits, offset + 25, 24)?;
+                        Self::lip_position_from_raw(longitude, latitude)
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
     }
 
     /// Handle a weather request SDS addressed to the service ISSI. Spawns a worker that
@@ -1290,5 +1388,70 @@ impl SdsBsSubentity {
                 tracing::warn!("SDS-CMD: unknown action '{}' for status={}, ignoring", other, status_code);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn push_bits(bits: &mut Vec<u8>, value: u32, len: usize) {
+        for shift in (0..len).rev() {
+            bits.push(((value >> shift) & 1) as u8);
+        }
+    }
+
+    fn bits_to_bytes(bits: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![0u8; bits.len().div_ceil(8)];
+        for (idx, bit) in bits.iter().enumerate() {
+            if *bit != 0 {
+                bytes[idx / 8] |= 1 << (7 - (idx % 8));
+            }
+        }
+        bytes
+    }
+
+    fn encode_lip_latitude(latitude: f64) -> u32 {
+        let scaled = (latitude.abs() * (1u32 << 24) as f64 / 180.0).round() as u32;
+        if latitude < 0.0 { (1u32 << 24) - scaled } else { scaled }
+    }
+
+    fn encode_lip_longitude(longitude: f64) -> u32 {
+        let scaled = (longitude.abs() * (1u32 << 24) as f64 / 180.0).round() as u32;
+        if longitude < 0.0 { (1u32 << 25) - scaled } else { scaled }
+    }
+
+    fn lip_short_report(latitude: f64, longitude: f64) -> SdsUserData {
+        let mut bits = Vec::new();
+        push_bits(&mut bits, SDS_PROTOCOL_LIP as u32, 8);
+        push_bits(&mut bits, 0, 2); // Short Location Report PDU
+        push_bits(&mut bits, 0, 2); // time elapsed
+        push_bits(&mut bits, encode_lip_longitude(longitude), 25);
+        push_bits(&mut bits, encode_lip_latitude(latitude), 24);
+        push_bits(&mut bits, 0, 3); // position error
+        push_bits(&mut bits, 0, 7); // horizontal velocity
+        push_bits(&mut bits, 0, 4); // direction of travel
+        push_bits(&mut bits, 0, 1); // no additional data
+        SdsUserData::Type4(bits.len() as u16, bits_to_bytes(&bits))
+    }
+
+    #[test]
+    fn lip_short_report_decodes_to_position_text() {
+        let text = SdsBsSubentity::extract_sds_text(&lip_short_report(52.520008, 13.404954));
+        let coords = text.strip_prefix("LIP position: ").expect("decoded LIP position text");
+        let (lat, lon) = coords.split_once(", ").expect("lat/lon separator");
+        let lat = lat.parse::<f64>().expect("latitude");
+        let lon = lon.parse::<f64>().expect("longitude");
+
+        assert!((lat - 52.520008).abs() < 0.00001);
+        assert!((lon - 13.404954).abs() < 0.00001);
+    }
+
+    #[test]
+    fn incomplete_lip_payload_stays_unlabelled() {
+        assert_eq!(
+            SdsBsSubentity::extract_sds_text(&SdsUserData::Type4(16, vec![SDS_PROTOCOL_LIP, 0x00])),
+            ""
+        );
     }
 }
