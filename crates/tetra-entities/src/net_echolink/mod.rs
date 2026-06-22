@@ -148,7 +148,7 @@ impl EcholinkEntity {
             directory_status: self.last_directory_status.clone(),
             qso_status: qso_status.to_string(),
             bind: format!("{}:{}/{}", cfg.bind_addr, cfg.audio_port, cfg.control_port),
-            callsign: cfg.callsign,
+            callsign: cfg.callsign.clone(),
             connected_target: connected,
             routed_tetra_dest: route_label(&cfg),
             last_rx: self.last_rx.clone(),
