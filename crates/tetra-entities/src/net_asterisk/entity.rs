@@ -14,6 +14,8 @@ use uuid::Uuid;
 
 use crate::{MessageQueue, TetraEntityTrait};
 
+use super::audio::{AsteriskAudioTranscoder, PCMU_PAYLOAD_TYPE, rtp_payload};
+
 const SIP_MAX_DATAGRAM: usize = 8192;
 
 #[derive(Clone, Debug)]
@@ -55,6 +57,7 @@ struct SipDialog {
     auth_retry_sent: bool,
     state: DialogState,
     rtp: RtpSession,
+    audio: AsteriskAudioTranscoder,
     media_ready: Option<(u16, u8)>,
     inbound: bool,
     request_context: Option<SipRequestContext>,
@@ -359,6 +362,8 @@ impl AsteriskEntity {
              t=0 0\r\n\
              m=audio {} RTP/AVP 0\r\n\
              a=rtpmap:0 PCMU/8000\r\n\
+             a=ptime:60\r\n\
+             a=maxptime:60\r\n\
              a=sendrecv\r\n",
             self.asterisk_config.contact_host, self.asterisk_config.contact_host, rtp_port
         )
@@ -746,6 +751,12 @@ impl AsteriskEntity {
             }
         };
         rtp.remote = Some(remote_rtp);
+        let Some(audio) = AsteriskAudioTranscoder::new() else {
+            self.set_error("TETRA codec allocation failed for inbound Asterisk call".to_string());
+            let response = self.build_response(&ctx, 503, "Service Unavailable", Some("flowstation"), None);
+            self.send_sip_to(response, addr, "503 Service Unavailable");
+            return;
+        };
 
         let uuid = Uuid::new_v4();
         let caller_number = Self::inbound_caller_number(msg);
@@ -779,6 +790,7 @@ impl AsteriskEntity {
             auth_retry_sent: false,
             state: DialogState::Inviting,
             rtp,
+            audio,
             media_ready: None,
             inbound: true,
             request_context: Some(ctx.clone()),
@@ -892,6 +904,11 @@ impl AsteriskEntity {
                 return;
             }
         };
+        let Some(audio) = AsteriskAudioTranscoder::new() else {
+            self.set_error(format!("TETRA codec allocation failed for uuid={}", brew_uuid));
+            self.reject_setup(queue, brew_uuid, 34);
+            return;
+        };
 
         let dialog = SipDialog {
             uuid: brew_uuid,
@@ -905,6 +922,7 @@ impl AsteriskEntity {
             auth_retry_sent: false,
             state: DialogState::Inviting,
             rtp,
+            audio,
             media_ready: None,
             inbound: false,
             request_context: None,
@@ -992,29 +1010,44 @@ impl AsteriskEntity {
         let Some(uuid) = self.rtp_by_ts.get(&prim.ts).copied() else {
             return;
         };
-        let send_result = {
+        let mut send_result = None;
+        let mut drop_reason = None;
+        'send: {
             let Some(dialog) = self.dialogs.get_mut(&uuid) else {
                 return;
             };
             let Some(remote) = dialog.rtp.remote else {
                 return;
             };
+            let Some(payload) = dialog.audio.decode_tmd_to_pcmu(&prim.data) else {
+                drop_reason = Some(format!(
+                    "AsteriskEntity: dropping unsupported TETRA audio block uuid={} ts={} len={}",
+                    uuid,
+                    prim.ts,
+                    prim.data.len()
+                ));
+                break 'send;
+            };
 
-            let mut packet = Vec::with_capacity(12 + prim.data.len());
+            let mut packet = Vec::with_capacity(12 + payload.len());
             packet.push(0x80);
-            packet.push(0x00);
+            packet.push(PCMU_PAYLOAD_TYPE);
             packet.extend_from_slice(&dialog.rtp.seq.to_be_bytes());
             packet.extend_from_slice(&dialog.rtp.timestamp.to_be_bytes());
             packet.extend_from_slice(&dialog.rtp.ssrc.to_be_bytes());
-            packet.extend_from_slice(&prim.data);
+            packet.extend_from_slice(&payload);
             let result = dialog.rtp.socket.send_to(&packet, remote);
             if result.is_ok() {
                 dialog.rtp.seq = dialog.rtp.seq.wrapping_add(1);
-                dialog.rtp.timestamp = dialog.rtp.timestamp.wrapping_add(prim.data.len().max(1) as u32);
+                dialog.rtp.timestamp = dialog.rtp.timestamp.wrapping_add(payload.len().max(1) as u32);
             }
-            result
-        };
-        if let Err(err) = send_result {
+            send_result = Some(result);
+        }
+        if let Some(reason) = drop_reason {
+            self.set_error(reason);
+            return;
+        }
+        if let Some(Err(err)) = send_result {
             self.set_error(format!("RTP send failed uuid={} ts={}: {}", uuid, prim.ts, err));
         };
     }
@@ -1030,11 +1063,21 @@ impl AsteriskEntity {
             for _ in 0..32 {
                 match dialog.rtp.socket.recv_from(&mut buf) {
                     Ok((len, addr)) => {
-                        if len <= 12 {
+                        let Some((payload_type, payload)) = rtp_payload(&buf[..len]) else {
+                            continue;
+                        };
+                        if payload_type != PCMU_PAYLOAD_TYPE {
+                            tracing::warn!(
+                                "AsteriskEntity: dropping unsupported RTP payload type {} uuid={}",
+                                payload_type,
+                                dialog.uuid
+                            );
                             continue;
                         }
                         dialog.rtp.remote = Some(addr);
-                        downlink.push((ts, buf[12..len].to_vec()));
+                        for frame in dialog.audio.encode_pcmu_to_tmd(payload) {
+                            downlink.push((ts, frame));
+                        }
                     }
                     Err(err) if err.kind() == io::ErrorKind::WouldBlock => break,
                     Err(err) => {
@@ -1158,7 +1201,9 @@ impl AsteriskEntity {
                         return;
                     };
                     dialog.remote_tag = Self::parse_to_tag(msg.header("To"));
-                    dialog.rtp.remote = remote_rtp;
+                    if let Some(remote_rtp) = remote_rtp {
+                        dialog.rtp.remote = Some(remote_rtp);
+                    }
                     dialog.state = DialogState::Established;
                     dialog.call.clone()
                 };
