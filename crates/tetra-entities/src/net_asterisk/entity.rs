@@ -176,7 +176,7 @@ impl AsteriskEntity {
             .next()
             .ok_or_else(|| io::Error::new(io::ErrorKind::AddrNotAvailable, "asterisk remote address did not resolve"))?;
 
-        let mut entity = Self {
+        let entity = Self {
             config,
             next_rtp_port: asterisk_config.rtp_port_min,
             register_call_id: format!("flow-reg-{}@{}", Uuid::new_v4(), asterisk_config.contact_host),

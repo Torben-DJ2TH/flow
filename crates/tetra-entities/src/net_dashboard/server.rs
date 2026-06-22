@@ -2965,7 +2965,21 @@ fn serve_dapnet_get(
     };
     let password = dapnet.password.as_ref();
     let authkey = dapnet.rwth_core_authkey.as_ref();
-    let body = serde_json::json!({
+    let runtime_body = serde_json::json!({
+        "configured": runtime.configured,
+        "enabled": runtime.enabled,
+        "rwth_core_enabled": runtime.rwth_core_enabled,
+        "rwth_core_status": runtime.rwth_core_status,
+        "endpoint": runtime.endpoint,
+        "callsign": runtime.callsign,
+        "forward_sds": runtime.forward_sds,
+        "forward_callout": runtime.forward_callout,
+        "forward_telegram": runtime.forward_telegram,
+        "seen_messages": runtime.seen_messages,
+        "last_rx": runtime.last_rx,
+        "last_error": runtime.last_error,
+    });
+    let mut body = serde_json::json!({
         "enabled": dapnet.enabled,
         "api_url": dapnet.api_url.clone(),
         "username": dapnet.username.clone(),
@@ -2997,21 +3011,10 @@ fn serve_dapnet_get(
         "rwth_core_authkey_masked": crate::net_dashboard::dapnet::mask_secret(authkey),
         "rwth_core_authkey_set": !authkey.trim().is_empty(),
         "rwth_messages_limit": dapnet.rwth_messages_limit,
-        "runtime": {
-            "configured": runtime.configured,
-            "enabled": runtime.enabled,
-            "rwth_core_enabled": runtime.rwth_core_enabled,
-            "rwth_core_status": runtime.rwth_core_status,
-            "endpoint": runtime.endpoint,
-            "callsign": runtime.callsign,
-            "forward_sds": runtime.forward_sds,
-            "forward_callout": runtime.forward_callout,
-            "forward_telegram": runtime.forward_telegram,
-            "seen_messages": runtime.seen_messages,
-            "last_rx": runtime.last_rx,
-            "last_error": runtime.last_error,
-        },
     });
+    if let Some(obj) = body.as_object_mut() {
+        obj.insert("runtime".to_string(), runtime_body);
+    }
     http_json_response(stream, 200, &body.to_string());
 }
 
