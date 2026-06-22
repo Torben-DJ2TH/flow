@@ -139,9 +139,16 @@ impl CcBsSubentity {
             call.number.clone()
         };
         let external_subscriber_number = Self::encode_external_subscriber_number(&external_number);
+        let calling_party_address_ssi = if call.source_issi != 0 {
+            Some(call.source_issi)
+        } else if network_entity == TetraEntity::Asterisk {
+            Self::external_number_as_ssi(&external_number)
+        } else {
+            None
+        };
 
         tracing::info!(
-            "CMCE: accepting {:?} setup request uuid={} call_id={} src={} dst={} ts={} duplex={} number='{}'",
+            "CMCE: accepting {:?} setup request uuid={} call_id={} src={} dst={} ts={} duplex={} number='{}' display_ssi={:?}",
             network_entity,
             brew_uuid,
             call_id,
@@ -149,7 +156,8 @@ impl CcBsSubentity {
             call.destination,
             ts,
             simplex_duplex,
-            call.number
+            call.number,
+            calling_party_address_ssi
         );
 
         // Acknowledge setup to Brew first so network call state progresses while local MS is alerted.
@@ -177,7 +185,7 @@ impl CcBsSubentity {
             call_priority: call.priority,
             notification_indicator: None,
             temporary_address: None,
-            calling_party_address_ssi: None,
+            calling_party_address_ssi,
             calling_party_extension: None,
             external_subscriber_number,
             facility: None,

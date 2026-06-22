@@ -578,6 +578,15 @@ impl CcBsSubentity {
         })
     }
 
+    pub(super) fn external_number_as_ssi(number: &str) -> Option<u32> {
+        let digits = number.trim();
+        if digits.is_empty() || !digits.chars().all(|ch| ch.is_ascii_digit()) {
+            return None;
+        }
+        let value = digits.parse::<u32>().ok()?;
+        (value != 0 && value <= 0x00ff_ffff).then_some(value)
+    }
+
     pub(super) fn build_network_circuit_call_from_u_setup(pdu: &USetup, source_issi: u32) -> NetworkCircuitCall {
         // Prefer called_party_ssi as the number when it's a short service number (< 1_000_000)
         // and external_subscriber_number is present — terminals sometimes encode service codes
@@ -1317,6 +1326,19 @@ codec = "PCMU"
         let field = CcBsSubentity::encode_external_subscriber_number(number).expect("field should be generated");
         assert_eq!(field.len, 128);
         assert_eq!(CcBsSubentity::decode_external_subscriber_number(&field), "12345678901234567890123456789012");
+    }
+
+    #[test]
+    fn external_number_as_ssi_accepts_numeric_extension() {
+        assert_eq!(CcBsSubentity::external_number_as_ssi("385"), Some(385));
+        assert_eq!(CcBsSubentity::external_number_as_ssi(" 2632585 "), Some(2632585));
+    }
+
+    #[test]
+    fn external_number_as_ssi_rejects_non_ssi_values() {
+        assert_eq!(CcBsSubentity::external_number_as_ssi("flowstation"), None);
+        assert_eq!(CcBsSubentity::external_number_as_ssi("0"), None);
+        assert_eq!(CcBsSubentity::external_number_as_ssi("16777216"), None);
     }
 
     #[test]

@@ -51,6 +51,7 @@ struct SipDialog {
     call: NetworkCircuitCall,
     number: String,
     call_id_header: String,
+    local_uri: String,
     local_tag: String,
     remote_tag: Option<String>,
     cseq: u32,
@@ -247,6 +248,20 @@ impl AsteriskEntity {
         format!("sip:{}@{}", self.asterisk_config.local_user, self.asterisk_config.from_domain)
     }
 
+    fn uri_for_user(&self, user: &str) -> String {
+        format!("sip:{}@{}", user, self.asterisk_config.from_domain)
+    }
+
+    fn asserted_identity_headers(&self, uri: &str, display: &str) -> String {
+        if display.is_empty() {
+            return String::new();
+        }
+        format!(
+            "P-Asserted-Identity: \"{}\" <{}>\r\nRemote-Party-ID: \"{}\" <{}>;party=calling;screen=yes;privacy=off\r\n",
+            display, uri, display, uri
+        )
+    }
+
     fn contact_uri(&self) -> String {
         format!(
             "sip:{}@{}:{}",
@@ -384,12 +399,23 @@ impl AsteriskEntity {
             .map(|challenge| self.authorization_header("INVITE", &request_uri, challenge));
         let auth_line = auth.map(|line| format!("{}\r\n", line)).unwrap_or_default();
         let to_uri = request_uri.clone();
-        let from_uri = self.local_uri();
+        let from_uri = snapshot.local_uri.clone();
+        let caller_id = snapshot
+            .source_issi
+            .filter(|source| *source != 0)
+            .map(|source| source.to_string())
+            .unwrap_or_else(|| self.asterisk_config.local_user.clone());
+        let identity_uri = snapshot
+            .source_issi
+            .filter(|source| *source != 0)
+            .map(|source| self.uri_for_user(&source.to_string()))
+            .unwrap_or_else(|| from_uri.clone());
+        let identity_headers = self.asserted_identity_headers(&identity_uri, &caller_id);
         Some(format!(
             "INVITE {} SIP/2.0\r\n\
              Via: SIP/2.0/UDP {}:{};branch={};rport\r\n\
              Max-Forwards: 70\r\n\
-             From: <{}>;tag={}\r\n\
+             From: \"{}\" <{}>;tag={}\r\n\
              To: <{}>\r\n\
              Call-ID: {}\r\n\
              CSeq: {} INVITE\r\n\
@@ -397,18 +423,21 @@ impl AsteriskEntity {
              Allow: INVITE, ACK, CANCEL, OPTIONS, BYE, INFO\r\n\
              Supported: replaces\r\n\
              {}\
+             {}\
              Content-Type: application/sdp\r\n\
              Content-Length: {}\r\n\r\n{}",
             request_uri,
             self.asterisk_config.contact_host,
             self.asterisk_config.bind_port,
             branch,
+            caller_id,
             from_uri,
             snapshot.local_tag,
             to_uri,
             snapshot.call_id_header,
             snapshot.cseq,
             self.contact_uri(),
+            identity_headers,
             auth_line,
             body.as_bytes().len(),
             body
@@ -449,7 +478,7 @@ impl AsteriskEntity {
             self.asterisk_config.contact_host,
             self.asterisk_config.bind_port,
             branch,
-            self.local_uri(),
+            dialog.local_uri,
             dialog.local_tag,
             to,
             dialog.call_id_header,
@@ -784,6 +813,7 @@ impl AsteriskEntity {
             call: call.clone(),
             number: caller_number,
             call_id_header: ctx.call_id.clone(),
+            local_uri: self.local_uri(),
             local_tag,
             remote_tag,
             cseq: 1,
@@ -913,6 +943,7 @@ impl AsteriskEntity {
 
         let dialog = SipDialog {
             uuid: brew_uuid,
+            local_uri: self.local_uri(),
             call,
             number,
             call_id_header: format!("flow-{}@{}", brew_uuid, self.asterisk_config.contact_host),
@@ -1295,6 +1326,8 @@ struct SipDialogSnapshot {
     uuid: Uuid,
     number: String,
     call_id_header: String,
+    local_uri: String,
+    source_issi: Option<u32>,
     local_tag: String,
     remote_tag: Option<String>,
     cseq: u32,
@@ -1306,6 +1339,8 @@ impl SipDialogSnapshot {
             uuid: dialog.uuid,
             number: dialog.number.clone(),
             call_id_header: dialog.call_id_header.clone(),
+            local_uri: dialog.local_uri.clone(),
+            source_issi: Some(dialog.call.source_issi),
             local_tag: dialog.local_tag.clone(),
             remote_tag: dialog.remote_tag.clone(),
             cseq: dialog.cseq,
@@ -1336,7 +1371,7 @@ impl AsteriskEntity {
             self.asterisk_config.contact_host,
             self.asterisk_config.bind_port,
             branch,
-            self.local_uri(),
+            dialog.local_uri,
             dialog.local_tag,
             to,
             dialog.call_id_header,
