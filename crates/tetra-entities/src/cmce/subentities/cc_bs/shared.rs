@@ -675,6 +675,49 @@ impl CcBsSubentity {
         }
     }
 
+    pub(super) fn echolink_route_target(&self, network_call: &NetworkCircuitCall) -> Option<String> {
+        let cfg = self.config.effective_echolink();
+        if !cfg.enabled || !cfg.outbound_enabled {
+            return None;
+        }
+
+        let raw = if !network_call.number.trim().is_empty() {
+            network_call.number.trim().to_string()
+        } else if network_call.destination != 0 {
+            network_call.destination.to_string()
+        } else {
+            return None;
+        };
+
+        let mut routed = raw.as_str();
+        let prefix_matched = !cfg.outbound_prefix.is_empty() && raw.starts_with(&cfg.outbound_prefix);
+        if prefix_matched && cfg.strip_outbound_prefix {
+            routed = &raw[cfg.outbound_prefix.len()..];
+        }
+
+        let routed = routed.trim();
+        if routed.is_empty() {
+            return None;
+        }
+
+        if let Some(target) = cfg.routes.get(routed) {
+            return Some(target.clone());
+        }
+
+        if cfg.service_numbers.iter().any(|n| n == routed) {
+            if !cfg.auto_connect.trim().is_empty() {
+                return Some(cfg.auto_connect.clone());
+            }
+            return Some(routed.to_string());
+        }
+
+        if cfg.service_numbers.is_empty() && prefix_matched {
+            return Some(routed.to_string());
+        }
+
+        None
+    }
+
     /// Notify UMAC to open a traffic circuit (ETSI §21 circuit management).
     /// `peer_ts` is Some only for full-duplex calls where UL of one MS feeds DL of the other.
     pub(super) fn signal_umac_circuit_open(

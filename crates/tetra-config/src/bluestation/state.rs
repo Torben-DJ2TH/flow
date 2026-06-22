@@ -230,6 +230,38 @@ pub struct DapnetRuntimeOverride {
     pub rwth_messages_limit: usize,
 }
 
+/// Runtime override for EchoLink bridge settings, edited from the dashboard.
+///
+/// Mirrors `[echolink]`. When present, it takes precedence over the config file so routing edits
+/// apply immediately; the dashboard also writes the values back to TOML for persistence.
+#[derive(Debug, Clone, Default)]
+pub struct EcholinkRuntimeOverride {
+    pub enabled: bool,
+    pub callsign: String,
+    pub password: String,
+    pub location: String,
+    pub status_text: String,
+    pub directory_servers: Vec<String>,
+    pub directory_port: u16,
+    pub bind_addr: String,
+    pub audio_port: u16,
+    pub control_port: u16,
+    pub inbound_enabled: bool,
+    pub outbound_enabled: bool,
+    pub outbound_prefix: String,
+    pub strip_outbound_prefix: bool,
+    pub service_numbers: Vec<String>,
+    pub default_tetra_source_issi: u32,
+    pub default_tetra_dest_issi: u32,
+    pub default_tetra_dest_is_group: bool,
+    pub routes: std::collections::BTreeMap<String, String>,
+    pub allowed_callsigns: Vec<String>,
+    pub allowed_node_ids: Vec<u32>,
+    pub auto_connect: String,
+    pub reconnect_interval_secs: u64,
+    pub max_session_secs: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct AsteriskRuntimeStatus {
     pub configured: bool,
@@ -298,6 +330,39 @@ impl Default for DapnetRuntimeStatus {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct EcholinkRuntimeStatus {
+    pub configured: bool,
+    pub enabled: bool,
+    pub directory_status: String,
+    pub qso_status: String,
+    pub bind: String,
+    pub callsign: String,
+    pub connected_target: Option<String>,
+    pub routed_tetra_dest: Option<String>,
+    pub last_rx: Option<String>,
+    pub last_tx: Option<String>,
+    pub last_error: Option<String>,
+}
+
+impl Default for EcholinkRuntimeStatus {
+    fn default() -> Self {
+        Self {
+            configured: false,
+            enabled: false,
+            directory_status: "disabled".to_string(),
+            qso_status: "idle".to_string(),
+            bind: String::new(),
+            callsign: String::new(),
+            connected_target: None,
+            routed_tetra_dest: None,
+            last_rx: None,
+            last_tx: None,
+            last_error: None,
+        }
+    }
+}
+
 /// Mutable, stack-editable state (mutex-protected).
 #[derive(Debug, Clone)]
 pub struct StackState {
@@ -324,12 +389,16 @@ pub struct StackState {
     pub telegram_override: Option<TelegramRuntimeOverride>,
     /// Runtime override for DAPNET settings (dashboard editing). See DapnetRuntimeOverride.
     pub dapnet_override: Option<DapnetRuntimeOverride>,
+    /// Runtime override for EchoLink settings (dashboard editing). See EcholinkRuntimeOverride.
+    pub echolink_override: Option<EcholinkRuntimeOverride>,
     /// Next TPG2200 ActionURL incident number. Initialised lazily from `[tpg2200_action]`.
     pub tpg2200_action_next_incident: Option<u16>,
     /// Runtime Asterisk SIP/RTP bridge status for `/api/asterisk/status` and the dashboard tab.
     pub asterisk_status: AsteriskRuntimeStatus,
     /// Runtime DAPNET receiver/forwarding status for `/api/dapnet` and the Health tab.
     pub dapnet_status: DapnetRuntimeStatus,
+    /// Runtime EchoLink bridge status for `/api/echolink` and the Health tab.
+    pub echolink_status: EcholinkRuntimeStatus,
     /// Live map "identity currently reachable on a traffic channel" → (DL timeslot, usage_marker),
     /// republished every tick by CMCE call control from the live call tables (so it is never
     /// stale). Keyed by GSSI for active group calls and by each participant ISSI for connected
@@ -463,9 +532,11 @@ impl Default for StackState {
             wx_override: None,
             telegram_override: None,
             dapnet_override: None,
+            echolink_override: None,
             tpg2200_action_next_incident: None,
             asterisk_status: AsteriskRuntimeStatus::default(),
             dapnet_status: DapnetRuntimeStatus::default(),
+            echolink_status: EcholinkRuntimeStatus::default(),
             active_call_ts: std::collections::HashMap::new(),
             ee_monitoring_windows: std::collections::HashMap::new(),
         }

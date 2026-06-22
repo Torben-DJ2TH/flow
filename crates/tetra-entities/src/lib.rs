@@ -20,6 +20,7 @@ pub mod net_dashboard;
 pub mod net_telegram;
 pub mod net_telemetry;
 pub mod net_dapnet;
+pub mod net_echolink;
 
 pub mod backlight;
 pub mod health;

@@ -1,0 +1,1214 @@
+//! EchoLink UDP/GSM bridge for circuit-switched individual calls.
+
+mod audio;
+
+use std::io::{Read, Write};
+use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs, UdpSocket};
+use std::time::{Duration, Instant};
+
+use tetra_config::bluestation::{
+    CfgEcholink, EcholinkRuntimeStatus, SharedConfig, normalize_echolink_target,
+};
+use tetra_core::{Sap, TdmaTime, tetra_entities::TetraEntity};
+use tetra_pdus::cmce::enums::call_timeout::CallTimeout;
+use tetra_saps::{
+    SapMsg, SapMsgInner,
+    control::call_control::{CallControl, NetworkCircuitCall},
+    tmd::{TmdCircuitDataInd, TmdCircuitDataReq},
+};
+use uuid::Uuid;
+
+use crate::{MessageQueue, TetraEntityTrait};
+
+use self::audio::{
+    ECHOLINK_GSM_FRAME_BYTES, ECHOLINK_GSM_PACKET_BYTES, EcholinkAudioTranscoder,
+};
+
+const RTP_VERSION_ECHOLINK: u8 = 3;
+const RTCP_RR: u8 = 201;
+const RTCP_SDES: u8 = 202;
+const RTCP_BYE: u8 = 203;
+const RTCP_SDES_END: u8 = 0;
+const RTCP_SDES_CNAME: u8 = 1;
+const RTCP_SDES_NAME: u8 = 2;
+const RTCP_SDES_EMAIL: u8 = 3;
+const RTCP_SDES_PHONE: u8 = 4;
+const ECHOLINK_RTP_GSM_PT: u8 = 0x03;
+const ECHOLINK_RTP_HEADER: usize = 12;
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
+const DIRECTORY_TIMEOUT: Duration = Duration::from_secs(3);
+
+#[derive(Debug, Clone)]
+pub enum EcholinkCommand {
+    Connect { target: String },
+    Disconnect,
+}
+
+pub type EcholinkCmdSender = crossbeam_channel::Sender<EcholinkCommand>;
+pub type EcholinkCmdReceiver = crossbeam_channel::Receiver<EcholinkCommand>;
+
+pub fn echolink_channel() -> (EcholinkCmdSender, EcholinkCmdReceiver) {
+    crossbeam_channel::unbounded()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QsoState {
+    Connecting,
+    Connected,
+    Released,
+}
+
+struct EcholinkDialog {
+    uuid: Option<Uuid>,
+    call: Option<NetworkCircuitCall>,
+    target: String,
+    remote_call: String,
+    remote_ip: IpAddr,
+    remote_audio: SocketAddr,
+    remote_control: SocketAddr,
+    state: QsoState,
+    audio: EcholinkAudioTranscoder,
+    media_ready: Option<(u16, u8)>,
+    seq: u16,
+    inbound: bool,
+    started: Instant,
+    last_sdes: Instant,
+    last_audio_rx: Option<Instant>,
+}
+
+#[derive(Clone, Debug)]
+struct DirectoryStation {
+    callsign: String,
+    id: u32,
+    ip: IpAddr,
+}
+
+pub struct EcholinkEntity {
+    config: SharedConfig,
+    cmd_rx: EcholinkCmdReceiver,
+    audio_socket: Option<UdpSocket>,
+    control_socket: Option<UdpSocket>,
+    dialogs: Vec<EcholinkDialog>,
+    dialog_by_ts: std::collections::HashMap<u8, usize>,
+    last_enabled: Option<bool>,
+    last_directory_status: String,
+    last_rx: Option<String>,
+    last_tx: Option<String>,
+    last_error: Option<String>,
+}
+
+impl EcholinkEntity {
+    pub fn new(config: SharedConfig, cmd_rx: EcholinkCmdReceiver) -> Self {
+        let entity = Self {
+            config,
+            cmd_rx,
+            audio_socket: None,
+            control_socket: None,
+            dialogs: Vec::new(),
+            dialog_by_ts: std::collections::HashMap::new(),
+            last_enabled: None,
+            last_directory_status: "disabled".to_string(),
+            last_rx: None,
+            last_tx: None,
+            last_error: None,
+        };
+        entity.refresh_status();
+        entity
+    }
+
+    fn effective(&self) -> CfgEcholink {
+        self.config.effective_echolink()
+    }
+
+    fn refresh_status(&self) {
+        let cfg = self.effective();
+        let connected = self
+            .dialogs
+            .iter()
+            .find(|d| d.state != QsoState::Released)
+            .map(|d| {
+                if d.remote_call.is_empty() {
+                    d.target.clone()
+                } else {
+                    d.remote_call.clone()
+                }
+            });
+        let qso_status = if self.dialogs.iter().any(|d| d.state == QsoState::Connected) {
+            "connected"
+        } else if self.dialogs.iter().any(|d| d.state == QsoState::Connecting) {
+            "connecting"
+        } else {
+            "idle"
+        };
+        let mut state = self.config.state_write();
+        state.echolink_status = EcholinkRuntimeStatus {
+            configured: true,
+            enabled: cfg.enabled,
+            directory_status: self.last_directory_status.clone(),
+            qso_status: qso_status.to_string(),
+            bind: format!("{}:{}/{}", cfg.bind_addr, cfg.audio_port, cfg.control_port),
+            callsign: cfg.callsign,
+            connected_target: connected,
+            routed_tetra_dest: route_label(&cfg),
+            last_rx: self.last_rx.clone(),
+            last_tx: self.last_tx.clone(),
+            last_error: self.last_error.clone(),
+        };
+    }
+
+    fn set_error(&mut self, msg: impl Into<String>) {
+        let msg = msg.into();
+        tracing::warn!("EchoLink: {}", msg);
+        self.last_error = Some(msg);
+    }
+
+    fn ensure_ports(&mut self, cfg: &CfgEcholink) -> Result<(), String> {
+        if self.audio_socket.is_none() {
+            let bind = format!("{}:{}", cfg.bind_addr, cfg.audio_port);
+            let socket = UdpSocket::bind(&bind)
+                .map_err(|e| format!("audio UDP bind {} failed: {}", bind, e))?;
+            socket
+                .set_nonblocking(true)
+                .map_err(|e| format!("audio UDP nonblocking failed: {}", e))?;
+            self.audio_socket = Some(socket);
+        }
+        if self.control_socket.is_none() {
+            let bind = format!("{}:{}", cfg.bind_addr, cfg.control_port);
+            let socket = UdpSocket::bind(&bind)
+                .map_err(|e| format!("control UDP bind {} failed: {}", bind, e))?;
+            socket
+                .set_nonblocking(true)
+                .map_err(|e| format!("control UDP nonblocking failed: {}", e))?;
+            self.control_socket = Some(socket);
+        }
+        Ok(())
+    }
+
+    fn release_ports(&mut self) {
+        self.audio_socket = None;
+        self.control_socket = None;
+    }
+
+    fn handle_dashboard_commands(&mut self, queue: &mut MessageQueue, cfg: &CfgEcholink) {
+        while let Ok(cmd) = self.cmd_rx.try_recv() {
+            match cmd {
+                EcholinkCommand::Connect { target } => {
+                    let target = normalize_echolink_target(&target);
+                    if target.is_empty() {
+                        self.set_error("connect target is empty");
+                        continue;
+                    }
+                    if !target_allowed(cfg, &target) {
+                        self.set_error(format!("target {target} is not allowed by EchoLink routing"));
+                        continue;
+                    }
+                    match self.resolve_target(cfg, &target) {
+                        Ok(ip) => {
+                            let Some(audio) = EcholinkAudioTranscoder::new() else {
+                                self.set_error("EchoLink GSM/TETRA codec allocation failed");
+                                continue;
+                            };
+                            let dialog = EcholinkDialog {
+                                uuid: None,
+                                call: None,
+                                target: target.clone(),
+                                remote_call: target.clone(),
+                                remote_ip: ip,
+                                remote_audio: SocketAddr::new(ip, cfg.audio_port),
+                                remote_control: SocketAddr::new(ip, cfg.control_port),
+                                state: QsoState::Connecting,
+                                audio,
+                                media_ready: None,
+                                seq: 1,
+                                inbound: false,
+                                started: Instant::now(),
+                                last_sdes: Instant::now() - KEEPALIVE_INTERVAL,
+                                last_audio_rx: None,
+                            };
+                            self.dialogs.push(dialog);
+                            let idx = self.dialogs.len() - 1;
+                            self.send_sdes_idx(idx, cfg);
+                            self.last_tx = Some(format!("connect requested to {target} ({ip})"));
+                            tracing::info!("EchoLink: connect requested to {} ({})", target, ip);
+                        }
+                        Err(err) => self.set_error(err),
+                    }
+                }
+                EcholinkCommand::Disconnect => {
+                    self.disconnect_all(queue, true);
+                    self.last_tx = Some("disconnect requested".to_string());
+                }
+            }
+        }
+    }
+
+    fn start_outbound_call(
+        &mut self,
+        queue: &mut MessageQueue,
+        cfg: &CfgEcholink,
+        brew_uuid: Uuid,
+        call: NetworkCircuitCall,
+    ) {
+        if !cfg.outbound_enabled {
+            self.reject_setup(queue, brew_uuid, 34);
+            return;
+        }
+        let target = normalize_echolink_target(&call.number);
+        if target.is_empty() {
+            self.set_error(format!("empty EchoLink target for uuid={}", brew_uuid));
+            self.reject_setup(queue, brew_uuid, 34);
+            return;
+        }
+        if !target_allowed(cfg, &target) {
+            self.set_error(format!("target {target} is not allowed by EchoLink routing"));
+            self.reject_setup(queue, brew_uuid, 34);
+            return;
+        }
+        let remote_ip = match self.resolve_target(cfg, &target) {
+            Ok(ip) => ip,
+            Err(err) => {
+                self.set_error(err);
+                self.reject_setup(queue, brew_uuid, 34);
+                return;
+            }
+        };
+        let Some(audio) = EcholinkAudioTranscoder::new() else {
+            self.set_error(format!("EchoLink codec allocation failed for uuid={}", brew_uuid));
+            self.reject_setup(queue, brew_uuid, 34);
+            return;
+        };
+
+        let dialog = EcholinkDialog {
+            uuid: Some(brew_uuid),
+            call: Some(call),
+            target: target.clone(),
+            remote_call: target.clone(),
+            remote_ip,
+            remote_audio: SocketAddr::new(remote_ip, cfg.audio_port),
+            remote_control: SocketAddr::new(remote_ip, cfg.control_port),
+            state: QsoState::Connecting,
+            audio,
+            media_ready: None,
+            seq: 1,
+            inbound: false,
+            started: Instant::now(),
+            last_sdes: Instant::now() - KEEPALIVE_INTERVAL,
+            last_audio_rx: None,
+        };
+        self.dialogs.push(dialog);
+        let idx = self.dialogs.len() - 1;
+        self.send_setup_accept(queue, brew_uuid);
+        self.send_sdes_idx(idx, cfg);
+        self.last_tx = Some(format!("SETUP {} to EchoLink {}", brew_uuid, target));
+        tracing::info!("EchoLink: outbound setup uuid={} target={} ip={}", brew_uuid, target, remote_ip);
+    }
+
+    fn reject_setup(&self, queue: &mut MessageQueue, brew_uuid: Uuid, cause: u8) {
+        queue.push_back(SapMsg {
+            sap: Sap::Control,
+            src: TetraEntity::Echolink,
+            dest: TetraEntity::Cmce,
+            msg: SapMsgInner::CmceCallControl(CallControl::NetworkCircuitSetupReject { brew_uuid, cause }),
+        });
+    }
+
+    fn send_setup_accept(&self, queue: &mut MessageQueue, brew_uuid: Uuid) {
+        queue.push_back(SapMsg {
+            sap: Sap::Control,
+            src: TetraEntity::Echolink,
+            dest: TetraEntity::Cmce,
+            msg: SapMsgInner::CmceCallControl(CallControl::NetworkCircuitSetupAccept { brew_uuid }),
+        });
+    }
+
+    fn send_alert(&self, queue: &mut MessageQueue, brew_uuid: Uuid) {
+        queue.push_back(SapMsg {
+            sap: Sap::Control,
+            src: TetraEntity::Echolink,
+            dest: TetraEntity::Cmce,
+            msg: SapMsgInner::CmceCallControl(CallControl::NetworkCircuitAlert { brew_uuid }),
+        });
+    }
+
+    fn send_release_to_cmce(&self, queue: &mut MessageQueue, brew_uuid: Uuid, cause: u8) {
+        queue.push_back(SapMsg {
+            sap: Sap::Control,
+            src: TetraEntity::Echolink,
+            dest: TetraEntity::Cmce,
+            msg: SapMsgInner::CmceCallControl(CallControl::NetworkCircuitRelease { brew_uuid, cause }),
+        });
+    }
+
+    fn maybe_connect_dialog(&mut self, queue: &mut MessageQueue, cfg: &CfgEcholink, idx: usize) {
+        enum ConnectAction {
+            ConfirmTetraOriginated(Uuid, NetworkCircuitCall),
+            StartTetraLeg(Uuid, NetworkCircuitCall),
+            Release(String),
+            None,
+        }
+
+        let action = {
+            let Some(dialog) = self.dialogs.get_mut(idx) else {
+                return;
+            };
+            if dialog.state == QsoState::Connected {
+                return;
+            }
+            dialog.state = QsoState::Connected;
+
+            if let (Some(uuid), Some(call)) = (dialog.uuid, dialog.call.clone()) {
+                ConnectAction::ConfirmTetraOriginated(uuid, call)
+            } else if dialog.uuid.is_none() {
+                if !cfg.inbound_enabled || cfg.default_tetra_dest_issi == 0 {
+                    ConnectAction::Release("no inbound TETRA route configured for EchoLink dashboard connect".to_string())
+                } else if cfg.default_tetra_dest_is_group {
+                    ConnectAction::Release(
+                        "inbound EchoLink group destinations are not supported by the circuit-call bridge yet".to_string(),
+                    )
+                } else {
+                    let uuid = Uuid::new_v4();
+                    let call = NetworkCircuitCall {
+                        source_issi: cfg.default_tetra_source_issi,
+                        destination: cfg.default_tetra_dest_issi,
+                        number: dialog.remote_call.clone(),
+                        priority: 0,
+                        service: 0,
+                        mode: 0,
+                        duplex: 1,
+                        method: 0,
+                        communication: 0,
+                        grant: 0,
+                        permission: 0,
+                        timeout: CallTimeout::Infinite.into_raw() as u8,
+                        ownership: 0,
+                        queued: 0,
+                    };
+                    dialog.uuid = Some(uuid);
+                    dialog.call = Some(call.clone());
+                    ConnectAction::StartTetraLeg(uuid, call)
+                }
+            } else {
+                ConnectAction::None
+            }
+        };
+
+        match action {
+            ConnectAction::ConfirmTetraOriginated(uuid, call) => {
+                self.send_alert(queue, uuid);
+                queue.push_back(SapMsg {
+                    sap: Sap::Control,
+                    src: TetraEntity::Echolink,
+                    dest: TetraEntity::Cmce,
+                    msg: SapMsgInner::CmceCallControl(CallControl::NetworkCircuitConnectRequest {
+                        brew_uuid: uuid,
+                        call,
+                    }),
+                });
+            }
+            ConnectAction::StartTetraLeg(uuid, call) => {
+                queue.push_back(SapMsg {
+                    sap: Sap::Control,
+                    src: TetraEntity::Echolink,
+                    dest: TetraEntity::Cmce,
+                    msg: SapMsgInner::CmceCallControl(CallControl::NetworkCircuitSetupRequest {
+                        brew_uuid: uuid,
+                        call,
+                    }),
+                });
+            }
+            ConnectAction::Release(reason) => {
+                self.set_error(reason);
+                self.release_dialog_idx(queue, idx, false, true);
+            }
+            ConnectAction::None => {}
+        }
+    }
+
+    fn mark_media_ready(&mut self, brew_uuid: Uuid, call_id: u16, ts: u8) {
+        if let Some((idx, dialog)) = self
+            .dialogs
+            .iter_mut()
+            .enumerate()
+            .find(|(_, d)| d.uuid == Some(brew_uuid))
+        {
+            dialog.media_ready = Some((call_id, ts));
+            self.dialog_by_ts.insert(ts, idx);
+            tracing::info!("EchoLink: media ready uuid={} call_id={} ts={}", brew_uuid, call_id, ts);
+        }
+    }
+
+    fn release_dialog_by_uuid(&mut self, queue: &mut MessageQueue, brew_uuid: Uuid, from_cmce: bool) {
+        if let Some(idx) = self.dialogs.iter().position(|d| d.uuid == Some(brew_uuid)) {
+            self.release_dialog_idx(queue, idx, from_cmce, true);
+        }
+    }
+
+    fn release_dialog_idx(
+        &mut self,
+        queue: &mut MessageQueue,
+        idx: usize,
+        from_cmce: bool,
+        send_bye: bool,
+    ) {
+        if idx >= self.dialogs.len() {
+            return;
+        }
+        if send_bye {
+            self.send_bye_idx(idx);
+        }
+        if let Some((_, ts)) = self.dialogs[idx].media_ready {
+            self.dialog_by_ts.remove(&ts);
+        }
+        let uuid = self.dialogs[idx].uuid;
+        self.dialogs[idx].state = QsoState::Released;
+        if !from_cmce {
+            if let Some(uuid) = uuid {
+                self.send_release_to_cmce(queue, uuid, 16);
+            }
+        }
+        self.dialogs.remove(idx);
+        self.rebuild_ts_index();
+    }
+
+    fn disconnect_all(&mut self, queue: &mut MessageQueue, send_bye: bool) {
+        while !self.dialogs.is_empty() {
+            self.release_dialog_idx(queue, 0, false, send_bye);
+        }
+    }
+
+    fn rebuild_ts_index(&mut self) {
+        self.dialog_by_ts.clear();
+        for (idx, dialog) in self.dialogs.iter().enumerate() {
+            if let Some((_, ts)) = dialog.media_ready {
+                self.dialog_by_ts.insert(ts, idx);
+            }
+        }
+    }
+
+    fn handle_ul_voice(&mut self, prim: TmdCircuitDataInd) {
+        let Some(&idx) = self.dialog_by_ts.get(&prim.ts) else {
+            return;
+        };
+        let Some(socket) = self.audio_socket.as_ref().and_then(|s| s.try_clone().ok()) else {
+            return;
+        };
+        let decoded = {
+            let Some(dialog) = self.dialogs.get_mut(idx) else {
+                return;
+            };
+            if dialog.state != QsoState::Connected {
+                return;
+            }
+            let remote_audio = dialog.remote_audio;
+            let seq = dialog.seq;
+            dialog
+                .audio
+                .decode_tmd_to_gsm_packets(&prim.data)
+                .map(|payloads| (remote_audio, seq, payloads))
+        };
+        let Some((remote_audio, start_seq, payloads)) = decoded else {
+            self.set_error(format!("dropping unsupported TETRA audio block ts={} len={}", prim.ts, prim.data.len()));
+            return;
+        };
+        let mut seq = start_seq;
+        let mut sent_packets = 0usize;
+        let mut last_error = None;
+        for payload in payloads {
+            let packet = build_audio_packet(seq, &payload);
+            match socket.send_to(&packet, remote_audio) {
+                Ok(_) => {
+                    seq = seq.wrapping_add(1);
+                    sent_packets += 1;
+                }
+                Err(err) => {
+                    last_error = Some(format!("audio send to {} failed: {}", remote_audio, err));
+                    break;
+                }
+            }
+        }
+        if let Some(dialog) = self.dialogs.get_mut(idx) {
+            dialog.seq = seq;
+        }
+        if sent_packets > 0 {
+            self.last_tx = Some(format!("audio {} packet(s) to {}", sent_packets, remote_audio));
+        }
+        if let Some(err) = last_error {
+            self.set_error(err);
+        }
+    }
+
+    fn poll_audio(&mut self, queue: &mut MessageQueue) {
+        let Some(socket) = self.audio_socket.as_ref().and_then(|s| s.try_clone().ok()) else {
+            return;
+        };
+        let mut buf = [0u8; 1500];
+        for _ in 0..32 {
+            match socket.recv_from(&mut buf) {
+                Ok((len, addr)) => self.handle_audio_packet(queue, &buf[..len], addr),
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(err) => {
+                    self.set_error(format!("audio receive failed: {}", err));
+                    break;
+                }
+            }
+        }
+    }
+
+    fn handle_audio_packet(&mut self, queue: &mut MessageQueue, packet: &[u8], addr: SocketAddr) {
+        if packet.len() < ECHOLINK_RTP_HEADER || packet[0] != 0xc0 {
+            return;
+        }
+        let payload_type = packet[1] & 0x7f;
+        if payload_type != ECHOLINK_RTP_GSM_PT {
+            tracing::trace!("EchoLink: dropping unsupported RTP payload type {}", payload_type);
+            return;
+        }
+        let Some(idx) = self.find_dialog_by_ip(addr.ip()) else {
+            return;
+        };
+        let payload = &packet[ECHOLINK_RTP_HEADER..];
+        if payload.len() < ECHOLINK_GSM_PACKET_BYTES || payload.len() % ECHOLINK_GSM_FRAME_BYTES != 0 {
+            tracing::trace!("EchoLink: dropping malformed GSM payload len={}", payload.len());
+            return;
+        }
+        let (ts, frames) = {
+            let Some(dialog) = self.dialogs.get_mut(idx) else {
+                return;
+            };
+            if dialog.state != QsoState::Connected {
+                return;
+            }
+            dialog.remote_audio = addr;
+            dialog.last_audio_rx = Some(Instant::now());
+            let Some((_, ts)) = dialog.media_ready else {
+                return;
+            };
+            (ts, dialog.audio.decode_gsm_payload_to_tmd(payload))
+        };
+        for frame in frames {
+            queue.push_back(SapMsg {
+                sap: Sap::TmdSap,
+                src: TetraEntity::Echolink,
+                dest: TetraEntity::Umac,
+                msg: SapMsgInner::TmdCircuitDataReq(TmdCircuitDataReq { ts, data: frame }),
+            });
+        }
+        self.last_rx = Some(format!("audio {} bytes from {}", packet.len(), addr));
+    }
+
+    fn poll_control(&mut self, queue: &mut MessageQueue, cfg: &CfgEcholink) {
+        let Some(socket) = self.control_socket.as_ref().and_then(|s| s.try_clone().ok()) else {
+            return;
+        };
+        let mut buf = [0u8; 1500];
+        for _ in 0..32 {
+            match socket.recv_from(&mut buf) {
+                Ok((len, addr)) => self.handle_control_packet(queue, cfg, &buf[..len], addr),
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(err) => {
+                    self.set_error(format!("control receive failed: {}", err));
+                    break;
+                }
+            }
+        }
+    }
+
+    fn handle_control_packet(
+        &mut self,
+        queue: &mut MessageQueue,
+        cfg: &CfgEcholink,
+        packet: &[u8],
+        addr: SocketAddr,
+    ) {
+        if is_rtcp_bye(packet) {
+            if let Some(idx) = self.find_dialog_by_ip(addr.ip()) {
+                self.last_rx = Some(format!("BYE from {}", addr));
+                self.release_dialog_idx(queue, idx, false, false);
+            } else {
+                self.send_bye_to(addr);
+            }
+            return;
+        }
+
+        if let Some(remote_name) = parse_rtcp_sdes_name(packet) {
+            let remote_call = remote_name
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_ascii_uppercase();
+            if remote_call.is_empty() {
+                return;
+            }
+            self.last_rx = Some(format!("SDES {} from {}", remote_call, addr));
+            if let Some(idx) = self.find_dialog_by_ip(addr.ip()) {
+                if let Some(dialog) = self.dialogs.get_mut(idx) {
+                    dialog.remote_control = addr;
+                    dialog.remote_audio = SocketAddr::new(addr.ip(), cfg.audio_port);
+                    dialog.remote_call = remote_call;
+                    dialog.last_sdes = Instant::now();
+                }
+                self.maybe_connect_dialog(queue, cfg, idx);
+                return;
+            }
+
+            if !cfg.inbound_enabled || cfg.default_tetra_dest_issi == 0 {
+                self.send_bye_to(addr);
+                return;
+            }
+            if cfg.default_tetra_dest_is_group {
+                self.set_error("inbound EchoLink group destinations are not supported by the circuit-call bridge yet");
+                self.send_bye_to(addr);
+                return;
+            }
+            if !target_allowed(cfg, &remote_call) {
+                self.set_error(format!("inbound target {remote_call} is not allowed by EchoLink routing"));
+                self.send_bye_to(addr);
+                return;
+            }
+            self.start_inbound_call(queue, cfg, remote_call, addr);
+        }
+    }
+
+    fn start_inbound_call(
+        &mut self,
+        queue: &mut MessageQueue,
+        cfg: &CfgEcholink,
+        remote_call: String,
+        remote_control: SocketAddr,
+    ) {
+        let Some(audio) = EcholinkAudioTranscoder::new() else {
+            self.set_error("EchoLink codec allocation failed for inbound QSO");
+            self.send_bye_to(remote_control);
+            return;
+        };
+        let uuid = Uuid::new_v4();
+        let call = NetworkCircuitCall {
+            source_issi: cfg.default_tetra_source_issi,
+            destination: cfg.default_tetra_dest_issi,
+            number: remote_call.clone(),
+            priority: 0,
+            service: 0,
+            mode: 0,
+            duplex: 1,
+            method: 0,
+            communication: 0,
+            grant: 0,
+            permission: 0,
+            timeout: CallTimeout::Infinite.into_raw() as u8,
+            ownership: 0,
+            queued: 0,
+        };
+        let dialog = EcholinkDialog {
+            uuid: Some(uuid),
+            call: Some(call.clone()),
+            target: remote_call.clone(),
+            remote_call: remote_call.clone(),
+            remote_ip: remote_control.ip(),
+            remote_audio: SocketAddr::new(remote_control.ip(), cfg.audio_port),
+            remote_control,
+            state: QsoState::Connected,
+            audio,
+            media_ready: None,
+            seq: 1,
+            inbound: true,
+            started: Instant::now(),
+            last_sdes: Instant::now(),
+            last_audio_rx: None,
+        };
+        self.dialogs.push(dialog);
+        let idx = self.dialogs.len() - 1;
+        self.send_sdes_idx(idx, cfg);
+        queue.push_back(SapMsg {
+            sap: Sap::Control,
+            src: TetraEntity::Echolink,
+            dest: TetraEntity::Cmce,
+            msg: SapMsgInner::CmceCallControl(CallControl::NetworkCircuitSetupRequest {
+                brew_uuid: uuid,
+                call,
+            }),
+        });
+        tracing::info!(
+            "EchoLink: inbound QSO {} from {} -> {} {}",
+            remote_call,
+            remote_control,
+            if cfg.default_tetra_dest_is_group { "GSSI" } else { "ISSI" },
+            cfg.default_tetra_dest_issi
+        );
+    }
+
+    fn send_sdes_idx(&mut self, idx: usize, cfg: &CfgEcholink) {
+        let Some(dialog) = self.dialogs.get(idx) else {
+            return;
+        };
+        let packet = build_sdes_packet(&cfg.callsign, &cfg.location);
+        let addr = dialog.remote_control;
+        if let Some(socket) = self.control_socket.as_ref().and_then(|s| s.try_clone().ok()) {
+            match socket.send_to(&packet, addr) {
+                Ok(_) => {
+                    if let Some(dialog) = self.dialogs.get_mut(idx) {
+                        dialog.last_sdes = Instant::now();
+                    }
+                    self.last_tx = Some(format!("SDES to {}", addr));
+                }
+                Err(err) => self.set_error(format!("SDES send to {} failed: {}", addr, err)),
+            }
+        }
+    }
+
+    fn send_bye_idx(&mut self, idx: usize) {
+        let Some(dialog) = self.dialogs.get(idx) else {
+            return;
+        };
+        let addr = dialog.remote_control;
+        self.send_bye_to(addr);
+    }
+
+    fn send_bye_to(&mut self, addr: SocketAddr) {
+        let packet = build_bye_packet();
+        if let Some(socket) = self.control_socket.as_ref().and_then(|s| s.try_clone().ok()) {
+            match socket.send_to(&packet, addr) {
+                Ok(_) => {
+                    self.last_tx = Some(format!("BYE to {}", addr));
+                }
+                Err(err) => self.set_error(format!("BYE send to {} failed: {}", addr, err)),
+            }
+        }
+    }
+
+    fn maybe_keepalive(&mut self, cfg: &CfgEcholink) {
+        let now = Instant::now();
+        let mut idxs = Vec::new();
+        for (idx, dialog) in self.dialogs.iter().enumerate() {
+            if dialog.state != QsoState::Released
+                && now.duration_since(dialog.last_sdes) >= KEEPALIVE_INTERVAL
+            {
+                idxs.push(idx);
+            }
+        }
+        for idx in idxs {
+            self.send_sdes_idx(idx, cfg);
+        }
+    }
+
+    fn maybe_timeout(&mut self, queue: &mut MessageQueue) {
+        let now = Instant::now();
+        let mut idx = 0;
+        while idx < self.dialogs.len() {
+            if self.dialogs[idx].state == QsoState::Connecting
+                && now.duration_since(self.dialogs[idx].started) >= CONNECT_TIMEOUT
+            {
+                let target = self.dialogs[idx].target.clone();
+                self.set_error(format!("connect to {target} timed out"));
+                self.release_dialog_idx(queue, idx, false, true);
+            } else {
+                idx += 1;
+            }
+        }
+    }
+
+    fn find_dialog_by_ip(&self, ip: IpAddr) -> Option<usize> {
+        self.dialogs
+            .iter()
+            .position(|d| d.state != QsoState::Released && d.remote_ip == ip)
+    }
+
+    fn resolve_target(&mut self, cfg: &CfgEcholink, target: &str) -> Result<IpAddr, String> {
+        if let Ok(ip) = target.parse::<IpAddr>() {
+            return Ok(ip);
+        }
+        self.directory_make_online(cfg)?;
+        let stations = self.directory_get_calls(cfg)?;
+        let target_upper = normalize_echolink_target(target);
+        let station = if let Ok(node_id) = target_upper.parse::<u32>() {
+            stations.into_iter().find(|s| s.id == node_id)
+        } else {
+            stations
+                .into_iter()
+                .find(|s| s.callsign.eq_ignore_ascii_case(&target_upper))
+        };
+        station
+            .map(|s| s.ip)
+            .ok_or_else(|| format!("EchoLink target {target_upper} not found in directory"))
+    }
+
+    fn directory_make_online(&mut self, cfg: &CfgEcholink) -> Result<(), String> {
+        let mut stream = self.directory_connect(cfg)?;
+        let time = chrono::Local::now().format("%H:%M").to_string();
+        let mut cmd = Vec::new();
+        cmd.push(b'l');
+        cmd.extend_from_slice(cfg.callsign.as_bytes());
+        cmd.extend_from_slice(&[0xac, 0xac]);
+        cmd.extend_from_slice(cfg.password.as_ref().as_bytes());
+        cmd.extend_from_slice(b"\rONLINE3.38(");
+        cmd.extend_from_slice(time.as_bytes());
+        cmd.extend_from_slice(b")\r");
+        cmd.extend_from_slice(cfg.status_text.as_bytes());
+        cmd.extend_from_slice(b"\r");
+        stream
+            .write_all(&cmd)
+            .map_err(|e| format!("directory ONLINE write failed: {}", e))?;
+        let mut buf = [0u8; 256];
+        let len = stream
+            .read(&mut buf)
+            .map_err(|e| format!("directory ONLINE read failed: {}", e))?;
+        let reply = String::from_utf8_lossy(&buf[..len]).to_string();
+        if reply.starts_with("OK") {
+            self.last_directory_status = "online".to_string();
+            Ok(())
+        } else {
+            Err(format!("directory ONLINE rejected: {}", reply.trim()))
+        }
+    }
+
+    fn directory_get_calls(&mut self, cfg: &CfgEcholink) -> Result<Vec<DirectoryStation>, String> {
+        let mut stream = self.directory_connect(cfg)?;
+        stream
+            .write_all(b"s")
+            .map_err(|e| format!("directory list write failed: {}", e))?;
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            match stream.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(len) => {
+                    buf.extend_from_slice(&chunk[..len]);
+                    if buf.windows(3).any(|w| w == b"+++") {
+                        break;
+                    }
+                }
+                Err(err)
+                    if matches!(
+                        err.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) && !buf.is_empty() =>
+                {
+                    break;
+                }
+                Err(err) => return Err(format!("directory list read failed: {}", err)),
+            }
+        }
+        let text = String::from_utf8_lossy(&buf);
+        let stations = parse_directory_list(&text)?;
+        self.last_directory_status = format!("online; {} stations", stations.len());
+        Ok(stations)
+    }
+
+    fn directory_connect(&self, cfg: &CfgEcholink) -> Result<TcpStream, String> {
+        for server in &cfg.directory_servers {
+            let server = server.trim();
+            if server.is_empty() {
+                continue;
+            }
+            let addrs = (server, cfg.directory_port)
+                .to_socket_addrs()
+                .map_err(|e| format!("directory DNS {}:{} failed: {}", server, cfg.directory_port, e))?;
+            for addr in addrs {
+                match TcpStream::connect_timeout(&addr, DIRECTORY_TIMEOUT) {
+                    Ok(stream) => {
+                        let _ = stream.set_read_timeout(Some(DIRECTORY_TIMEOUT));
+                        let _ = stream.set_write_timeout(Some(DIRECTORY_TIMEOUT));
+                        return Ok(stream);
+                    }
+                    Err(_) => continue,
+                }
+            }
+        }
+        Err("could not connect to any EchoLink directory server".to_string())
+    }
+}
+
+impl TetraEntityTrait for EcholinkEntity {
+    fn entity(&self) -> TetraEntity {
+        TetraEntity::Echolink
+    }
+
+    fn rx_prim(&mut self, queue: &mut MessageQueue, message: SapMsg) {
+        let cfg = self.effective();
+        match message.msg {
+            SapMsgInner::CmceCallControl(CallControl::NetworkCircuitSetupRequest { brew_uuid, call }) => {
+                self.start_outbound_call(queue, &cfg, brew_uuid, call);
+            }
+            SapMsgInner::CmceCallControl(CallControl::NetworkCircuitSetupAccept { brew_uuid }) => {
+                tracing::info!("EchoLink: inbound setup accepted by CMCE uuid={}", brew_uuid);
+            }
+            SapMsgInner::CmceCallControl(CallControl::NetworkCircuitSetupReject { brew_uuid, cause }) => {
+                tracing::info!("EchoLink: setup rejected by CMCE uuid={} cause={}", brew_uuid, cause);
+                self.release_dialog_by_uuid(queue, brew_uuid, true);
+            }
+            SapMsgInner::CmceCallControl(CallControl::NetworkCircuitAlert { brew_uuid }) => {
+                tracing::info!("EchoLink: TETRA side alert uuid={}", brew_uuid);
+            }
+            SapMsgInner::CmceCallControl(CallControl::NetworkCircuitConnectRequest { brew_uuid, call }) => {
+                if let Some(dialog) = self.dialogs.iter_mut().find(|d| d.uuid == Some(brew_uuid)) {
+                    dialog.call = Some(call);
+                    dialog.state = QsoState::Connected;
+                }
+                queue.push_back(SapMsg {
+                    sap: Sap::Control,
+                    src: TetraEntity::Echolink,
+                    dest: TetraEntity::Cmce,
+                    msg: SapMsgInner::CmceCallControl(CallControl::NetworkCircuitConnectConfirm {
+                        brew_uuid,
+                        grant: 0,
+                        permission: 0,
+                    }),
+                });
+            }
+            SapMsgInner::CmceCallControl(CallControl::NetworkCircuitConnectConfirm { .. }) => {}
+            SapMsgInner::CmceCallControl(CallControl::NetworkCircuitMediaReady { brew_uuid, call_id, ts }) => {
+                self.mark_media_ready(brew_uuid, call_id, ts);
+            }
+            SapMsgInner::CmceCallControl(CallControl::NetworkCircuitRelease { brew_uuid, .. }) => {
+                self.release_dialog_by_uuid(queue, brew_uuid, true);
+            }
+            SapMsgInner::TmdCircuitDataInd(prim) => {
+                self.handle_ul_voice(prim);
+            }
+            _ => {}
+        }
+        self.refresh_status();
+    }
+
+    fn tick_start(&mut self, queue: &mut MessageQueue, _ts: TdmaTime) {
+        let cfg = self.effective();
+        if !cfg.enabled {
+            if self.last_enabled != Some(false) {
+                tracing::info!("EchoLink integration disabled");
+                self.last_enabled = Some(false);
+            }
+            self.disconnect_all(queue, false);
+            self.release_ports();
+            self.last_directory_status = "disabled".to_string();
+            self.refresh_status();
+            return;
+        }
+
+        if self.last_enabled != Some(true) {
+            tracing::info!(
+                "EchoLink integration enabled (call={} inbound={} outbound={} ports={}/{})",
+                cfg.callsign,
+                cfg.inbound_enabled,
+                cfg.outbound_enabled,
+                cfg.audio_port,
+                cfg.control_port
+            );
+            self.last_enabled = Some(true);
+        }
+
+        match self.ensure_ports(&cfg) {
+            Ok(()) => {
+                if self.last_directory_status == "disabled" {
+                    self.last_directory_status = "ports ready".to_string();
+                }
+                self.handle_dashboard_commands(queue, &cfg);
+                self.poll_control(queue, &cfg);
+                self.poll_audio(queue);
+                self.maybe_keepalive(&cfg);
+                self.maybe_timeout(queue);
+            }
+            Err(err) => {
+                self.last_directory_status = "error".to_string();
+                self.set_error(err);
+                self.release_ports();
+            }
+        }
+        self.refresh_status();
+    }
+}
+
+fn target_allowed(cfg: &CfgEcholink, target: &str) -> bool {
+    if cfg.allowed_callsigns.is_empty() && cfg.allowed_node_ids.is_empty() {
+        return true;
+    }
+    if cfg.allowed_callsigns.iter().any(|c| c.eq_ignore_ascii_case(target)) {
+        return true;
+    }
+    target
+        .parse::<u32>()
+        .ok()
+        .map(|id| cfg.allowed_node_ids.contains(&id))
+        .unwrap_or(false)
+}
+
+fn route_label(cfg: &CfgEcholink) -> Option<String> {
+    if cfg.default_tetra_dest_issi == 0 {
+        return None;
+    }
+    Some(format!(
+        "{} {} from {}",
+        if cfg.default_tetra_dest_is_group { "GSSI" } else { "ISSI" },
+        cfg.default_tetra_dest_issi,
+        cfg.default_tetra_source_issi
+    ))
+}
+
+fn build_audio_packet(seq: u16, payload: &[u8]) -> Vec<u8> {
+    let mut packet = Vec::with_capacity(ECHOLINK_RTP_HEADER + payload.len());
+    packet.push(0xc0);
+    packet.push(ECHOLINK_RTP_GSM_PT);
+    packet.extend_from_slice(&seq.to_be_bytes());
+    packet.extend_from_slice(&0u32.to_be_bytes());
+    packet.extend_from_slice(&0u32.to_be_bytes());
+    packet.extend_from_slice(payload);
+    packet
+}
+
+fn build_sdes_packet(callsign: &str, name: &str) -> Vec<u8> {
+    let mut packet = Vec::new();
+    packet.push(RTP_VERSION_ECHOLINK << 6);
+    packet.push(RTCP_RR);
+    packet.extend_from_slice(&1u16.to_be_bytes());
+    packet.extend_from_slice(&0u32.to_be_bytes());
+
+    let sdes_start = packet.len();
+    packet.push((RTP_VERSION_ECHOLINK << 6) | 1);
+    packet.push(RTCP_SDES);
+    packet.extend_from_slice(&0u16.to_be_bytes());
+    packet.extend_from_slice(&0u32.to_be_bytes());
+
+    add_sdes_item(&mut packet, RTCP_SDES_CNAME, "CALLSIGN");
+    let display = format!("{:<15}{}", callsign, name);
+    add_sdes_item(&mut packet, RTCP_SDES_NAME, &display);
+    add_sdes_item(&mut packet, RTCP_SDES_EMAIL, "CALLSIGN");
+    let time = chrono::Local::now().format("%H:%M").to_string();
+    add_sdes_item(&mut packet, RTCP_SDES_PHONE, &time);
+    packet.push(RTCP_SDES_END);
+    packet.push(0);
+    while (packet.len() - sdes_start) % 4 != 0 {
+        packet.push(0);
+    }
+    let len_words = ((packet.len() - sdes_start) / 4).saturating_sub(1) as u16;
+    packet[sdes_start + 2..sdes_start + 4].copy_from_slice(&len_words.to_be_bytes());
+    packet
+}
+
+fn build_bye_packet() -> Vec<u8> {
+    let mut packet = Vec::new();
+    packet.push(RTP_VERSION_ECHOLINK << 6);
+    packet.push(RTCP_RR);
+    packet.extend_from_slice(&1u16.to_be_bytes());
+    packet.extend_from_slice(&0u32.to_be_bytes());
+
+    let bye_start = packet.len();
+    packet.push((RTP_VERSION_ECHOLINK << 6) | 1);
+    packet.push(RTCP_BYE);
+    packet.extend_from_slice(&0u16.to_be_bytes());
+    packet.extend_from_slice(&0u32.to_be_bytes());
+    add_counted_text(&mut packet, "jan2002");
+    while (packet.len() - bye_start) % 4 != 0 {
+        packet.push(0);
+    }
+    let len_words = ((packet.len() - bye_start) / 4).saturating_sub(1) as u16;
+    packet[bye_start + 2..bye_start + 4].copy_from_slice(&len_words.to_be_bytes());
+    packet
+}
+
+fn add_sdes_item(packet: &mut Vec<u8>, item_type: u8, text: &str) {
+    packet.push(item_type);
+    add_counted_text(packet, text);
+}
+
+fn add_counted_text(packet: &mut Vec<u8>, text: &str) {
+    let bytes = text.as_bytes();
+    let len = bytes.len().min(255);
+    packet.push(len as u8);
+    packet.extend_from_slice(&bytes[..len]);
+}
+
+fn is_rtcp_bye(packet: &[u8]) -> bool {
+    rtcp_contains(packet, RTCP_BYE)
+}
+
+fn parse_rtcp_sdes_name(packet: &[u8]) -> Option<String> {
+    let mut offset = 0usize;
+    while offset + 4 <= packet.len() {
+        let version = (packet[offset] >> 6) & 0x03;
+        if version != RTP_VERSION_ECHOLINK && version != 1 {
+            return None;
+        }
+        let pt = packet[offset + 1];
+        let words = u16::from_be_bytes([packet[offset + 2], packet[offset + 3]]) as usize + 1;
+        let len = words * 4;
+        if len == 0 || offset + len > packet.len() {
+            return None;
+        }
+        if pt == RTCP_SDES && offset + 8 <= packet.len() {
+            let mut item = offset + 8;
+            let end = offset + len;
+            while item + 2 <= end {
+                let item_type = packet[item];
+                if item_type == RTCP_SDES_END {
+                    break;
+                }
+                let item_len = packet[item + 1] as usize;
+                if item + 2 + item_len > end {
+                    break;
+                }
+                if item_type == RTCP_SDES_NAME {
+                    return Some(String::from_utf8_lossy(&packet[item + 2..item + 2 + item_len]).to_string());
+                }
+                item += 2 + item_len;
+            }
+        }
+        offset += len;
+    }
+    None
+}
+
+fn rtcp_contains(packet: &[u8], packet_type: u8) -> bool {
+    let mut offset = 0usize;
+    while offset + 4 <= packet.len() {
+        let version = (packet[offset] >> 6) & 0x03;
+        if version != RTP_VERSION_ECHOLINK && version != 1 {
+            return false;
+        }
+        let words = u16::from_be_bytes([packet[offset + 2], packet[offset + 3]]) as usize + 1;
+        let len = words * 4;
+        if len == 0 || offset + len > packet.len() {
+            return false;
+        }
+        if packet[offset + 1] == packet_type {
+            return true;
+        }
+        offset += len;
+    }
+    false
+}
+
+fn parse_directory_list(text: &str) -> Result<Vec<DirectoryStation>, String> {
+    let mut lines = text.lines();
+    let Some(start) = lines.next() else {
+        return Err("empty directory response".to_string());
+    };
+    if start.trim() != "@@@" {
+        return Err("directory response did not start with @@@".to_string());
+    }
+    let count = lines
+        .next()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .unwrap_or(0);
+    let mut stations = Vec::new();
+    for _ in 0..count {
+        let Some(callsign) = lines.next() else { break; };
+        if callsign.trim() == "+++" {
+            break;
+        }
+        let _data = lines.next().unwrap_or_default();
+        let id = lines
+            .next()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .unwrap_or(0);
+        let ip = lines
+            .next()
+            .and_then(|s| s.trim().parse::<IpAddr>().ok());
+        if let Some(ip) = ip {
+            let callsign = callsign.trim().to_ascii_uppercase();
+            if !callsign.is_empty() && callsign != "." && callsign != " " {
+                stations.push(DirectoryStation { callsign, id, ip });
+            }
+        }
+    }
+    Ok(stations)
+}

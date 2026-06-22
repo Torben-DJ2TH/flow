@@ -3,7 +3,7 @@ use std::sync::{Arc, RwLock};
 use tetra_core::freqs::FreqInfo;
 
 use crate::bluestation::{
-    CfgAsterisk, CfgCellInfo, CfgControl, CfgDapnet, CfgEmergency, CfgHealth, CfgNetInfo,
+    CfgAsterisk, CfgCellInfo, CfgControl, CfgDapnet, CfgEcholink, CfgEmergency, CfgHealth, CfgNetInfo,
     CfgPhyIo, CfgRecovery, CfgSecurity, CfgTpg2200Action, CfgWxService, PhyBackend,
     StackState,
 };
@@ -81,6 +81,9 @@ pub struct StackConfig {
 
     /// DAPNET inbound-message forwarding configuration.
     pub dapnet: CfgDapnet,
+
+    /// EchoLink bridge configuration.
+    pub echolink: CfgEcholink,
 
     /// Token-protected ActionURL trigger for Motorola TPG2200 Call-Out.
     pub tpg2200_action: CfgTpg2200Action,
@@ -355,6 +358,42 @@ impl SharedConfig {
                 rwth_core_callsign: o.rwth_core_callsign.clone(),
                 rwth_core_authkey: crate::bluestation::SecretField::from(o.rwth_core_authkey.clone()),
                 rwth_messages_limit: o.rwth_messages_limit.max(1),
+            }
+        } else {
+            base
+        }
+    }
+
+    /// Effective EchoLink settings: the dashboard runtime override if present, otherwise the
+    /// config file values. Returns an owned [`CfgEcholink`] so callers don't hold the state lock.
+    pub fn effective_echolink(&self) -> crate::bluestation::CfgEcholink {
+        let base = self.cfg.echolink.clone();
+        if let Some(o) = self.state_read().echolink_override.as_ref() {
+            crate::bluestation::CfgEcholink {
+                enabled: o.enabled,
+                callsign: o.callsign.clone(),
+                password: crate::bluestation::SecretField::from(o.password.clone()),
+                location: o.location.clone(),
+                status_text: o.status_text.clone(),
+                directory_servers: o.directory_servers.clone(),
+                directory_port: o.directory_port,
+                bind_addr: o.bind_addr.clone(),
+                audio_port: o.audio_port,
+                control_port: o.control_port,
+                inbound_enabled: o.inbound_enabled,
+                outbound_enabled: o.outbound_enabled,
+                outbound_prefix: o.outbound_prefix.clone(),
+                strip_outbound_prefix: o.strip_outbound_prefix,
+                service_numbers: o.service_numbers.clone(),
+                default_tetra_source_issi: o.default_tetra_source_issi,
+                default_tetra_dest_issi: o.default_tetra_dest_issi,
+                default_tetra_dest_is_group: o.default_tetra_dest_is_group,
+                routes: o.routes.clone(),
+                allowed_callsigns: o.allowed_callsigns.clone(),
+                allowed_node_ids: o.allowed_node_ids.clone(),
+                auto_connect: o.auto_connect.clone(),
+                reconnect_interval_secs: o.reconnect_interval_secs.max(1),
+                max_session_secs: o.max_session_secs.max(1),
             }
         } else {
             base

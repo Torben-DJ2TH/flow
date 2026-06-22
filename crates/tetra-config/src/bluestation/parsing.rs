@@ -15,6 +15,7 @@ use super::config::{StackConfig, StackMode};
 use super::sec_asterisk::{CfgAsteriskDto, apply_asterisk_patch};
 use super::sec_brew::{CfgBrewDto, apply_brew_patch};
 use super::sec_dapnet::{CfgDapnetDto, apply_dapnet_patch};
+use super::sec_echolink::{CfgEcholinkDto, apply_echolink_patch};
 use super::sec_tpg2200_action::{
     CfgTpg2200ActionDto, apply_tpg2200_action_patch,
 };
@@ -133,6 +134,12 @@ pub fn from_toml_str(toml_str: &str) -> Result<StackConfig, Box<dyn std::error::
             return Err(format!("Unrecognized fields in dapnet config: {:?}", sorted_keys(&dapnet.extra)).into());
         }
 
+    // Optional echolink section
+    if let Some(ref echolink) = root.echolink
+        && !echolink.extra.is_empty() {
+            return Err(format!("Unrecognized fields in echolink config: {:?}", sorted_keys(&echolink.extra)).into());
+        }
+
     // Optional tpg2200_action section
     if let Some(ref action) = root.tpg2200_action
         && !action.extra.is_empty() {
@@ -200,6 +207,7 @@ pub fn from_toml_str(toml_str: &str) -> Result<StackConfig, Box<dyn std::error::
         brew: None,
         asterisk: apply_asterisk_patch(root.asterisk.unwrap_or_default())?,
         dapnet: apply_dapnet_patch(root.dapnet.unwrap_or_default())?,
+        echolink: apply_echolink_patch(root.echolink.unwrap_or_default())?,
         tpg2200_action: apply_tpg2200_action_patch(root.tpg2200_action.unwrap_or_default())?,
         dashboard: None,
         telemetry: None,
@@ -274,6 +282,7 @@ struct TomlConfigRoot {
     brew: Option<CfgBrewDto>,
     asterisk: Option<CfgAsteriskDto>,
     dapnet: Option<CfgDapnetDto>,
+    echolink: Option<CfgEcholinkDto>,
     tpg2200_action: Option<CfgTpg2200ActionDto>,
     dashboard: Option<CfgDashboardDto>,
     telemetry: Option<CfgTelemetryDto>,
@@ -434,6 +443,32 @@ rwth_core_callsign = "DL1ABC"
 rwth_core_authkey = "example"
 rwth_messages_limit = 100
 
+[echolink]
+enabled = true
+callsign = "DL1ABC-L"
+password = "example"
+location = "FlowStation"
+status_text = "FlowStation EchoLink bridge"
+directory_servers = ["servers.echolink.org", "backup.echolink.org"]
+directory_port = 5200
+bind_addr = "0.0.0.0"
+audio_port = 5198
+control_port = 5199
+inbound_enabled = true
+outbound_enabled = true
+outbound_prefix = "92"
+strip_outbound_prefix = true
+service_numbers = ["700"]
+default_tetra_source_issi = 9999
+default_tetra_dest_issi = 80
+default_tetra_dest_is_group = false
+routes = { "700" = "ECHOTEST", "701" = "DL1ABC-L" }
+allowed_callsigns = ["ECHOTEST", "DL1ABC-L"]
+allowed_node_ids = [9999]
+auto_connect = ""
+reconnect_interval_secs = 30
+max_session_secs = 3600
+
 [tpg2200_action]
 enabled = true
 token = "example-token"
@@ -485,6 +520,11 @@ sds_queue_critical = 128
         assert!(cfg.dapnet.callout_allowed_rics.contains(&4520));
         assert!(cfg.dapnet.telegram_allowed_rics.contains(&200));
         assert!(cfg.dapnet.telegram_allowed_rics.contains(&0x1C40));
+        assert!(cfg.echolink.enabled);
+        assert_eq!(cfg.echolink.callsign, "DL1ABC-L");
+        assert_eq!(cfg.echolink.routes.get("700"), Some(&"ECHOTEST".to_string()));
+        assert_eq!(cfg.echolink.default_tetra_dest_issi, 80);
+        assert!(!cfg.echolink.default_tetra_dest_is_group);
     }
 
     fn minimal_toml(extra_cell: &str) -> String {

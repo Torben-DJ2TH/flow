@@ -77,11 +77,13 @@ impl CcBsSubentity {
         let communication = CommunicationType::try_from(call.communication as u64).unwrap_or(CommunicationType::P2p);
         let network_requested_duplex = call.duplex != 0;
         let ms_duplex_capable = self.config.state_read().subscribers.duplex_capable(called_addr.ssi);
-        let asterisk_forces_duplex = network_entity == TetraEntity::Asterisk && network_requested_duplex;
-        let simplex_duplex = network_requested_duplex && (asterisk_forces_duplex || ms_duplex_capable.unwrap_or(false));
-        if asterisk_forces_duplex && ms_duplex_capable != Some(true) {
+        let bridge_forces_duplex = matches!(network_entity, TetraEntity::Asterisk | TetraEntity::Echolink)
+            && network_requested_duplex;
+        let simplex_duplex = network_requested_duplex && (bridge_forces_duplex || ms_duplex_capable.unwrap_or(false));
+        if bridge_forces_duplex && ms_duplex_capable != Some(true) {
             tracing::info!(
-                "CMCE: keeping inbound Asterisk setup uuid={} dst={} as duplex despite ms_duplex_capable={:?} (number='{}')",
+                "CMCE: keeping inbound {:?} setup uuid={} dst={} as duplex despite ms_duplex_capable={:?} (number='{}')",
+                network_entity,
                 brew_uuid,
                 call.destination,
                 ms_duplex_capable,
@@ -141,7 +143,7 @@ impl CcBsSubentity {
         let external_subscriber_number = Self::encode_external_subscriber_number(&external_number);
         let calling_party_address_ssi = if call.source_issi != 0 {
             Some(call.source_issi)
-        } else if network_entity == TetraEntity::Asterisk {
+        } else if matches!(network_entity, TetraEntity::Asterisk | TetraEntity::Echolink) {
             Self::external_number_as_ssi(&external_number)
         } else {
             None

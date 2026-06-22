@@ -513,7 +513,18 @@ impl CcBsSubentity {
         }
 
         let asterisk_number = self.asterisk_route_number(&network_call);
-        let network_entity = if asterisk_number.is_some() { TetraEntity::Asterisk } else { TetraEntity::Brew };
+        let echolink_target = if asterisk_number.is_none() {
+            self.echolink_route_target(&network_call)
+        } else {
+            None
+        };
+        let network_entity = if asterisk_number.is_some() {
+            TetraEntity::Asterisk
+        } else if echolink_target.is_some() {
+            TetraEntity::Echolink
+        } else {
+            TetraEntity::Brew
+        };
         if let Some(number) = asterisk_number {
             tracing::info!(
                 "CMCE: routing U-SETUP src={} dialed='{}' to Asterisk SIP number='{}'",
@@ -522,6 +533,16 @@ impl CcBsSubentity {
                 number
             );
             network_call.number = number;
+            network_call.destination = 0;
+            network_call.duplex = 1;
+        } else if let Some(target) = echolink_target {
+            tracing::info!(
+                "CMCE: routing U-SETUP src={} dialed='{}' to EchoLink target='{}'",
+                calling_party.ssi,
+                network_call.number,
+                target
+            );
+            network_call.number = target;
             network_call.destination = 0;
             network_call.duplex = 1;
         } else {
@@ -567,6 +588,7 @@ impl CcBsSubentity {
 
         let has_external_called_party = Self::has_external_called_party(pdu, &network_call);
         let destination_routable = network_entity == TetraEntity::Asterisk
+            || network_entity == TetraEntity::Echolink
             || network_call.destination == 0
             || net_brew::is_brew_issi_routable(&self.config, network_call.destination);
         let called_call_addr = if has_external_called_party || network_call.destination == 0 {

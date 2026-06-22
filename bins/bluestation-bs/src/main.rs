@@ -17,6 +17,7 @@ use tetra_entities::net_brew::entity::BrewEntity;
 use tetra_entities::net_brew::new_websocket_transport;
 use tetra_entities::net_dapnet::spawn_dapnet_worker;
 use tetra_entities::net_dashboard::DashboardServer;
+use tetra_entities::net_echolink::{EcholinkEntity, echolink_channel};
 use tetra_entities::net_telegram::{TelegramAlertSink, TelegramAlerter, telegram_alert_channel};
 use tetra_entities::net_telemetry::worker::TelemetryWorker;
 use tetra_entities::net_telemetry::{
@@ -141,7 +142,11 @@ fn start_control_worker(cfg: SharedConfig, command_dispatchers: HashMap<TetraEnt
 }
 
 /// Start base station stack
-fn build_bs_stack(cfg: &mut SharedConfig, config_path: &str) -> (MessageRouter, Option<TelemetrySource>, HashMap<TetraEntity, CommandDispatcher>, Option<TelemetrySink>) {
+fn build_bs_stack(
+    cfg: &mut SharedConfig,
+    config_path: &str,
+    echolink_cmd_rx: tetra_entities::net_echolink::EcholinkCmdReceiver,
+) -> (MessageRouter, Option<TelemetrySource>, HashMap<TetraEntity, CommandDispatcher>, Option<TelemetrySink>) {
     let mut router = MessageRouter::new(cfg.clone());
 
     // Build telemetry sink/source — always create if either telemetry or dashboard is enabled
@@ -275,6 +280,11 @@ fn build_bs_stack(cfg: &mut SharedConfig, config_path: &str) -> (MessageRouter, 
         }
     }
 
+    router.register_entity(Box::new(EcholinkEntity::new(cfg.clone(), echolink_cmd_rx)));
+    if cfg.effective_echolink().enabled {
+        eprintln!(" -> EchoLink integration enabled");
+    }
+
     // Init network time
     router.set_dl_time(TdmaTime::default());
 
@@ -344,7 +354,9 @@ fn main() {
         );
     }
 
-    let (mut router, tsource, cdispatchers, dapnet_telemetry_sink) = build_bs_stack(&mut cfg, &args.config);
+    let (echolink_cmd_tx, echolink_cmd_rx) = echolink_channel();
+    let (mut router, tsource, cdispatchers, dapnet_telemetry_sink) =
+        build_bs_stack(&mut cfg, &args.config, echolink_cmd_rx);
     let dapnet_cmd_tx = cdispatchers
         .get(&TetraEntity::Cmce)
         .map(|dispatcher| dispatcher.clone_sender());
@@ -395,6 +407,7 @@ fn main() {
 
             // Propagate SharedConfig so the dashboard can read live SDS queue state.
             dashboard.set_shared_config(cfg.clone());
+            dashboard.set_echolink_cmd_sender(echolink_cmd_tx.clone());
 
             // Create a control link so dashboard can send commands to CMCE
             let dash_cmd_tx = {
