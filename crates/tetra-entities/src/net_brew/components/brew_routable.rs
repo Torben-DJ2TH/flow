@@ -1,5 +1,5 @@
 use tetra_config::bluestation::{CfgBrew, SharedConfig};
-use tetra_core::TetraEntity;
+use tetra_core::tetra_entities::TetraEntity;
 
 pub const BREW_ENTITIES: [TetraEntity; 2] = [TetraEntity::Brew, TetraEntity::Brew2];
 

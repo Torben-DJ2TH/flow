@@ -108,23 +108,31 @@ impl CcBsSubentity {
         call_id: u16,
         requesting_party: TetraAddress,
     ) -> Result<(), GroupTransitionError> {
-        let Some(call) = self.active_calls.get_mut(&call_id) else {
-            return Err(GroupTransitionError::UnknownCall(call_id));
-        };
+        let (ts, current_speaker, queue_result, brew_notification) = {
+            let Some(call) = self.active_calls.get_mut(&call_id) else {
+                return Err(GroupTransitionError::UnknownCall(call_id));
+            };
 
-        let state = call.state();
-        let formal_state = call.formal_state;
-        Self::validate_group_transition(call_id, state, formal_state, GroupEvent::TxDemand)?;
+            let state = call.state();
+            let formal_state = call.formal_state;
+            Self::validate_group_transition(call_id, state, formal_state, GroupEvent::TxDemand)?;
 
-        let ts = call.ts;
-        let dest_ssi = call.dest_gssi;
-        let current_speaker = call.source_issi;
-        let grant_now = matches!(state, GroupCallState::NoActiveSpeaker { .. });
-        let queue_result = if grant_now {
-            call.grant_floor(requesting_party.ssi, Some(requesting_party));
-            None
-        } else {
-            Some(call.queue_tx_demand(requesting_party))
+            let ts = call.ts;
+            let current_speaker = call.source_issi;
+            let grant_now = matches!(state, GroupCallState::NoActiveSpeaker { .. });
+            let queue_result = if grant_now {
+                call.grant_floor(requesting_party.ssi, Some(requesting_party));
+                None
+            } else {
+                Some(call.queue_tx_demand(requesting_party))
+            };
+            let brew_notification = if grant_now {
+                Self::brew_notification_for_group_call(call, requesting_party.ssi)
+            } else {
+                BrewNotification::Never
+            };
+
+            (ts, current_speaker, queue_result, brew_notification)
         };
 
         let Some(cached) = self.cached_setups.get(&call_id) else {
@@ -177,7 +185,6 @@ impl CcBsSubentity {
         );
         self.send_d_tx_granted_facch(queue, call_id, requesting_party.ssi, dest_addr.ssi, ts);
 
-        let brew_notification = Self::brew_notification_for_group_call(call, requesting_party.ssi);
         self.notify_floor_granted(
             queue,
             GroupFloorGrant {
@@ -199,32 +206,37 @@ impl CcBsSubentity {
         call_id: u16,
         sender: TetraAddress,
     ) -> Result<(), GroupTransitionError> {
-        let Some(call) = self.active_calls.get_mut(&call_id) else {
-            return Err(GroupTransitionError::UnknownCall(call_id));
+        let (ts, queued_request, brew_notification) = {
+            let Some(call) = self.active_calls.get_mut(&call_id) else {
+                return Err(GroupTransitionError::UnknownCall(call_id));
+            };
+
+            let state = call.state();
+            let formal_state = call.formal_state;
+            Self::validate_group_transition(call_id, state, formal_state, GroupEvent::TxCeased)?;
+
+            if !call.is_current_speaker(sender.ssi) {
+                return Err(GroupTransitionError::NotCurrentSpeaker {
+                    call_id,
+                    sender_issi: sender.ssi,
+                    current_speaker_issi: call.source_issi,
+                });
+            }
+
+            let ts = call.ts;
+            let queued_request = call.take_queued_tx_demand();
+            let notify_source = queued_request.map_or(sender.ssi, |requester| requester.ssi);
+            if let Some(requester) = queued_request {
+                // Transmitting -> Transmitting, hand over floor directly to queued requester.
+                call.grant_floor(requester.ssi, Some(requester));
+            } else {
+                // Transmitting -> NoActiveSpeaker.
+                call.enter_hangtime(self.dltime);
+            }
+            let brew_notification = Self::brew_notification_for_group_call(call, notify_source);
+
+            (ts, queued_request, brew_notification)
         };
-
-        let state = call.state();
-        let formal_state = call.formal_state;
-        Self::validate_group_transition(call_id, state, formal_state, GroupEvent::TxCeased)?;
-
-        if !call.is_current_speaker(sender.ssi) {
-            return Err(GroupTransitionError::NotCurrentSpeaker {
-                call_id,
-                sender_issi: sender.ssi,
-                current_speaker_issi: call.source_issi,
-            });
-        }
-
-        let ts = call.ts;
-        let dest_ssi = call.dest_gssi;
-        let queued_request = call.take_queued_tx_demand();
-        if let Some(requester) = queued_request {
-            // Transmitting -> Transmitting, hand over floor directly to queued requester.
-            call.grant_floor(requester.ssi, Some(requester));
-        } else {
-            // Transmitting -> NoActiveSpeaker.
-            call.enter_hangtime(self.dltime);
-        }
 
         let Some(cached) = self.cached_setups.get(&call_id) else {
             return Err(GroupTransitionError::MissingCachedSetup(call_id));
@@ -235,7 +247,6 @@ impl CcBsSubentity {
             self.fsm_send_d_tx_granted_individual(queue, call_id, requester, ts, TransmissionGrant::Granted, Some(requester.ssi));
             self.send_d_tx_granted_facch(queue, call_id, requester.ssi, dest_addr.ssi, ts);
 
-            let brew_notification = Self::brew_notification_for_group_call(call, requester.ssi);
             self.notify_floor_granted(
                 queue,
                 GroupFloorGrant {
@@ -266,7 +277,6 @@ impl CcBsSubentity {
         let msg = Self::build_sapmsg_stealing(sdu, self.dltime, dest_addr, ts, None);
         queue.push_back(msg);
 
-        let brew_notification = Self::brew_notification_for_group_call(call, sender.ssi);
         self.notify_floor_released(queue, CallTimeslot { call_id, ts }, true, brew_notification);
 
         Ok(())
