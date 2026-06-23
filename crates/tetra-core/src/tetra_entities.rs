@@ -32,4 +32,7 @@ pub enum TetraEntity {
 
     /// EchoLink UDP/GSM bridge
     Echolink,
+
+    /// Secondary Brew protocol bridge.
+    Brew2,
 }

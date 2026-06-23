@@ -177,6 +177,7 @@ impl CcBsSubentity {
         );
         self.send_d_tx_granted_facch(queue, call_id, requesting_party.ssi, dest_addr.ssi, ts);
 
+        let brew_notification = Self::brew_notification_for_group_call(call, requesting_party.ssi);
         self.notify_floor_granted(
             queue,
             GroupFloorGrant {
@@ -186,7 +187,7 @@ impl CcBsSubentity {
                 ts,
             },
             true,
-            BrewNotification::IfGroupRoutable(dest_ssi),
+            brew_notification,
         );
 
         Ok(())
@@ -234,6 +235,7 @@ impl CcBsSubentity {
             self.fsm_send_d_tx_granted_individual(queue, call_id, requester, ts, TransmissionGrant::Granted, Some(requester.ssi));
             self.send_d_tx_granted_facch(queue, call_id, requester.ssi, dest_addr.ssi, ts);
 
+            let brew_notification = Self::brew_notification_for_group_call(call, requester.ssi);
             self.notify_floor_granted(
                 queue,
                 GroupFloorGrant {
@@ -243,7 +245,7 @@ impl CcBsSubentity {
                     ts,
                 },
                 true,
-                BrewNotification::IfGroupRoutable(dest_ssi),
+                brew_notification,
             );
             return Ok(());
         }
@@ -264,12 +266,8 @@ impl CcBsSubentity {
         let msg = Self::build_sapmsg_stealing(sdu, self.dltime, dest_addr, ts, None);
         queue.push_back(msg);
 
-        self.notify_floor_released(
-            queue,
-            CallTimeslot { call_id, ts },
-            true,
-            BrewNotification::IfGroupRoutable(dest_ssi),
-        );
+        let brew_notification = Self::brew_notification_for_group_call(call, sender.ssi);
+        self.notify_floor_released(queue, CallTimeslot { call_id, ts }, true, brew_notification);
 
         Ok(())
     }
@@ -278,6 +276,7 @@ impl CcBsSubentity {
         &mut self,
         queue: &mut MessageQueue,
         call_id: u16,
+        network_entity: TetraEntity,
         brew_uuid: uuid::Uuid,
         source_issi: u32,
     ) -> Result<(), GroupTransitionError> {
@@ -291,11 +290,14 @@ impl CcBsSubentity {
 
         call.grant_floor(source_issi, None);
         call.brew_uuid = Some(brew_uuid);
-        if let CallOrigin::Network { brew_uuid: old_uuid } = call.origin
-            && old_uuid != brew_uuid
+        if let CallOrigin::Network {
+            network_entity: old_entity,
+            brew_uuid: old_uuid,
+        } = &call.origin
+            && (*old_uuid != brew_uuid || *old_entity != network_entity)
         {
             tracing::warn!("CMCE FSM: network call start changed brew_uuid call_id={}", call_id);
-            call.origin = CallOrigin::Network { brew_uuid };
+            call.origin = CallOrigin::Network { network_entity, brew_uuid };
         }
 
         let ts = call.ts;
@@ -309,7 +311,7 @@ impl CcBsSubentity {
         queue.push_back(SapMsg {
             sap: Sap::Control,
             src: TetraEntity::Cmce,
-            dest: TetraEntity::Brew,
+            dest: network_entity,
             msg: SapMsgInner::CmceCallControl(CallControl::NetworkCallReady {
                 brew_uuid,
                 call_id,

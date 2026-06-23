@@ -300,7 +300,10 @@ impl CcBsSubentity {
                 ts: circuit.ts,
             },
             false,
-            BrewNotification::IfGroupRoutable(dest_gssi),
+            BrewNotification::ForLocalSource {
+                source_issi: calling_party.ssi,
+                dest_gssi,
+            },
         );
     }
 
@@ -410,11 +413,7 @@ impl CcBsSubentity {
         // Emergency / pre-emptive priority: if the cell is full, free the traffic channel(s) this
         // call needs by releasing lower-priority calls before allocating (ETSI EN 300 392-2 clause
         // 14.8). Duplex needs two slots, simplex one. No-op for ordinary priority.
-        self.preempt_for_priority(
-            queue,
-            if pdu.simplex_duplex_selection { 2 } else { 1 },
-            pdu.call_priority,
-        );
+        self.preempt_for_priority(queue, if pdu.simplex_duplex_selection { 2 } else { 1 }, pdu.call_priority);
 
         // Allocate circuit(s). Duplex uses two traffic timeslots, one per MS, with cross-routing.
         let (circuit_calling, circuit_called) = {
@@ -650,8 +649,21 @@ impl CcBsSubentity {
             TetraEntity::Asterisk
         } else if echolink_target.is_some() {
             TetraEntity::Echolink
+        } else if let Some(entity) = brew::route_entity_for_local_issi(&self.config, calling_party.ssi) {
+            entity
         } else {
-            TetraEntity::Brew
+            tracing::info!(
+                "CMCE: rejecting U-SETUP P2P from ISSI {} (no unique Brew route for local source)",
+                calling_party.ssi
+            );
+            self.reject_setup_request(
+                queue,
+                message,
+                calling_party,
+                DisconnectCause::CalledPartyNotReachable,
+                "source ISSI is not assigned to a Brew server",
+            );
+            return;
         };
 
         if let Some(number) = asterisk_number {
@@ -707,7 +719,7 @@ impl CcBsSubentity {
                 return;
             }
 
-            if !brew::is_brew_issi_routable(&self.config, calling_party.ssi) {
+            if !brew::is_brew_issi_routable_for_entity(&self.config, network_entity, calling_party.ssi) {
                 tracing::info!(
                     "CMCE: rejecting U-SETUP P2P over Brew src={} dst={} (source ISSI not routable)",
                     calling_party.ssi,
@@ -740,9 +752,9 @@ impl CcBsSubentity {
         let destination_routable = network_entity == TetraEntity::Asterisk
             || network_entity == TetraEntity::Echolink
             || network_call.destination == 0
-            || brew::is_brew_issi_routable(&self.config, network_call.destination);
+            || brew::is_brew_issi_routable_for_entity(&self.config, network_entity, network_call.destination);
 
-        if network_entity == TetraEntity::Brew && !has_external_called_party && !destination_routable {
+        if brew::is_brew_entity(network_entity) && !has_external_called_party && !destination_routable {
             tracing::info!(
                 "CMCE: rejecting U-SETUP P2P over Brew src={} dst={} (destination ISSI not routable)",
                 calling_party.ssi,
@@ -758,7 +770,7 @@ impl CcBsSubentity {
             return;
         }
 
-        if network_entity == TetraEntity::Brew && has_external_called_party && !destination_routable && network_call.destination != 0 {
+        if brew::is_brew_entity(network_entity) && has_external_called_party && !destination_routable && network_call.destination != 0 {
             let number_is_service_code = !network_call.number.is_empty() && network_call.number.chars().all(|c| c.is_ascii_digit());
             if !number_is_service_code {
                 tracing::debug!(

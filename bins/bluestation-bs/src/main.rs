@@ -25,7 +25,8 @@ use tetra_entities::net_snom::{snom_notify_channel, spawn_snom_notify_worker};
 use tetra_entities::net_telegram::{TelegramAlertSink, TelegramAlerter, telegram_alert_channel};
 use tetra_entities::net_telemetry::worker::TelemetryWorker;
 use tetra_entities::net_telemetry::{
-    TELEMETRY_HEARTBEAT_INTERVAL, TELEMETRY_HEARTBEAT_TIMEOUT, TELEMETRY_PROTOCOL_VERSION, TelemetrySink, TelemetrySource, telemetry_channel,
+    TELEMETRY_HEARTBEAT_INTERVAL, TELEMETRY_HEARTBEAT_TIMEOUT, TELEMETRY_PROTOCOL_VERSION, TelemetrySink, TelemetrySource,
+    telemetry_channel,
 };
 use tetra_entities::network::transports::websocket::{WebSocketTransport, WebSocketTransportConfig};
 use tetra_entities::{
@@ -42,7 +43,11 @@ use tetra_entities::{
 /// Result of loading config — either primary or fallback.
 enum ConfigLoadResult {
     Primary(StackConfig),
-    Fallback { config: StackConfig, fallback_path: String, primary_error: String },
+    Fallback {
+        config: StackConfig,
+        fallback_path: String,
+        primary_error: String,
+    },
 }
 
 /// Try to load the primary config. If it fails, try the fallback
@@ -61,7 +66,10 @@ fn load_config_with_fallback(cfg_path: &str) -> ConfigLoadResult {
             eprintln!("WARNING: Trying fallback config '{}'...", fallback_path);
             match parsing::from_file(&fallback_path) {
                 Ok(c) => {
-                    eprintln!("WARNING: Started on FALLBACK config '{}'. Primary config is invalid!", fallback_path);
+                    eprintln!(
+                        "WARNING: Started on FALLBACK config '{}'. Primary config is invalid!",
+                        fallback_path
+                    );
                     ConfigLoadResult::Fallback {
                         config: c,
                         fallback_path,
@@ -150,7 +158,12 @@ fn build_bs_stack(
     cfg: &mut SharedConfig,
     config_path: &str,
     echolink_cmd_rx: tetra_entities::net_echolink::EcholinkCmdReceiver,
-) -> (MessageRouter, Option<TelemetrySource>, HashMap<TetraEntity, CommandDispatcher>, Option<TelemetrySink>) {
+) -> (
+    MessageRouter,
+    Option<TelemetrySource>,
+    HashMap<TetraEntity, CommandDispatcher>,
+    Option<TelemetrySink>,
+) {
     let mut router = MessageRouter::new(cfg.clone());
 
     // Build telemetry sink/source — always create if either telemetry or dashboard is enabled
@@ -191,7 +204,7 @@ fn build_bs_stack(
         let hcfg = cfg.config().health.clone();
         if hcfg.enabled {
             use std::time::Duration;
-            tetra_entities::health::registry().set_brew_configured(cfg.config().brew.is_some());
+            tetra_entities::health::registry().set_brew_configured(cfg.config().brew.is_some() || cfg.config().brew2.is_some());
             tetra_entities::health::spawn_health_monitor(
                 sink.clone(),
                 tetra_entities::health::HealthMonitorConfig {
@@ -266,12 +279,21 @@ fn build_bs_stack(
     // Register Brew entity if enabled
     if let Some(ref brew_cfg) = cfg.config().brew {
         let transport = new_websocket_transport(brew_cfg);
-        let mut brew_entity = BrewEntity::new(cfg.clone(), transport);
+        let mut brew_entity = BrewEntity::new(cfg.clone(), TetraEntity::Brew, brew_cfg.clone(), transport);
         if let Some(ref sink) = tsink {
             brew_entity.set_telemetry_sink(sink.clone());
         }
         router.register_entity(Box::new(brew_entity));
         eprintln!(" -> Brew/TetraPack integration enabled");
+    }
+    if let Some(ref brew_cfg) = cfg.config().brew2 {
+        let transport = new_websocket_transport(brew_cfg);
+        let mut brew_entity = BrewEntity::new(cfg.clone(), TetraEntity::Brew2, brew_cfg.clone(), transport);
+        if let Some(ref sink) = tsink {
+            brew_entity.set_telemetry_sink(sink.clone());
+        }
+        router.register_entity(Box::new(brew_entity));
+        eprintln!(" -> Brew2/TetraPack integration enabled");
     }
 
     // Register Asterisk SIP/RTP entity if enabled
@@ -331,8 +353,11 @@ fn main() {
     // Load config — tries primary, falls back to <config>.fallback if primary is invalid.
     let (stack_cfg, fallback_info) = match load_config_with_fallback(&args.config) {
         ConfigLoadResult::Primary(c) => (c, None),
-        ConfigLoadResult::Fallback { config, fallback_path, primary_error } =>
-            (config, Some((fallback_path, primary_error))),
+        ConfigLoadResult::Fallback {
+            config,
+            fallback_path,
+            primary_error,
+        } => (config, Some((fallback_path, primary_error))),
     };
 
     // Build immutable, cheaply clonable SharedConfig and build the base station stack
@@ -362,16 +387,15 @@ fn main() {
     if let Some((ref fb_path, ref fb_reason)) = fallback_info {
         tracing::warn!(
             "FALLBACK CONFIG ACTIVE: primary config '{}' failed ({}). Running on '{}'.",
-            args.config, fb_reason, fb_path
+            args.config,
+            fb_reason,
+            fb_path
         );
     }
 
     let (echolink_cmd_tx, echolink_cmd_rx) = echolink_channel();
-    let (mut router, tsource, cdispatchers, dapnet_telemetry_sink) =
-        build_bs_stack(&mut cfg, &args.config, echolink_cmd_rx);
-    let dapnet_cmd_tx = cdispatchers
-        .get(&TetraEntity::Cmce)
-        .map(|dispatcher| dispatcher.clone_sender());
+    let (mut router, tsource, cdispatchers, dapnet_telemetry_sink) = build_bs_stack(&mut cfg, &args.config, echolink_cmd_rx);
+    let dapnet_cmd_tx = cdispatchers.get(&TetraEntity::Cmce).map(|dispatcher| dispatcher.clone_sender());
     let mut dapnet_telegram_sink: Option<TelegramAlertSink> = None;
     let mut geoalarm_sink: Option<GeoAlarmSink> = None;
 
@@ -402,22 +426,18 @@ fn main() {
             let (sink, alert_source) = telegram_alert_channel();
             let alert_cfg = cfg.clone();
             let snom_for_alerts = snom_notify_sink.clone();
-            thread::Builder::new().name("telegram-alerter".into()).spawn(move || {
-                TelegramAlerter::new(alert_cfg, alert_source)
-                    .with_snom_sink(snom_for_alerts)
-                    .run();
-            }).expect("failed to spawn telegram-alerter thread");
+            thread::Builder::new()
+                .name("telegram-alerter".into())
+                .spawn(move || {
+                    TelegramAlerter::new(alert_cfg, alert_source).with_snom_sink(snom_for_alerts).run();
+                })
+                .expect("failed to spawn telegram-alerter thread");
             Some(sink)
         } else {
             None
         };
         dapnet_telegram_sink = alert_sink.clone();
-        geoalarm_sink = spawn_geoalarm_worker(
-            cfg.clone(),
-            dapnet_cmd_tx.clone(),
-            alert_sink.clone(),
-            snom_notify_sink.clone(),
-        );
+        geoalarm_sink = spawn_geoalarm_worker(cfg.clone(), dapnet_cmd_tx.clone(), alert_sink.clone(), snom_notify_sink.clone());
 
         // Optional dashboard HTTP server.
         let dashboard: Option<std::sync::Arc<DashboardServer>> = if has_dashboard {
@@ -480,22 +500,29 @@ fn main() {
         if let Some(log_rx) = dashboard_log_rx {
             let dash_log = dashboard.clone();
             let log_alert = alert_sink.clone();
-            thread::Builder::new().name("log-fanout".into()).spawn(move || {
-                while let Ok((level, msg)) = log_rx.recv() {
-                    // Filter out debug/trace noise.
-                    if level == "DEBUG" || level == "TRACE" { continue; }
-                    // Filter out TDMA tick noise — thousands per second.
-                    if msg.contains("tick dl") || msg.contains("tick ul") || msg.starts_with("--- tick") { continue; }
-                    if level == "WARN" || level == "ERROR" {
-                        if let Some(s) = &log_alert {
-                            s.send_log(level.clone(), msg.clone());
+            thread::Builder::new()
+                .name("log-fanout".into())
+                .spawn(move || {
+                    while let Ok((level, msg)) = log_rx.recv() {
+                        // Filter out debug/trace noise.
+                        if level == "DEBUG" || level == "TRACE" {
+                            continue;
+                        }
+                        // Filter out TDMA tick noise — thousands per second.
+                        if msg.contains("tick dl") || msg.contains("tick ul") || msg.starts_with("--- tick") {
+                            continue;
+                        }
+                        if level == "WARN" || level == "ERROR" {
+                            if let Some(s) = &log_alert {
+                                s.send_log(level.clone(), msg.clone());
+                            }
+                        }
+                        if let Some(d) = &dash_log {
+                            d.push_log(&level, msg);
                         }
                     }
-                    if let Some(d) = &dash_log {
-                        d.push_log(&level, msg);
-                    }
-                }
-            }).expect("failed to spawn log-fanout thread");
+                })
+                .expect("failed to spawn log-fanout thread");
         }
 
         // Single telemetry consumer: fan each event out to the dashboard, the Telegram alerter, and
@@ -511,53 +538,64 @@ fn main() {
             let alert = alert_sink.clone();
             let snom = snom_notify_sink.clone();
             let geoalarm = geoalarm_sink.clone();
-            thread::Builder::new().name("telemetry-fanout".into()).spawn(move || {
-                use tetra_entities::health::registry as health_registry;
-                use tetra_entities::net_telemetry::TelemetryEvent;
-                // Approximate attached-radio count, maintained from registration telemetry, fed to
-                // the health registry (Radios domain). Re-registrations of an already-known radio
-                // don't emit MsRegistration, so increment/decrement stays balanced.
-                let mut radio_count: usize = 0;
-                loop {
-                    match telemetry_source.recv() {
-                        Some(event) => {
-                            // Feed the lite health registry (cheap, before the fan-out clones).
-                            match &event {
-                                TelemetryEvent::BrewConnected { connected, .. } => health_registry().set_brew_up(*connected),
-                                TelemetryEvent::MsRegistration { .. } => {
-                                    radio_count += 1;
-                                    health_registry().set_registered_radios(radio_count);
-                                    health_registry().note_radio_activity();
+            thread::Builder::new()
+                .name("telemetry-fanout".into())
+                .spawn(move || {
+                    use tetra_entities::health::registry as health_registry;
+                    use tetra_entities::net_telemetry::TelemetryEvent;
+                    // Approximate attached-radio count, maintained from registration telemetry, fed to
+                    // the health registry (Radios domain). Re-registrations of an already-known radio
+                    // don't emit MsRegistration, so increment/decrement stays balanced.
+                    let mut radio_count: usize = 0;
+                    loop {
+                        match telemetry_source.recv() {
+                            Some(event) => {
+                                // Feed the lite health registry (cheap, before the fan-out clones).
+                                match &event {
+                                    TelemetryEvent::BrewConnected { connected, .. } => health_registry().set_brew_up(*connected),
+                                    TelemetryEvent::MsRegistration { .. } => {
+                                        radio_count += 1;
+                                        health_registry().set_registered_radios(radio_count);
+                                        health_registry().note_radio_activity();
+                                    }
+                                    TelemetryEvent::MsDeregistration { .. } | TelemetryEvent::MsTimeoutDrop { .. } => {
+                                        radio_count = radio_count.saturating_sub(1);
+                                        health_registry().set_registered_radios(radio_count);
+                                    }
+                                    TelemetryEvent::MsRssi { .. } => health_registry().note_radio_activity(),
+                                    _ => {}
                                 }
-                                TelemetryEvent::MsDeregistration { .. } | TelemetryEvent::MsTimeoutDrop { .. } => {
-                                    radio_count = radio_count.saturating_sub(1);
-                                    health_registry().set_registered_radios(radio_count);
+                                if let Some(g) = &geoalarm
+                                    && let TelemetryEvent::SdsLog {
+                                        direction,
+                                        source_issi,
+                                        protocol_id,
+                                        text,
+                                        ..
+                                    } = &event
+                                    && *protocol_id == 10
+                                    && direction == "rx"
+                                {
+                                    g.send_tetra_lip(*source_issi, text);
                                 }
-                                TelemetryEvent::MsRssi { .. } => health_registry().note_radio_activity(),
-                                _ => {}
+                                if let Some(d) = &dash {
+                                    d.handle_telemetry(event.clone());
+                                }
+                                if let Some(s) = &alert {
+                                    s.send_event(event.clone());
+                                }
+                                if let Some(s) = &snom {
+                                    s.send_event(event.clone());
+                                }
+                                if let Some(t) = &tee_sink {
+                                    t.send(event);
+                                }
                             }
-                            if let Some(g) = &geoalarm
-                                && let TelemetryEvent::SdsLog {
-                                    direction,
-                                    source_issi,
-                                    protocol_id,
-                                    text,
-                                    ..
-                                } = &event
-                                && *protocol_id == 10
-                                && direction == "rx"
-                            {
-                                g.send_tetra_lip(*source_issi, text);
-                            }
-                            if let Some(d) = &dash { d.handle_telemetry(event.clone()); }
-                            if let Some(s) = &alert { s.send_event(event.clone()); }
-                            if let Some(s) = &snom { s.send_event(event.clone()); }
-                            if let Some(t) = &tee_sink { t.send(event); }
+                            None => break,
                         }
-                        None => break,
                     }
-                }
-            }).expect("failed to spawn telemetry-fanout thread");
+                })
+                .expect("failed to spawn telemetry-fanout thread");
         }
         if let Some(tee_source) = tee_source {
             start_telemetry_worker(cfg.clone(), tee_source);

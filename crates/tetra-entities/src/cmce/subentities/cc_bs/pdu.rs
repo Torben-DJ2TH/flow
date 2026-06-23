@@ -54,11 +54,7 @@ impl CcBsSubentity {
 
     #[inline]
     pub(super) fn p2p_call_timeout(simplex_duplex: bool) -> CallTimeout {
-        if simplex_duplex {
-            CallTimeout::Infinite
-        } else {
-            CallTimeout::T5m
-        }
+        if simplex_duplex { CallTimeout::Infinite } else { CallTimeout::T5m }
     }
 
     pub(super) fn build_d_setup_prim(pdu: &DSetup, usage: u8, ts: u8, ul_dl: UlDlAssignment) -> (BitBuffer, CmceChanAllocReq) {
@@ -383,10 +379,8 @@ impl CcBsSubentity {
 
         for (call_id, origin) in to_drop {
             tracing::info!("CMCE: dropping call_id={} gssi={} (no listeners)", call_id, gssi);
-            if let CallOrigin::Network { brew_uuid } = origin {
-                if brew::is_brew_gssi_routable(&self.config, gssi) {
-                    self.notify_network_call_end(queue, brew_uuid);
-                };
+            if let CallOrigin::Network { network_entity, brew_uuid } = origin {
+                self.notify_network_call_end(queue, network_entity, brew_uuid);
             };
             self.release_group_call(queue, call_id, DisconnectCause::SwmiRequestedDisconnection);
         }
@@ -700,10 +694,6 @@ impl CcBsSubentity {
 
     pub(super) fn asterisk_route_number(&self, network_call: &NetworkCircuitCall) -> Option<String> {
         let cfg = &self.config.config().asterisk;
-        if !cfg.enabled {
-            return None;
-        }
-
         let raw = if !network_call.number.trim().is_empty() {
             network_call.number.trim().to_string()
         } else if network_call.destination != 0 {
@@ -712,30 +702,7 @@ impl CcBsSubentity {
             return None;
         };
 
-        let mut routed = raw.as_str();
-        if !cfg.outbound_prefix.is_empty() && raw.starts_with(&cfg.outbound_prefix) {
-            if cfg.strip_outbound_prefix {
-                routed = &raw[cfg.outbound_prefix.len()..];
-            }
-        }
-
-        let routed = routed.trim();
-        if routed.is_empty() {
-            return None;
-        }
-
-        if cfg.service_numbers.is_empty() {
-            if !cfg.outbound_prefix.is_empty() && raw.starts_with(&cfg.outbound_prefix) {
-                return Some(routed.to_string());
-            }
-            return None;
-        }
-
-        if cfg.service_numbers.iter().any(|n| n == routed) {
-            Some(routed.to_string())
-        } else {
-            None
-        }
+        cfg.route_outbound_raw(&raw)
     }
 
     pub(super) fn echolink_route_target(&self, network_call: &NetworkCircuitCall) -> Option<String> {
@@ -939,23 +906,21 @@ impl CcBsSubentity {
         if let Some(call) = self.active_calls.get(&call_id) {
             let ts = call.ts;
             let dest_ssi = call.dest_gssi;
-            let is_local = matches!(call.origin, CallOrigin::Local { .. });
+            let brew_notification = if matches!(&call.origin, CallOrigin::Local { .. }) {
+                BrewNotification::ForLocalSource {
+                    source_issi: call.source_issi,
+                    dest_gssi: dest_ssi,
+                }
+            } else {
+                BrewNotification::Never
+            };
 
             if let Ok(circuit) = self.circuits.close_circuit(Direction::Both, ts) {
                 Self::signal_umac_circuit_close(queue, circuit, self.dltime);
             }
 
             // Ensure UMAC clears any hangtime override for this slot even if the circuit close is delayed.
-            self.notify_call_ended(
-                queue,
-                CallTimeslot { call_id, ts },
-                true,
-                if is_local {
-                    BrewNotification::IfGroupRoutable(dest_ssi)
-                } else {
-                    BrewNotification::Never
-                },
-            );
+            self.notify_call_ended(queue, CallTimeslot { call_id, ts }, true, brew_notification);
 
             self.release_timeslot(ts);
         }
@@ -1187,9 +1152,7 @@ impl CcBsSubentity {
                 incoming_priority
             );
             match victim {
-                PreemptVictim::Group(call_id) => {
-                    self.release_group_call(queue, call_id, DisconnectCause::PreEmptiveUseOfResource)
-                }
+                PreemptVictim::Group(call_id) => self.release_group_call(queue, call_id, DisconnectCause::PreEmptiveUseOfResource),
                 PreemptVictim::Individual(call_id) => {
                     self.release_individual_call(queue, call_id, DisconnectCause::PreEmptiveUseOfResource)
                 }

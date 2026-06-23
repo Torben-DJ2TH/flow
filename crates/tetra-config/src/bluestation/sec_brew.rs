@@ -33,6 +33,11 @@ pub struct CfgBrew {
     /// Optional PBX gateway ISSIs that should be routable over Brew even if they don't match
     /// normal Tetrapack subscriber ISSI constraints.
     pub pbx_gateway_issis: Option<Vec<u32>>,
+    /// Local TETRA ISSIs allowed to register and originate traffic over this Brew server.
+    /// None keeps legacy single-Brew behaviour; with two Brew servers it must be set.
+    pub local_issi_allowlist: Option<Vec<u32>>,
+    /// Local TETRA ISSIs that must never register or originate traffic over this Brew server.
+    pub local_issi_blocklist: Vec<u32>,
 }
 
 #[derive(Default, Deserialize)]
@@ -71,8 +76,42 @@ pub struct CfgBrewDto {
     #[serde(alias = "pbx_gateway_issi")]
     pub pbx_gateway_issis: Option<Vec<u32>>,
 
+    /// Local TETRA ISSIs allowed to register and originate traffic over this Brew server.
+    #[serde(default, alias = "local_issi_whitelist", alias = "issi_allowlist", alias = "issi_whitelist")]
+    pub local_issi_allowlist: Option<Vec<u32>>,
+
+    /// Local TETRA ISSIs that must never register or originate traffic over this Brew server.
+    #[serde(default, alias = "local_issi_blacklist", alias = "issi_blocklist", alias = "issi_blacklist")]
+    pub local_issi_blocklist: Vec<u32>,
+
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
+}
+
+impl CfgBrew {
+    pub fn has_local_issi_allowlist(&self) -> bool {
+        self.local_issi_allowlist.as_ref().is_some_and(|issis| !issis.is_empty())
+    }
+
+    pub fn local_issi_allowed(&self, issi: u32) -> bool {
+        if self.local_issi_blocklist.contains(&issi) {
+            return false;
+        }
+
+        self.local_issi_allowlist
+            .as_ref()
+            .map_or(true, |allowlist| allowlist.contains(&issi))
+    }
+
+    pub fn effective_local_issi_allowlist(&self) -> Option<Vec<u32>> {
+        self.local_issi_allowlist.as_ref().map(|allowlist| {
+            allowlist
+                .iter()
+                .copied()
+                .filter(|issi| !self.local_issi_blocklist.contains(issi))
+                .collect()
+        })
+    }
 }
 
 fn default_brew_port() -> u16 {
@@ -101,5 +140,7 @@ pub fn apply_brew_patch(src: CfgBrewDto) -> CfgBrew {
         feature_rssi_export: src.feature_rssi_export,
         whitelisted_ssis: src.whitelisted_ssis,
         pbx_gateway_issis: src.pbx_gateway_issis,
+        local_issi_allowlist: src.local_issi_allowlist,
+        local_issi_blocklist: src.local_issi_blocklist,
     }
 }

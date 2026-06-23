@@ -36,6 +36,75 @@ impl Default for CfgAsterisk {
     }
 }
 
+impl CfgAsterisk {
+    /// Route a TETRA dial string to a SIP user according to the Asterisk outbound rules.
+    ///
+    /// Matching modes:
+    /// - `outbound_prefix = "91"` and empty `service_numbers` routes every `91...` dial.
+    /// - `outbound_prefix = "91*"` explicitly routes every `91...` dial.
+    /// - `service_numbers = ["*"]` routes every dial behind the configured prefix.
+    /// - `service_numbers = ["38*"]` routes every stripped number starting with `38`.
+    /// - Exact `service_numbers` entries keep their old allowlist behaviour.
+    pub fn route_outbound_raw(&self, raw: &str) -> Option<String> {
+        if !self.enabled {
+            return None;
+        }
+
+        let raw = raw.trim();
+        if raw.is_empty() {
+            return None;
+        }
+
+        let configured_prefix = self.outbound_prefix.trim();
+        let prefix_wildcard = configured_prefix.ends_with('*');
+        let outbound_prefix = configured_prefix.trim_end_matches('*');
+        let prefix_matched = if outbound_prefix.is_empty() {
+            prefix_wildcard
+        } else {
+            raw.starts_with(outbound_prefix)
+        };
+
+        let routed = if prefix_matched && self.strip_outbound_prefix {
+            &raw[outbound_prefix.len()..]
+        } else {
+            raw
+        }
+        .trim();
+
+        if routed.is_empty() {
+            return None;
+        }
+
+        if prefix_wildcard && prefix_matched {
+            return Some(routed.to_string());
+        }
+
+        if self.service_numbers.is_empty() {
+            if prefix_matched {
+                return Some(routed.to_string());
+            }
+            return None;
+        }
+
+        if self.service_numbers.iter().any(|n| n == routed) {
+            return Some(routed.to_string());
+        }
+
+        let wildcard_allowed = outbound_prefix.is_empty() || prefix_matched;
+        if wildcard_allowed
+            && self.service_numbers.iter().any(|n| {
+                n == "*"
+                    || n.strip_suffix('*')
+                        .is_some_and(|prefix| !prefix.is_empty() && routed.starts_with(prefix))
+            })
+        {
+            return Some(routed.to_string());
+        }
+
+        None
+    }
+}
+
 #[derive(Deserialize)]
 pub struct CfgAsteriskDto {
     #[serde(default)]
@@ -238,4 +307,55 @@ pub fn apply_asterisk_patch(src: CfgAsteriskDto) -> Result<CfgAsterisk, String> 
         realm: src.realm,
         options_interval_secs: src.options_interval_secs,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn enabled_cfg(service_numbers: Vec<&str>) -> CfgAsterisk {
+        let dto = CfgAsteriskDto {
+            enabled: true,
+            service_numbers: service_numbers.into_iter().map(str::to_string).collect(),
+            ..CfgAsteriskDto::default()
+        };
+        apply_asterisk_patch(dto).expect("test asterisk config should be valid")
+    }
+
+    #[test]
+    fn exact_service_numbers_still_allow_direct_and_prefixed_dials() {
+        let cfg = enabled_cfg(vec!["385"]);
+        assert_eq!(cfg.route_outbound_raw("91385"), Some("385".to_string()));
+        assert_eq!(cfg.route_outbound_raw("385"), Some("385".to_string()));
+        assert_eq!(cfg.route_outbound_raw("91600"), None);
+    }
+
+    #[test]
+    fn star_service_number_routes_everything_behind_prefix_only() {
+        let cfg = enabled_cfg(vec!["*"]);
+        assert_eq!(cfg.route_outbound_raw("91385"), Some("385".to_string()));
+        assert_eq!(cfg.route_outbound_raw("91600"), Some("600".to_string()));
+        assert_eq!(cfg.route_outbound_raw("385"), None);
+    }
+
+    #[test]
+    fn outbound_prefix_star_routes_everything_behind_prefix() {
+        let dto = CfgAsteriskDto {
+            enabled: true,
+            outbound_prefix: "91*".to_string(),
+            service_numbers: vec!["385".to_string()],
+            ..CfgAsteriskDto::default()
+        };
+        let cfg = apply_asterisk_patch(dto).expect("test asterisk config should be valid");
+        assert_eq!(cfg.route_outbound_raw("91385"), Some("385".to_string()));
+        assert_eq!(cfg.route_outbound_raw("91600"), Some("600".to_string()));
+        assert_eq!(cfg.route_outbound_raw("385"), Some("385".to_string()));
+    }
+
+    #[test]
+    fn service_number_prefix_wildcard_matches_stripped_number() {
+        let cfg = enabled_cfg(vec!["38*"]);
+        assert_eq!(cfg.route_outbound_raw("91385"), Some("385".to_string()));
+        assert_eq!(cfg.route_outbound_raw("91600"), None);
+    }
 }

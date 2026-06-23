@@ -5,12 +5,12 @@ use std::time::Duration;
 use tetra_config::bluestation::{CfgBrew, StackMode};
 use tetra_core::tetra_entities::TetraEntity;
 use tetra_core::{BitBuffer, Direction, Sap, SsiType, TdmaTime, TetraAddress, TxState, debug};
+use tetra_pdus::cmce::enums::disconnect_cause::DisconnectCause;
 use tetra_pdus::cmce::enums::{
     call_timeout::CallTimeout, cmce_pdu_type_dl::CmcePduTypeDl, party_type_identifier::PartyTypeIdentifier,
     transmission_grant::TransmissionGrant,
 };
 use tetra_pdus::cmce::fields::basic_service_information::BasicServiceInformation;
-use tetra_pdus::cmce::enums::disconnect_cause::DisconnectCause;
 use tetra_pdus::cmce::pdus::{
     d_connect::DConnect, d_connect_acknowledge::DConnectAcknowledge, d_setup::DSetup, d_tx_ceased::DTxCeased, d_tx_granted::DTxGranted,
     u_connect::UConnect, u_disconnect::UDisconnect, u_setup::USetup, u_tx_ceased::UTxCeased, u_tx_demand::UTxDemand,
@@ -859,6 +859,8 @@ fn test_network_group_speaker_change_uses_remote_floor_grant() {
         whitelisted_ssis: None,
         feature_rssi_export: false,
         pbx_gateway_issis: None,
+        local_issi_allowlist: None,
+        local_issi_blocklist: Vec::new(),
     });
     let mut test = ComponentTest::from_config(config, Some(TdmaTime { h: 0, m: 1, f: 1, t: 1 }));
     test.populate_entities(
@@ -1423,8 +1425,7 @@ fn test_group_d_setup_uses_unacknowledged_llc() {
     test.run_stack(Some(1));
     let setup_msgs = test.dump_sinks();
 
-    let l2 = lcmc_req_layer2service(&setup_msgs, TEST_GSSI, CmcePduTypeDl::DSetup)
-        .expect("Expected a group D-SETUP addressed to the GSSI");
+    let l2 = lcmc_req_layer2service(&setup_msgs, TEST_GSSI, CmcePduTypeDl::DSetup).expect("Expected a group D-SETUP addressed to the GSSI");
     assert_eq!(
         l2,
         tetra_core::Layer2Service::Unacknowledged,
@@ -1557,8 +1558,7 @@ fn test_u_facility_answered_with_function_not_supported() {
     let (mut resp_sdu, _) = find_lcmc_req(&msgs, calling_issi, CmcePduTypeDl::CmceFunctionNotSupported)
         .expect("Expected D-CMCE-FUNCTION-NOT-SUPPORTED to requesting ISSI");
 
-    let pdu = CmceFunctionNotSupported::from_bitbuf(&mut resp_sdu)
-        .expect("Failed to parse D-CMCE-FUNCTION-NOT-SUPPORTED");
+    let pdu = CmceFunctionNotSupported::from_bitbuf(&mut resp_sdu).expect("Failed to parse D-CMCE-FUNCTION-NOT-SUPPORTED");
     assert_eq!(
         pdu.not_supported_pdu_type,
         CmcePduTypeUl::UFacility.into_raw() as u8,

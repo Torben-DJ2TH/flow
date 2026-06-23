@@ -61,6 +61,7 @@ pub(super) enum CallOrigin {
     },
     /// Network-initiated call from TetraPack/Brew
     Network {
+        network_entity: TetraEntity,
         brew_uuid: uuid::Uuid, // For Brew tracking
     },
 }
@@ -207,6 +208,7 @@ impl ActiveCall {
 
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new_network(
+        network_entity: TetraEntity,
         brew_uuid: uuid::Uuid,
         dest_gssi: u32,
         source_issi: u32,
@@ -217,7 +219,7 @@ impl ActiveCall {
         priority: u8,
     ) -> Self {
         Self {
-            origin: CallOrigin::Network { brew_uuid },
+            origin: CallOrigin::Network { network_entity, brew_uuid },
             dest_gssi,
             source_issi,
             created_at,
@@ -419,8 +421,7 @@ pub(super) struct IndividualCall {
 impl IndividualCall {
     #[inline]
     pub(super) fn is_network_party(&self, addr: TetraAddress) -> bool {
-        (self.calling_over_brew && addr.ssi == self.calling_addr.ssi)
-            || (self.called_over_brew && addr.ssi == self.called_addr.ssi)
+        (self.calling_over_brew && addr.ssi == self.calling_addr.ssi) || (self.called_over_brew && addr.ssi == self.called_addr.ssi)
     }
 
     #[inline]

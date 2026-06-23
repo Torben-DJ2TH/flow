@@ -58,6 +58,28 @@ impl CcBsSubentity {
             return;
         }
 
+        if brew::is_brew_entity(network_entity)
+            && !brew::is_brew_local_issi_allowed_for_entity(&self.config, network_entity, called_addr.ssi)
+        {
+            tracing::info!(
+                "CMCE: rejecting {:?} setup request uuid={} src={} dst={} (called ISSI not allowed on this Brew backhaul)",
+                network_entity,
+                brew_uuid,
+                call.source_issi,
+                call.destination
+            );
+            queue.push_back(SapMsg {
+                sap: Sap::Control,
+                src: TetraEntity::Cmce,
+                dest: network_entity,
+                msg: SapMsgInner::CmceCallControl(CallControl::NetworkCircuitSetupReject {
+                    brew_uuid,
+                    cause: DisconnectCause::CalledPartyNotReachable.into_raw() as u8,
+                }),
+            });
+            return;
+        }
+
         if let Some((active_call_id, state)) = self.find_individual_call_by_issi(called_addr.ssi) {
             tracing::info!(
                 "CMCE: rejecting {:?} setup request uuid={} src={} dst={} number='{}' (called ISSI busy in call_id={} state={:?})",
@@ -137,11 +159,7 @@ impl CcBsSubentity {
             None
         };
         let calling_party_extension = if calling_party_address_ssi.is_none() {
-            external_number
-                .trim()
-                .parse::<u32>()
-                .ok()
-                .filter(|value| *value <= 0x00ff_ffff)
+            external_number.trim().parse::<u32>().ok().filter(|value| *value <= 0x00ff_ffff)
         } else {
             None
         };
@@ -251,7 +269,11 @@ impl CcBsSubentity {
         ) {
             match err {
                 IndividualTransitionError::DuplicateCall(_) => {
-                    tracing::warn!("CMCE: duplicate call_id={} while creating inbound {:?} setup", call_id, network_entity);
+                    tracing::warn!(
+                        "CMCE: duplicate call_id={} while creating inbound {:?} setup",
+                        call_id,
+                        network_entity
+                    );
                 }
                 IndividualTransitionError::InvalidTransition { state, .. } => {
                     tracing::warn!(
@@ -294,7 +316,11 @@ impl CcBsSubentity {
         }
 
         if call.is_active() {
-            tracing::trace!("CMCE: {:?} connect request for active call_id={}, ignoring", network_entity, call_id);
+            tracing::trace!(
+                "CMCE: {:?} connect request for active call_id={}, ignoring",
+                network_entity,
+                call_id
+            );
             return;
         }
 
@@ -311,7 +337,11 @@ impl CcBsSubentity {
         if let Err(err) = self.fsm_individual_set_network_call(call_id, call_info.clone()) {
             match err {
                 IndividualTransitionError::UnknownCall(_) => {
-                    tracing::warn!("CMCE: {:?} connect request state update unknown call_id={}", network_entity, call_id);
+                    tracing::warn!(
+                        "CMCE: {:?} connect request state update unknown call_id={}",
+                        network_entity,
+                        call_id
+                    );
                 }
                 IndividualTransitionError::InvalidTransition { state, .. } => {
                     tracing::warn!(
@@ -497,7 +527,11 @@ impl CcBsSubentity {
         }
 
         if call.is_active() {
-            tracing::trace!("CMCE: {:?} connect confirm for active call_id={}, ignoring", network_entity, call_id);
+            tracing::trace!(
+                "CMCE: {:?} connect confirm for active call_id={}, ignoring",
+                network_entity,
+                call_id
+            );
             return;
         }
 
@@ -685,12 +719,13 @@ impl CcBsSubentity {
     pub(in crate::cmce::subentities::cc_bs) fn fsm_on_network_call_start(
         &mut self,
         queue: &mut MessageQueue,
+        network_entity: TetraEntity,
         brew_uuid: uuid::Uuid,
         source_issi: u32,
         dest_gssi: u32,
         priority: u8,
     ) {
-        assert!(brew::is_brew_gssi_routable(&self.config, dest_gssi));
+        assert!(brew::is_brew_inbound_allowed_for_entity(&self.config, network_entity, dest_gssi));
 
         if !self.has_listener(dest_gssi) {
             tracing::info!(
@@ -700,7 +735,7 @@ impl CcBsSubentity {
             );
             self.drop_group_calls_if_unlistened(queue, dest_gssi);
 
-            self.notify_network_call_end(queue, brew_uuid);
+            self.notify_network_call_end(queue, network_entity, brew_uuid);
             return;
         }
 
@@ -718,7 +753,7 @@ impl CcBsSubentity {
                 old_speaker
             );
 
-            if let Err(err) = self.fsm_group_on_network_call_start(queue, call_id, brew_uuid, source_issi) {
+            if let Err(err) = self.fsm_group_on_network_call_start(queue, call_id, network_entity, brew_uuid, source_issi) {
                 match err {
                     GroupTransitionError::UnknownCall(_) => {
                         tracing::warn!(
@@ -873,7 +908,17 @@ impl CcBsSubentity {
 
         self.active_calls.insert(
             call_id,
-            ActiveCall::new_network(brew_uuid, dest_gssi, source_issi, ts, usage, self.dltime, self.config_call_timeout(), priority),
+            ActiveCall::new_network(
+                network_entity,
+                brew_uuid,
+                dest_gssi,
+                source_issi,
+                ts,
+                usage,
+                self.dltime,
+                self.config_call_timeout(),
+                priority,
+            ),
         );
 
         // Dashboard telemetry: a Brew/network-initiated group call just became active.
@@ -888,7 +933,7 @@ impl CcBsSubentity {
         queue.push_back(SapMsg {
             sap: Sap::Control,
             src: TetraEntity::Cmce,
-            dest: TetraEntity::Brew,
+            dest: network_entity,
             msg: SapMsgInner::CmceCallControl(CallControl::NetworkCallReady {
                 brew_uuid,
                 call_id,

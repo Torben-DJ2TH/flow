@@ -6,30 +6,26 @@ use std::path::Path;
 use serde::Deserialize;
 use toml::Value;
 
-use crate::bluestation::{
-    CellInfoDto, CfgControlDto, NetInfoDto, apply_control_patch, cell_dto_to_cfg, net_dto_to_cfg,
-};
 use crate::bluestation::sec_cell::{CfgNeighborCellCa, SdsCommandControlDto};
+use crate::bluestation::{CellInfoDto, CfgControlDto, NetInfoDto, apply_control_patch, cell_dto_to_cfg, net_dto_to_cfg};
 
 use super::config::{StackConfig, StackMode};
 use super::sec_asterisk::{CfgAsteriskDto, apply_asterisk_patch};
 use super::sec_brew::{CfgBrewDto, apply_brew_patch};
 use super::sec_dapnet::{CfgDapnetDto, apply_dapnet_patch};
-use super::sec_echolink::{CfgEcholinkDto, apply_echolink_patch};
-use super::sec_geoalarm::{CfgGeoalarmDto, apply_geoalarm_patch};
-use super::sec_meshcom::{CfgMeshcomDto, apply_meshcom_patch};
-use super::sec_tpg2200_action::{
-    CfgTpg2200ActionDto, apply_tpg2200_action_patch,
-};
-use super::sec_snom_notify::{CfgSnomNotifyDto, apply_snom_notify_patch};
 use super::sec_dashboard::{CfgDashboardDto, apply_dashboard_patch};
-use super::sec_security::{CfgSecurityDto, apply_security_patch};
-use super::sec_wx::{CfgWxServiceDto, apply_wx_service_patch};
-use super::sec_recovery::{CfgRecoveryDto, apply_recovery_patch};
+use super::sec_echolink::{CfgEcholinkDto, apply_echolink_patch};
 use super::sec_emergency::{CfgEmergencyDto, apply_emergency_patch};
+use super::sec_geoalarm::{CfgGeoalarmDto, apply_geoalarm_patch};
 use super::sec_health::{CfgHealthDto, apply_health_patch};
-use super::sec_telemetry::{CfgTelemetryDto, apply_telemetry_patch};
+use super::sec_meshcom::{CfgMeshcomDto, apply_meshcom_patch};
+use super::sec_recovery::{CfgRecoveryDto, apply_recovery_patch};
+use super::sec_security::{CfgSecurityDto, apply_security_patch};
+use super::sec_snom_notify::{CfgSnomNotifyDto, apply_snom_notify_patch};
 use super::sec_telegram::{CfgTelegramDto, apply_telegram_patch};
+use super::sec_telemetry::{CfgTelemetryDto, apply_telemetry_patch};
+use super::sec_tpg2200_action::{CfgTpg2200ActionDto, apply_tpg2200_action_patch};
+use super::sec_wx::{CfgWxServiceDto, apply_wx_service_patch};
 use super::{PhyIoDto, phy_dto_to_cfg};
 
 /// Build `StackConfig` from a TOML configuration file
@@ -76,11 +72,13 @@ pub fn from_toml_str(toml_str: &str) -> Result<StackConfig, Box<dyn std::error::
 
     // Extract sds_command_control from cell_info before typed deserialisation
     // (same reason as neighbor_cells_ca: serde #[flatten] would capture it as opaque Value)
-    let sds_command_control_raw = raw
-        .get_mut("cell_info")
-        .and_then(|ci| {
-            if let Value::Table(t) = ci { t.remove("sds_command_control") } else { None }
-        });
+    let sds_command_control_raw = raw.get_mut("cell_info").and_then(|ci| {
+        if let Value::Table(t) = ci {
+            t.remove("sds_command_control")
+        } else {
+            None
+        }
+    });
 
     // Now deserialise the (mutated) Value into the typed root — neighbor_cells_ca
     // has been removed so it will not appear in the flatten HashMap.
@@ -121,99 +119,125 @@ pub fn from_toml_str(toml_str: &str) -> Result<StackConfig, Box<dyn std::error::
 
     // Optional brew section
     if let Some(ref brew) = root.brew
-        && !brew.extra.is_empty() {
-            return Err(format!("Unrecognized fields in brew config: {:?}", sorted_keys(&brew.extra)).into());
-        }
+        && !brew.extra.is_empty()
+    {
+        return Err(format!("Unrecognized fields in brew config: {:?}", sorted_keys(&brew.extra)).into());
+    }
+    if let Some(ref brew2) = root.brew2
+        && !brew2.extra.is_empty()
+    {
+        return Err(format!("Unrecognized fields in brew2 config: {:?}", sorted_keys(&brew2.extra)).into());
+    }
 
     // Optional asterisk section
     if let Some(ref asterisk) = root.asterisk
-        && !asterisk.extra.is_empty() {
-            return Err(format!("Unrecognized fields in asterisk config: {:?}", sorted_keys(&asterisk.extra)).into());
-        }
+        && !asterisk.extra.is_empty()
+    {
+        return Err(format!("Unrecognized fields in asterisk config: {:?}", sorted_keys(&asterisk.extra)).into());
+    }
 
     // Optional dapnet section
     if let Some(ref dapnet) = root.dapnet
-        && !dapnet.extra.is_empty() {
-            return Err(format!("Unrecognized fields in dapnet config: {:?}", sorted_keys(&dapnet.extra)).into());
-        }
+        && !dapnet.extra.is_empty()
+    {
+        return Err(format!("Unrecognized fields in dapnet config: {:?}", sorted_keys(&dapnet.extra)).into());
+    }
 
     // Optional echolink section
     if let Some(ref echolink) = root.echolink
-        && !echolink.extra.is_empty() {
-            return Err(format!("Unrecognized fields in echolink config: {:?}", sorted_keys(&echolink.extra)).into());
-        }
+        && !echolink.extra.is_empty()
+    {
+        return Err(format!("Unrecognized fields in echolink config: {:?}", sorted_keys(&echolink.extra)).into());
+    }
 
     // Optional meshcom section
     if let Some(ref meshcom) = root.meshcom
-        && !meshcom.extra.is_empty() {
-            return Err(format!("Unrecognized fields in meshcom config: {:?}", sorted_keys(&meshcom.extra)).into());
-        }
+        && !meshcom.extra.is_empty()
+    {
+        return Err(format!("Unrecognized fields in meshcom config: {:?}", sorted_keys(&meshcom.extra)).into());
+    }
 
     // Optional geoalarm section
     if let Some(ref geoalarm) = root.geoalarm
-        && !geoalarm.extra.is_empty() {
-            return Err(format!("Unrecognized fields in geoalarm config: {:?}", sorted_keys(&geoalarm.extra)).into());
-        }
+        && !geoalarm.extra.is_empty()
+    {
+        return Err(format!("Unrecognized fields in geoalarm config: {:?}", sorted_keys(&geoalarm.extra)).into());
+    }
 
     // Optional tpg2200_action section
     if let Some(ref action) = root.tpg2200_action
-        && !action.extra.is_empty() {
-            return Err(format!("Unrecognized fields in tpg2200_action config: {:?}", sorted_keys(&action.extra)).into());
-        }
+        && !action.extra.is_empty()
+    {
+        return Err(format!("Unrecognized fields in tpg2200_action config: {:?}", sorted_keys(&action.extra)).into());
+    }
 
     // Optional snom_notify section
     if let Some(ref snom) = root.snom_notify
-        && !snom.extra.is_empty() {
-            return Err(format!("Unrecognized fields in snom_notify config: {:?}", sorted_keys(&snom.extra)).into());
-        }
+        && !snom.extra.is_empty()
+    {
+        return Err(format!("Unrecognized fields in snom_notify config: {:?}", sorted_keys(&snom.extra)).into());
+    }
 
     // Optional telemetry section
     if let Some(ref telemetry) = root.telemetry
-        && !telemetry.extra.is_empty() {
-            return Err(format!("Unrecognized fields in telemetry config: {:?}", sorted_keys(&telemetry.extra)).into());
-        }
+        && !telemetry.extra.is_empty()
+    {
+        return Err(format!("Unrecognized fields in telemetry config: {:?}", sorted_keys(&telemetry.extra)).into());
+    }
 
     // Optional telegram_alerts section
     if let Some(ref telegram) = root.telegram_alerts
-        && !telegram.extra.is_empty() {
-            return Err(format!("Unrecognized fields in telegram_alerts config: {:?}", sorted_keys(&telegram.extra)).into());
-        }
+        && !telegram.extra.is_empty()
+    {
+        return Err(format!("Unrecognized fields in telegram_alerts config: {:?}", sorted_keys(&telegram.extra)).into());
+    }
 
     // Optional recovery section — reject typos so the RF-affecting feature can't be left dormant.
     if let Some(ref recovery) = root.recovery
-        && !recovery.extra.is_empty() {
-            return Err(format!("Unrecognized fields in recovery config: {:?}", sorted_keys(&recovery.extra)).into());
-        }
+        && !recovery.extra.is_empty()
+    {
+        return Err(format!("Unrecognized fields in recovery config: {:?}", sorted_keys(&recovery.extra)).into());
+    }
 
     // Optional health section — reject typos so a mis-spelled watchdog/threshold key is caught.
     if let Some(ref health) = root.health
-        && !health.extra.is_empty() {
-            return Err(format!("Unrecognized fields in health config: {:?}", sorted_keys(&health.extra)).into());
-        }
+        && !health.extra.is_empty()
+    {
+        return Err(format!("Unrecognized fields in health config: {:?}", sorted_keys(&health.extra)).into());
+    }
 
     // Optional emergency section — reject typos so a mis-spelled toggle isn't silently ignored.
     if let Some(ref emergency) = root.emergency
-        && !emergency.extra.is_empty() {
-            return Err(format!("Unrecognized fields in emergency config: {:?}", sorted_keys(&emergency.extra)).into());
-        }
+        && !emergency.extra.is_empty()
+    {
+        return Err(format!("Unrecognized fields in emergency config: {:?}", sorted_keys(&emergency.extra)).into());
+    }
 
     // Build cell config, then inject the separately-parsed neighbor cells and sds_command_control
     let mut cell_cfg = cell_dto_to_cfg(root.cell_info);
     cell_cfg.neighbor_cells_ca = neighbor_cells_ca;
     if let Some(v) = sds_command_control_raw {
-        let dto = v.try_into::<SdsCommandControlDto>()
+        let dto = v
+            .try_into::<SdsCommandControlDto>()
             .map_err(|e| format!("cell_info.sds_command_control: {}", e))?;
         if !dto.extra.is_empty() {
-            return Err(format!("Unrecognized fields in cell_info.sds_command_control: {:?}",
-                dto.extra.keys().collect::<Vec<_>>()).into());
+            return Err(format!(
+                "Unrecognized fields in cell_info.sds_command_control: {:?}",
+                dto.extra.keys().collect::<Vec<_>>()
+            )
+            .into());
         }
         use crate::bluestation::sec_cell::{CfgSdsCommandControl, CfgSdsCommandEntry};
         cell_cfg.sds_command_control = Some(CfgSdsCommandControl {
             authorized_issis: dto.authorized_issis,
-            commands: dto.commands.into_iter().map(|e| CfgSdsCommandEntry {
-                status_code: e.status_code,
-                action: e.action,
-            }).collect(),
+            commands: dto
+                .commands
+                .into_iter()
+                .map(|e| CfgSdsCommandEntry {
+                    status_code: e.status_code,
+                    action: e.action,
+                })
+                .collect(),
         });
     }
 
@@ -226,6 +250,7 @@ pub fn from_toml_str(toml_str: &str) -> Result<StackConfig, Box<dyn std::error::
         net: net_dto_to_cfg(root.net_info),
         cell: cell_cfg,
         brew: None,
+        brew2: None,
         asterisk: apply_asterisk_patch(root.asterisk.unwrap_or_default())?,
         dapnet: apply_dapnet_patch(root.dapnet.unwrap_or_default())?,
         echolink: apply_echolink_patch(root.echolink.unwrap_or_default())?,
@@ -246,6 +271,9 @@ pub fn from_toml_str(toml_str: &str) -> Result<StackConfig, Box<dyn std::error::
 
     if let Some(brew) = root.brew {
         cfg.brew = Some(apply_brew_patch(brew));
+    }
+    if let Some(brew2) = root.brew2 {
+        cfg.brew2 = Some(apply_brew_patch(brew2));
     }
 
     if let Some(dashboard) = root.dashboard {
@@ -304,6 +332,7 @@ struct TomlConfigRoot {
     cell_info: CellInfoDto,
 
     brew: Option<CfgBrewDto>,
+    brew2: Option<CfgBrewDto>,
     asterisk: Option<CfgAsteriskDto>,
     dapnet: Option<CfgDapnetDto>,
     echolink: Option<CfgEcholinkDto>,
@@ -567,8 +596,7 @@ dl_queue_critical = 192
 sds_queue_degraded = 32
 sds_queue_critical = 128
 "#;
-        let cfg = from_toml_str(toml)
-            .unwrap_or_else(|e| panic!("documented optional blocks must parse when uncommented: {e}"));
+        let cfg = from_toml_str(toml).unwrap_or_else(|e| panic!("documented optional blocks must parse when uncommented: {e}"));
         assert!(cfg.recovery.enabled);
         assert!(cfg.tpg2200_action.enabled);
         assert_eq!(cfg.tpg2200_action.dest_issi, 1234567);
@@ -647,7 +675,8 @@ location_area = 1
 
     #[test]
     fn test_two_neighbor_cells() {
-        let toml = minimal_toml(r#"
+        let toml = minimal_toml(
+            r#"
 neighbor_cell_broadcast = 2
 
 [[cell_info.neighbor_cells_ca]]
@@ -666,7 +695,8 @@ cell_reselection_types_supported = 0
 neighbor_cell_synchronized = false
 cell_load_ca = 1
 main_carrier_number = 1586
-"#);
+"#,
+        );
         let cfg = from_toml_str(&toml).expect("parse failed");
         assert_eq!(cfg.cell.neighbor_cells_ca.len(), 2);
         assert_eq!(cfg.cell.neighbor_cells_ca[0].cell_identifier_ca, 1);
@@ -697,7 +727,8 @@ main_carrier_number = 1586
 
     #[test]
     fn telegram_alerts_section_parses() {
-        let toml = minimal_toml("") + r#"
+        let toml = minimal_toml("")
+            + r#"
 [telegram_alerts]
 enabled = true
 bot_token = "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
@@ -718,7 +749,8 @@ alert_critical_logs = false
 
     #[test]
     fn telegram_alerts_unknown_field_rejected() {
-        let toml = minimal_toml("") + r#"
+        let toml = minimal_toml("")
+            + r#"
 [telegram_alerts]
 enabled = true
 bogus = 1

@@ -803,12 +803,37 @@ voice_service = true
 # Optional PBX gateway ISSIs that should always be considered Brew-routable
 # (useful for phone/PBX interconnect IDs that do not follow normal TetraPack ISSI rules).
 # pbx_gateway_issis = [16777184, 16777186]
+#
+# OPTIONAL: local ISSI partition for multi-Brew setups.
+# With only one Brew server this can stay commented for legacy behaviour. If [brew2]
+# is configured too, both [brew] and [brew2] MUST set a non-empty local_issi_allowlist,
+# and the two lists must not overlap. This prevents the same radio from registering
+# or forwarding traffic through both Brew servers.
+# local_issi_allowlist = [2632585, 2635411]
+# local_issi_blocklist = []
+#
+# OPTIONAL: second Brew server. Same keys as [brew]. Use non-overlapping
+# local_issi_allowlist entries so every local ISSI belongs to exactly one server.
+# [brew2]
+# host = "second.brew.example"
+# port = 9000
+# tls = true
+# username = 123456701
+# password = "012345"
+# reconnect_delay_secs = 15
+# feature_sds_enabled = true
+# feature_rssi_export = false
+# whitelisted_ssis = [92]
+# pbx_gateway_issis = []
+# local_issi_allowlist = [2636000, 2636001]
+# local_issi_blocklist = []
 
 ###############################################################################
 
 # OPTIONAL: Asterisk SIP/RTP bridge — parallel to Brew, not a replacement.
 # Only destinations listed in service_numbers are routed to Asterisk; everything else
-# stays on the normal local/Brew path.
+# stays on the normal local/Brew path. Use ["*"] to route every dial behind
+# outbound_prefix to Asterisk.
 #
 # Example: a TETRA dial string 91600 with outbound_prefix="91" and strip=true becomes
 # SIP user 600, but only because "600" is listed below.
@@ -821,6 +846,8 @@ voice_service = true
 # register = true
 # codec = "PCMU"
 # service_numbers = ["600", "601"]
+# service_numbers = ["*"]       # wildcard: 91... -> Asterisk for every suffix
+# outbound_prefix = "91*"       # alternative wildcard prefix spelling
 # rtp_port_min = 30000
 # rtp_port_max = 30100
 # bind_addr = "0.0.0.0"

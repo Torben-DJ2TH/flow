@@ -51,16 +51,14 @@ impl CcBsSubentity {
                         if self.individual_calls.contains_key(&call_id) && self.ee_dsetup_blocks(call_id, dest_ssi) {
                             tracing::debug!(
                                 "EE: holding D-SETUP resend for {} (call_id {}) until its monitoring window",
-                                dest_ssi, call_id
+                                dest_ssi,
+                                call_id
                             );
                             continue;
                         }
 
                         // Take the mutable borrow now that the EE gate (a `&self` method) has run.
-                        let cached = self
-                            .cached_setups
-                            .get_mut(&call_id)
-                            .expect("cached D-SETUP present (peeked above)");
+                        let cached = self.cached_setups.get_mut(&call_id).expect("cached D-SETUP present (peeked above)");
                         if let Some(receipt) = cached.tx_receipt.as_ref()
                             && !receipt.is_in_final_state()
                         {
@@ -323,7 +321,8 @@ impl CcBsSubentity {
             if self.ee_dsetup_blocks(call_id, dest_addr.ssi) {
                 tracing::debug!(
                     "EE: holding D-SETUP setup-retry for {} (call_id {}) until its monitoring window",
-                    dest_addr.ssi, call_id
+                    dest_addr.ssi,
+                    call_id
                 );
                 continue;
             }
@@ -335,7 +334,8 @@ impl CcBsSubentity {
             let prim = Self::build_sapmsg(sdu, None, self.dltime, dest_addr, None);
             tracing::debug!(
                 "EE DSetup retry for call_id={} to ISSI {} (setup pending, MS reachable)",
-                call_id, dest_addr.ssi
+                call_id,
+                dest_addr.ssi
             );
             queue.push_back(prim);
         }
@@ -456,9 +456,7 @@ impl CcBsSubentity {
             // Re-emit the cached group D-SETUP only when a sleeping EE member actually woke this
             // frame, so it lands while the radio is listening. (Re-sending a group D-SETUP is the
             // established late-entry mechanism, so already-joined members tolerate the duplicate.)
-            if any_ee_woke
-                && let Some(cached) = self.cached_setups.get_mut(&call_id)
-            {
+            if any_ee_woke && let Some(cached) = self.cached_setups.get_mut(&call_id) {
                 // Same late-entry grant tweak as the steady-state resend path.
                 cached.pdu.transmission_grant = TransmissionGrant::GrantedToOtherUser;
                 cached.pdu.transmission_request_permission = false;
@@ -468,7 +466,8 @@ impl CcBsSubentity {
                 queue.push_back(prim);
                 tracing::debug!(
                     "EE: group {} announce re-sent (call_id {}) to cover newly-awake member(s)",
-                    gssi, call_id
+                    gssi,
+                    call_id
                 );
             }
         }
@@ -547,15 +546,11 @@ impl CcBsSubentity {
 
         tracing::warn!("UL inactivity timeout on ts={}, forcing TX ceased for call_id={}", ts, call_id);
         let dest_gssi = call.dest_gssi;
+        let brew_notification = Self::brew_notification_for_group_call(call, call.source_issi);
         call.enter_hangtime(self.dltime);
 
         self.send_d_tx_ceased_facch(queue, call_id, dest_gssi, ts);
 
-        self.notify_floor_released(
-            queue,
-            CallTimeslot { call_id, ts },
-            true,
-            BrewNotification::IfGroupRoutable(dest_gssi),
-        );
+        self.notify_floor_released(queue, CallTimeslot { call_id, ts }, true, brew_notification);
     }
 }

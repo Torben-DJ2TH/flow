@@ -3,15 +3,14 @@ use std::sync::{Arc, RwLock};
 use tetra_core::freqs::FreqInfo;
 
 use crate::bluestation::{
-    CfgAsterisk, CfgCellInfo, CfgControl, CfgDapnet, CfgEcholink, CfgEmergency, CfgHealth,
-    CfgGeoalarm, CfgMeshcom, CfgNetInfo, CfgPhyIo, CfgRecovery, CfgSecurity, CfgSnomNotify,
-    CfgTpg2200Action, CfgWxService, PhyBackend, StackState,
+    CfgAsterisk, CfgCellInfo, CfgControl, CfgDapnet, CfgEcholink, CfgEmergency, CfgGeoalarm, CfgHealth, CfgMeshcom, CfgNetInfo, CfgPhyIo,
+    CfgRecovery, CfgSecurity, CfgSnomNotify, CfgTpg2200Action, CfgWxService, PhyBackend, StackState,
 };
 
-use super::sec_dashboard::CfgDashboard;
 use super::sec_brew::CfgBrew;
-use super::sec_telemetry::CfgTelemetry;
+use super::sec_dashboard::CfgDashboard;
 use super::sec_telegram::CfgTelegram;
+use super::sec_telemetry::CfgTelemetry;
 
 /// Wrapper for a string that should be treated as a secret. Display and Debug will redact the actual value,
 /// to prevent accidental logging of secrets.
@@ -75,6 +74,9 @@ pub struct StackConfig {
 
     /// Brew protocol (TetraPack/BrandMeister) configuration
     pub brew: Option<CfgBrew>,
+
+    /// Optional secondary Brew protocol bridge.
+    pub brew2: Option<CfgBrew>,
 
     /// Asterisk SIP/RTP bridge configuration.
     pub asterisk: CfgAsterisk,
@@ -181,9 +183,10 @@ impl StackConfig {
 
         // Validate timezone if configured
         if let Some(ref tz) = self.cell.timezone
-            && tz.parse::<chrono_tz::Tz>().is_err() {
-                return Err("Invalid IANA timezone name in cell.timezone");
-            }
+            && tz.parse::<chrono_tz::Tz>().is_err()
+        {
+            return Err("Invalid IANA timezone name in cell.timezone");
+        }
 
         // Validate neighbor cells
         if self.cell.neighbor_cells_ca.len() > 7 {
@@ -218,21 +221,45 @@ impl StackConfig {
                 return Err("cell.neighbor_cells_ca: main_carrier_number must be 0-4095");
             }
             if let Some(v) = cell.main_carrier_number_extension
-                && v > 0x3FF { return Err("cell.neighbor_cells_ca: main_carrier_number_extension must be 0-1023"); }
+                && v > 0x3FF
+            {
+                return Err("cell.neighbor_cells_ca: main_carrier_number_extension must be 0-1023");
+            }
             if let Some(v) = cell.mcc
-                && v > 0x3FF { return Err("cell.neighbor_cells_ca: mcc must be 0-1023"); }
+                && v > 0x3FF
+            {
+                return Err("cell.neighbor_cells_ca: mcc must be 0-1023");
+            }
             if let Some(v) = cell.mnc
-                && v > 0x3FFF { return Err("cell.neighbor_cells_ca: mnc must be 0-16383"); }
+                && v > 0x3FFF
+            {
+                return Err("cell.neighbor_cells_ca: mnc must be 0-16383");
+            }
             if let Some(v) = cell.location_area
-                && v > 0x3FFF { return Err("cell.neighbor_cells_ca: location_area must be 0-16383"); }
+                && v > 0x3FFF
+            {
+                return Err("cell.neighbor_cells_ca: location_area must be 0-16383");
+            }
             if let Some(v) = cell.maximum_ms_transmit_power
-                && v > 0x7 { return Err("cell.neighbor_cells_ca: maximum_ms_transmit_power must be 0-7"); }
+                && v > 0x7
+            {
+                return Err("cell.neighbor_cells_ca: maximum_ms_transmit_power must be 0-7");
+            }
             if let Some(v) = cell.minimum_rx_access_level
-                && v > 0xF { return Err("cell.neighbor_cells_ca: minimum_rx_access_level must be 0-15"); }
+                && v > 0xF
+            {
+                return Err("cell.neighbor_cells_ca: minimum_rx_access_level must be 0-15");
+            }
             if let Some(v) = cell.timeshare_cell_information_or_security_parameters
-                && v > 0x1F { return Err("cell.neighbor_cells_ca: timeshare_cell_information_or_security_parameters must be 0-31"); }
+                && v > 0x1F
+            {
+                return Err("cell.neighbor_cells_ca: timeshare_cell_information_or_security_parameters must be 0-31");
+            }
             if let Some(v) = cell.tdma_frame_offset
-                && v > 0x3F { return Err("cell.neighbor_cells_ca: tdma_frame_offset must be 0-63"); }
+                && v > 0x3F
+            {
+                return Err("cell.neighbor_cells_ca: tdma_frame_offset must be 0-63");
+            }
         }
 
         // Restart recovery: an explicit allowlist must not exceed the cache cap (the numeric
@@ -242,6 +269,28 @@ impl StackConfig {
             && self.recovery.issi_allowlist.len() as u32 > self.recovery.max_cached_issis
         {
             return Err("recovery.issi_allowlist has more entries than recovery.max_cached_issis");
+        }
+
+        if self.brew.is_some() && self.brew2.is_some() {
+            let brew = self.brew.as_ref().expect("checked");
+            let brew2 = self.brew2.as_ref().expect("checked");
+            if !brew.has_local_issi_allowlist() || !brew2.has_local_issi_allowlist() {
+                return Err("brew and brew2 require non-empty local_issi_allowlist when both are configured");
+            }
+
+            let Some(brew_allowlist) = brew.effective_local_issi_allowlist() else {
+                return Err("brew local_issi_allowlist is required when brew2 is configured");
+            };
+            let Some(brew2_allowlist) = brew2.effective_local_issi_allowlist() else {
+                return Err("brew2 local_issi_allowlist is required when brew is configured");
+            };
+            if brew_allowlist.is_empty() || brew2_allowlist.is_empty() {
+                return Err("brew and brew2 effective local_issi_allowlist must not be empty");
+            }
+            let brew_set: std::collections::HashSet<u32> = brew_allowlist.into_iter().collect();
+            if brew2_allowlist.into_iter().any(|issi| brew_set.contains(&issi)) {
+                return Err("brew and brew2 local_issi_allowlist must not overlap");
+            }
         }
 
         Ok(())

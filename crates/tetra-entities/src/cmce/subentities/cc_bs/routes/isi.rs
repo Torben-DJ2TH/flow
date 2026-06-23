@@ -59,7 +59,12 @@ impl CcBsSubentity {
         if let Err(err) = self.fsm_individual_on_alert(queue, call_id, None, CallTimeoutSetupPhase::T60s) {
             match err {
                 IndividualTransitionError::UnknownCall(_) => {
-                    tracing::debug!("CMCE: {:?} alert for unknown call_id={} uuid={}", network_entity, call_id, brew_uuid);
+                    tracing::debug!(
+                        "CMCE: {:?} alert for unknown call_id={} uuid={}",
+                        network_entity,
+                        call_id,
+                        brew_uuid
+                    );
                 }
                 IndividualTransitionError::InvalidTransition { state, .. } => {
                     tracing::trace!(
@@ -138,12 +143,13 @@ impl CcBsSubentity {
     pub(super) fn rx_network_call_start(
         &mut self,
         queue: &mut MessageQueue,
+        network_entity: TetraEntity,
         brew_uuid: uuid::Uuid,
         source_issi: u32,
         dest_gssi: u32,
         priority: u8,
     ) {
-        self.fsm_on_network_call_start(queue, brew_uuid, source_issi, dest_gssi, priority);
+        self.fsm_on_network_call_start(queue, network_entity, brew_uuid, source_issi, dest_gssi, priority);
     }
 
     /// Handle network call end request
