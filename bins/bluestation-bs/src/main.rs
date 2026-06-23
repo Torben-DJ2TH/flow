@@ -12,6 +12,7 @@ use tetra_entities::net_control::{
 use tetra_config::bluestation::{PhyBackend, SharedConfig, StackConfig, parsing};
 use tetra_core::{TdmaTime, debug};
 use tetra_entities::MessageRouter;
+#[cfg(feature = "asterisk")]
 use tetra_entities::net_asterisk::entity::AsteriskEntity;
 use tetra_entities::net_brew::entity::BrewEntity;
 use tetra_entities::net_brew::new_websocket_transport;
@@ -273,6 +274,7 @@ fn build_bs_stack(
     }
 
     // Register Asterisk SIP/RTP entity if enabled
+    #[cfg(feature = "asterisk")]
     if cfg.config().asterisk.enabled {
         match AsteriskEntity::new(cfg.clone()) {
             Ok(asterisk_entity) => {
@@ -283,6 +285,10 @@ fn build_bs_stack(
                 panic!("Failed to start Asterisk SIP integration: {}", err);
             }
         }
+    }
+    #[cfg(not(feature = "asterisk"))]
+    if cfg.config().asterisk.enabled {
+        eprintln!(" -> Asterisk SIP integration configured but not compiled in");
     }
 
     router.register_entity(Box::new(EcholinkEntity::new(cfg.clone(), echolink_cmd_rx)));

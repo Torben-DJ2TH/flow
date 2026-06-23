@@ -13,6 +13,7 @@ pub mod umac;
 
 pub mod network;
 
+#[cfg(feature = "asterisk")]
 pub mod net_asterisk;
 pub mod net_brew;
 pub mod net_control;
