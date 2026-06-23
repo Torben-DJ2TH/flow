@@ -378,17 +378,26 @@ voice_service = true
 # next startup, proactively sends D-LOCATION-UPDATE-COMMAND (ETSI EN 300 392-2 §16.4.4) to each,
 # forcing re-registration + group re-report so PTT works again within seconds, no human action.
 #
-# Default OFF: proactively keying COMMANDs at a batch of ISSIs right after boot adds MCCH load,
-# so it is opt-in. Pairs with cell_info.periodic_registration_secs (the T351 re-registration).
+# The proactive cache replay is OFF by default: keying COMMANDs at a batch of ISSIs right after
+# boot adds MCCH load, so it is opt-in. Pairs with cell_info.periodic_registration_secs (T351).
+#
+# A second, lighter mechanism — reactive_enabled — is ON by default and needs no cache: it watches
+# the uplink and, the moment an unknown but network-permitted radio transmits (any PTT/SDS/random
+# access), keys it one rate-limited D-LOCATION-UPDATE-COMMAND to force re-registration. It fires
+# only in response to a radio that is demonstrably present, so it is RF-cheap and heals the common
+# "PTT does nothing after a BS restart" case the cache can miss. Honours the same whitelist /
+# issi_allowlist scoping. Set reactive_enabled = false to disable.
 #
 # [recovery]
-# enabled = true                  # master on/off (default false)
-# issi_allowlist = []             # empty = recover every cached ISSI; non-empty = only these
+# enabled = true                  # proactive boot-time cache replay on/off (default false)
+# issi_allowlist = []             # empty = every cached/seen ISSI; non-empty = only these (both modes)
 # cache_path = ""                 # explicit path; omit/empty = <config-dir>/recovery_cache.json
 # max_replay_attempts = 150       # per-ISSI COMMAND re-sends before giving up (1..=500)
 # replay_per_frame = 1            # COMMANDs emitted per TDMA frame during the sweep (1..=18)
 # debounce_secs = 5               # coalesce registry changes into one cache write (1..=300)
 # max_cached_issis = 1024         # hard cap on cached terminals (1..=65535)
+# reactive_enabled = true         # command unknown radios to re-register on sight (default true)
+# reactive_cooldown_secs = 10     # min gap between reactive COMMANDs to the same ISSI (2..=120)
 
 ###############################################################################
 

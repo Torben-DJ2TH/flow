@@ -56,7 +56,16 @@ pub struct MmBs {
     /// Monotonic frame index of the last replay batch, so we emit at most `replay_per_frame`
     /// COMMANDs per TDMA frame rather than on every tick.
     recovery_last_frame: Option<i32>,
+    /// Reactive recovery: per-ISSI timestamp of the last D-LOCATION-UPDATE-COMMAND keyed in
+    /// response to an *unknown* radio transmitting on the uplink. Rate-limits re-keying the same
+    /// ghost while it re-registers (see `maybe_reactive_recovery`). Independent of `recovery`
+    /// above — populated even when the proactive cache is disabled.
+    reactive_recovery_cooldown: HashMap<u32, std::time::Instant>,
 }
+
+/// Safety cap on `reactive_recovery_cooldown` so a churn of distinct unknown ISSIs can't grow it
+/// without bound; lapsed entries are pruned once this many are held.
+const REACTIVE_RECOVERY_COOLDOWN_CAP: usize = 4096;
 
 impl MmBs {
     pub fn new(config: SharedConfig, telemetry: Option<TelemetrySink>, control: Option<ControlEndpoint>) -> Self {
@@ -70,6 +79,7 @@ impl MmBs {
             recovery_pending: VecDeque::new(),
             recovery_attempts: HashMap::new(),
             recovery_last_frame: None,
+            reactive_recovery_cooldown: HashMap::new(),
         }
     }
 
@@ -119,6 +129,10 @@ impl MmBs {
 
     /// Stop replaying to an ISSI that has (re-)registered. Called from the location-update path.
     fn recovery_confirm(&mut self, issi: u32) {
+        // Clear any reactive-recovery cooldown first: the radio answered, so a future re-drop of
+        // this ISSI should be re-keyable immediately. Done before the proactive early-return so it
+        // runs even when the boot-time cache replay is disabled (reactive is independent).
+        self.reactive_recovery_cooldown.remove(&issi);
         if self.recovery.is_none() {
             return;
         }
@@ -193,6 +207,67 @@ impl MmBs {
                 .collect()
         });
         self.recovery = Some(cache);
+    }
+
+    /// Reactive restart recovery. Called on every uplink RSSI sample (`MsRssiUpdate`), i.e. for
+    /// every random-access / PTT / SDS burst MM sees. If the transmitting ISSI is *unknown* to the
+    /// client registry — the tell-tale of a radio still RF-camped on the cell but whose MM record
+    /// was lost to a restart — key it a single D-LOCATION-UPDATE-COMMAND (ETSI EN 300 392-2
+    /// §16.4.4) to force an immediate re-registration with a group report. The existing
+    /// location-update path then re-affiliates it to CMCE/Brew and reports it to the dashboard, so
+    /// the next PTT succeeds — no manual DMO/TMO toggle, no wait for the periodic T351.
+    ///
+    /// This is the catch-all companion to the proactive boot sweep (`drive_recovery_replay`): it
+    /// needs no persisted cache, fires only in response to a demonstrably present + active radio,
+    /// and so covers the cases the cache misses (radio absent from the cache, or the sweep already
+    /// gave up on it). Rate-limited per ISSI; gated by the access whitelist and the optional
+    /// `[recovery] issi_allowlist`; on by default (`[recovery] reactive_enabled`).
+    fn maybe_reactive_recovery(&mut self, queue: &mut MessageQueue, issi: u32) {
+        // Fast path, the overwhelming common case: a radio MM already knows needs no recovery.
+        // Checked before touching config so healthy traffic stays cheap.
+        if self.client_mgr.client_is_known(issi) {
+            return;
+        }
+        // Let the proactive boot sweep own any ISSI it is already replaying, to avoid double-keying.
+        if self.recovery_attempts.contains_key(&issi) {
+            return;
+        }
+
+        let cfg = self.config.config();
+        let rec = &cfg.recovery;
+        if !rec.reactive_enabled {
+            return;
+        }
+        // Never key a radio that isn't permitted on this network — same scoping as init_recovery:
+        // the access-control whitelist plus the optional recovery allowlist.
+        let permitted = cfg.security.is_issi_allowed(issi)
+            && (rec.issi_allowlist.is_empty() || rec.issi_allowlist.contains(&issi));
+        if !permitted {
+            return;
+        }
+        let cooldown = std::time::Duration::from_secs(rec.reactive_cooldown_secs);
+
+        let now = std::time::Instant::now();
+        if let Some(&last) = self.reactive_recovery_cooldown.get(&issi) {
+            if now.duration_since(last) < cooldown {
+                // Already commanded recently — give it time to answer rather than spamming COMMANDs
+                // across the burst of RSSI samples a single PTT produces.
+                return;
+            }
+        }
+        // Prune lapsed entries before growing the map past its safety cap.
+        if self.reactive_recovery_cooldown.len() >= REACTIVE_RECOVERY_COOLDOWN_CAP {
+            self.reactive_recovery_cooldown
+                .retain(|_, t| now.duration_since(*t) < cooldown);
+        }
+        self.reactive_recovery_cooldown.insert(issi, now);
+
+        tracing::info!(
+            "MM: reactive recovery — unknown ISSI {} active on uplink, sending D-LOCATION-UPDATE-COMMAND to force re-registration",
+            issi
+        );
+        // handle = 0: addressed by ISSI on the MCCH (see send_d_location_update_command).
+        Self::send_d_location_update_command(queue, issi, 0);
     }
 
     /// Force CMCE to release any individual P2P calls involving the given ISSI,
@@ -1929,6 +2004,11 @@ impl TetraEntityTrait for MmBs {
                     }
                     SapMsgInner::MsRssiUpdate { issi, rssi_dbfs } => {
                         self.client_mgr.update_client_rssi(issi, rssi_dbfs);
+                        // This RSSI sample proves `issi` is RF-present on the uplink right now. If
+                        // MM has no record of it (registry lost to a restart while the radio stayed
+                        // camped), command it to re-register immediately rather than waiting for its
+                        // periodic T351 or a manual DMO/TMO toggle.
+                        self.maybe_reactive_recovery(queue, issi);
                         // Emit RSSI telemetry for dashboard
                         if let Some(sink) = &self.telemetry {
                             sink.send(crate::net_telemetry::TelemetryEvent::MsRssi { issi, rssi_dbfs });
