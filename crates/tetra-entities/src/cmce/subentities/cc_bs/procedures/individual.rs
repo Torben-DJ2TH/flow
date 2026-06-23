@@ -79,6 +79,19 @@ impl CcBsSubentity {
             });
         }
 
+        // Dashboard telemetry: an individual (P2P) call setup just began. Emitted at setup
+        // (matching the legacy `main` behaviour) rather than at connect so the dashboard shows
+        // the call as soon as the SwMI commits to it. `simplex` is the call's simplex/duplex
+        // mode (`is_simplex()` == !duplex).
+        self.emit(crate::net_telemetry::TelemetryEvent::IndividualCallStarted {
+            call_id,
+            calling_issi: call.calling_addr.ssi,
+            called_issi: call.called_addr.ssi,
+            simplex: call.is_simplex(),
+            ts: call.calling_ts,
+            priority: call.priority,
+        });
+
         self.individual_calls.insert(call_id, call);
         Ok(())
     }
@@ -528,7 +541,9 @@ impl CcBsSubentity {
                 handle: calling_handle,
                 endpoint_id: calling_endpoint_id,
                 link_id: calling_link_id,
-                layer2service: Layer2Service::Todo,
+                // Individual-call D-CONNECT (FACCH-stealing leg): the legacy `main` code sent CC
+                // PDUs unacknowledged (FH FIX 2).
+                layer2service: Layer2Service::Unacknowledged,
                 pdu_prio: 0,
                 layer2_qos: 0,
                 stealing_permission: true,
@@ -552,7 +567,9 @@ impl CcBsSubentity {
                 handle: calling_handle,
                 endpoint_id: calling_endpoint_id,
                 link_id: calling_link_id,
-                layer2service: Layer2Service::Todo,
+                // Individual-call D-CONNECT (MCCH fallback leg): the legacy `main` code sent CC
+                // PDUs unacknowledged (FH FIX 2).
+                layer2service: Layer2Service::Unacknowledged,
                 pdu_prio: 0,
                 layer2_qos: 0,
                 stealing_permission: false,
@@ -594,7 +611,9 @@ impl CcBsSubentity {
                 handle,
                 endpoint_id,
                 link_id,
-                layer2service: Layer2Service::Todo,
+                // Individual-call D-CONNECT-ACK (FACCH-stealing leg): the legacy `main` code sent
+                // CC PDUs unacknowledged (FH FIX 2).
+                layer2service: Layer2Service::Unacknowledged,
                 pdu_prio: 0,
                 layer2_qos: 0,
                 stealing_permission: true,
@@ -620,7 +639,9 @@ impl CcBsSubentity {
                 handle,
                 endpoint_id,
                 link_id,
-                layer2service: Layer2Service::Todo,
+                // Individual-call D-CONNECT-ACK (MCCH fallback leg): the legacy `main` code sent CC
+                // PDUs unacknowledged (FH FIX 2).
+                layer2service: Layer2Service::Unacknowledged,
                 pdu_prio: 0,
                 layer2_qos: 0,
                 stealing_permission: false,

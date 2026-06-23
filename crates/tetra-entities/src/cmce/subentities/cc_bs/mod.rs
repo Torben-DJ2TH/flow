@@ -51,6 +51,7 @@ mod state;
 mod timers;
 
 use lifecycle::{BrewNotification, CallTimeslot, GroupFloorGrant};
+use pdu::is_emergency_priority;
 use procedures::{GroupTransitionError, IndividualTransitionError};
 use state::{
     ActiveCall, CachedSetup, CallOrigin, CcFormalEvent, CcFormalState, GroupCallState, IndividualCall, IndividualCallState,
@@ -72,4 +73,6 @@ pub struct CcBsSubentity {
     subscriber_groups: HashMap<u32, HashSet<u32>>,
     /// Listener counts per GSSI
     group_listeners: HashMap<u32, usize>,
+    /// Dashboard telemetry sink (call-lifecycle events). `None` when telemetry is disabled.
+    telemetry: Option<crate::net_telemetry::TelemetrySink>,
 }

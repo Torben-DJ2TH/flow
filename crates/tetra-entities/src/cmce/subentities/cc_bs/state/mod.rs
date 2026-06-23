@@ -148,10 +148,19 @@ pub(super) struct ActiveCall {
     pub(super) source_issi: u32, // Current speaker
     pub(super) created_at: TdmaTime,
     pub(super) call_timeout: CallTimeout,
+    /// ETSI EN 300 392-2 clause 14.8 call priority (0..=15; 15 = emergency). Used for
+    /// pre-emptive priority handling: a higher-priority set-up may release this call.
+    pub(super) priority: u8,
     pub(super) ts: u8,
     pub(super) usage: u8,
     /// True if someone is currently transmitting
     pub(super) tx_active: bool,
+    /// Energy-economy group-announce batching: set once every affiliated EE member has had a
+    /// downlink wake frame covered by an announce re-send (or the bounded window elapsed).
+    pub(super) ee_announce_done: bool,
+    /// ISSIs already covered by an announce re-send (StayAlive members, or EE members whose
+    /// window has opened since set-up). Drives `ee_announce_done`.
+    pub(super) ee_announce_covered: std::collections::HashSet<u32>,
     /// Formal CMCE CC state for this call leg. Absence from active_calls means Idle.
     pub(super) formal_state: CcFormalState,
     /// When PTT was released (for hangtime). None if transmitting.
@@ -164,6 +173,7 @@ pub(super) struct ActiveCall {
 }
 
 impl ActiveCall {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new_local(
         caller_addr: TetraAddress,
         dest_gssi: u32,
@@ -172,6 +182,7 @@ impl ActiveCall {
         usage: u8,
         created_at: TdmaTime,
         call_timeout: CallTimeout,
+        priority: u8,
     ) -> Self {
         Self {
             origin: CallOrigin::Local { caller_addr },
@@ -179,9 +190,12 @@ impl ActiveCall {
             source_issi,
             created_at,
             call_timeout,
+            priority,
             ts,
             usage,
             tx_active: true,
+            ee_announce_done: false,
+            ee_announce_covered: std::collections::HashSet::new(),
             formal_state: CcFormalState::Idle
                 .after(CcFormalEvent::SetupRequest)
                 .after(CcFormalEvent::SetupComplete),
@@ -191,6 +205,7 @@ impl ActiveCall {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new_network(
         brew_uuid: uuid::Uuid,
         dest_gssi: u32,
@@ -199,6 +214,7 @@ impl ActiveCall {
         usage: u8,
         created_at: TdmaTime,
         call_timeout: CallTimeout,
+        priority: u8,
     ) -> Self {
         Self {
             origin: CallOrigin::Network { brew_uuid },
@@ -206,9 +222,12 @@ impl ActiveCall {
             source_issi,
             created_at,
             call_timeout,
+            priority,
             ts,
             usage,
             tx_active: true,
+            ee_announce_done: false,
+            ee_announce_covered: std::collections::HashSet::new(),
             formal_state: CcFormalState::Idle
                 .after(CcFormalEvent::SetupRequest)
                 .after(CcFormalEvent::SetupComplete),
@@ -365,6 +384,9 @@ pub(super) struct IndividualCall {
     pub(super) calling_usage: u8,
     pub(super) called_usage: u8,
     pub(super) simplex_duplex: bool,
+    /// ETSI EN 300 392-2 clause 14.8 call priority (0..=15; 15 = emergency). Used for
+    /// pre-emptive priority handling: a higher-priority set-up may release this call.
+    pub(super) priority: u8,
     pub(super) state: IndividualCallState,
     /// Formal CMCE CC state for this call leg. Absence from individual_calls means Idle.
     pub(super) formal_state: CcFormalState,

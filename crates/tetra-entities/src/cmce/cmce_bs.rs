@@ -30,6 +30,11 @@ impl CmceBs {
             sds.set_telemetry(sink.clone());
         }
 
+        let mut cc = CcBsSubentity::new(config.clone());
+        if let Some(ref sink) = telemetry {
+            cc.set_telemetry(sink.clone());
+        }
+
         Self {
             config: config.clone(),
             telemetry,
@@ -37,7 +42,7 @@ impl CmceBs {
             dashboard_control: None,
             pc: PcBs::new(),
             sds,
-            cc: CcBsSubentity::new(config.clone()),
+            cc,
             ss: SsBsSubentity::new(),
         }
     }

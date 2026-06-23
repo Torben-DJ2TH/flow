@@ -1,5 +1,13 @@
 use super::*;
 
+/// Energy-Economy D-SETUP gate (clause 16.7): individual-call setup resends are held for the
+/// called MS's monitoring window, but if the window has not opened within this many timeslots of
+/// setup start we fall back to the historical blind resend. ~6 s (a few EE cycles) — chosen to be
+/// comfortably under the shortest setup timeout (`T10s`/`Predefined`) so a wrong granted window
+/// phase degrades to "no worse than before", never to a setup that times out unanswered.
+/// (6 s / (170/12 ms per slot) ≈ 423 timeslots.)
+pub(super) const EE_DSETUP_FALLBACK_TS: i32 = 423;
+
 impl CcBsSubentity {
     pub fn tick_start(&mut self, queue: &mut MessageQueue, dltime: TdmaTime) {
         self.dltime = dltime;
@@ -11,21 +19,48 @@ impl CcBsSubentity {
         // Check hangtime expiry for active local calls
         self.check_hangtime_expiry(queue);
 
+        // Energy-economy group-call announce batching: re-emit the group D-SETUP across the
+        // union of affiliated EE members' wake frames so members on a different sleep phase
+        // still receive the call. No-op for all-StayAlive groups.
+        self.drive_group_ee_announce(queue);
+
         if let Some(tasks) = self.circuits.tick_start(dltime) {
             for task in tasks {
                 match task {
                     CircuitMgrCmd::SendDSetup(call_id, usage, ts) => {
-                        // Get our cached D-SETUP, build a prim and send it down the stack
-                        let Some(cached) = self.cached_setups.get_mut(&call_id) else {
-                            tracing::debug!(
-                                "CMCE: skipping D-SETUP resend for call_id={} (no cached D-SETUP; likely Brew-routed individual call)",
-                                call_id
-                            );
-                            continue;
+                        // Peek at routing info first (immutable) so the EE gate — a `&self` method —
+                        // can run before we take the mutable borrow on the cached D-SETUP below.
+                        let (dest_ssi, resend) = match self.cached_setups.get(&call_id) {
+                            Some(c) => (c.dest_addr.ssi, c.resend),
+                            None => {
+                                tracing::debug!(
+                                    "CMCE: skipping D-SETUP resend for call_id={} (no cached D-SETUP; likely Brew-routed individual call)",
+                                    call_id
+                                );
+                                continue;
+                            }
                         };
-                        if !cached.resend {
+                        if !resend {
                             continue;
                         }
+                        // Energy-Economy gate (clause 16.7): hold an individual-call D-SETUP resend
+                        // until the called MS's downlink monitoring window opens, so the page lands
+                        // when the radio is actually listening. The bounded fallback inside
+                        // `ee_dsetup_blocks` reverts to the blind resend after EE_DSETUP_FALLBACK_TS,
+                        // so a wrong granted window phase is never worse than the historical behaviour.
+                        if self.individual_calls.contains_key(&call_id) && self.ee_dsetup_blocks(call_id, dest_ssi) {
+                            tracing::debug!(
+                                "EE: holding D-SETUP resend for {} (call_id {}) until its monitoring window",
+                                dest_ssi, call_id
+                            );
+                            continue;
+                        }
+
+                        // Take the mutable borrow now that the EE gate (a `&self` method) has run.
+                        let cached = self
+                            .cached_setups
+                            .get_mut(&call_id)
+                            .expect("cached D-SETUP present (peeked above)");
                         if let Some(receipt) = cached.tx_receipt.as_ref()
                             && !receipt.is_in_final_state()
                         {
@@ -81,7 +116,9 @@ impl CcBsSubentity {
                                             handle: ind_call.calling_handle,
                                             endpoint_id: ind_call.calling_endpoint_id,
                                             link_id: ind_call.calling_link_id,
-                                            layer2service: Layer2Service::Todo,
+                                            // Unacknowledged BL-UDATA: the legacy `main` SendClose
+                                            // calling-leg D-RELEASE was sent unacknowledged (FH FIX 2).
+                                            layer2service: Layer2Service::Unacknowledged,
                                             pdu_prio: 0,
                                             layer2_qos: 0,
                                             stealing_permission: false,
@@ -163,12 +200,23 @@ impl CcBsSubentity {
                             call.begin_release(disconnect_cause);
                         }
                         self.cached_setups.remove(&call_id);
-                        self.active_calls.remove(&call_id);
-                        self.individual_calls.remove(&call_id);
+                        let removed_group = self.active_calls.remove(&call_id).is_some();
+                        let removed_individual = self.individual_calls.remove(&call_id).is_some();
 
                         // Signal UMAC to release the circuit
                         Self::signal_umac_circuit_close(queue, circuit, self.dltime);
                         self.release_timeslot(ts);
+
+                        // Dashboard telemetry: the CircuitMgr safety-expiry (`SendClose`) tears a
+                        // call down directly here without going through release_group_call /
+                        // release_individual_call, so emit the matching CallEnded for whichever
+                        // table the call was removed from above.
+                        if removed_group {
+                            self.emit(crate::net_telemetry::TelemetryEvent::GroupCallEnded { call_id, gssi: 0 });
+                        }
+                        if removed_individual {
+                            self.emit(crate::net_telemetry::TelemetryEvent::IndividualCallEnded { call_id });
+                        }
                     }
                 }
             }
@@ -235,18 +283,209 @@ impl CcBsSubentity {
             tracing::info!("Setup timeout expired for individual call_id={}, releasing", call_id);
             self.release_individual_call(queue, call_id, DisconnectCause::ExpiryOfTimer);
         }
+
+        // EE DSetup retry: for P2P individual calls still in CallSetupPending state
+        // (called MS has not yet sent U-ALERT), periodically retransmit DSetup on MCCH
+        // so that a sleeping MS can receive it at its next monitoring window.
+        // Retry interval ~2.5 s (180 timeslots; one slot = 170/12 ms, ~72 slots/s). Frequent enough
+        // that a retry instant has a good chance of coinciding with the called MS's EE monitoring
+        // window (the ee_dsetup_blocks gate below only lets a retry through when that window is open),
+        // yet bounded so we never flood the MS before the 60 s setup timeout.
+        // NOTE: TdmaTime::age()/diff() return TIMESLOTS (not frames) — locals are named accordingly.
+        const DSETUP_RETRY_INTERVAL_TS: i32 = 180; // ~2.5 s
+        let retry_calls: Vec<u16> = self
+            .individual_calls
+            .iter()
+            .filter_map(|(&call_id, call)| {
+                if call.state != IndividualCallState::CallSetupPending {
+                    return None;
+                }
+                let started = call.setup_timer_started?;
+                let age_ts = started.age(self.dltime);
+                // First retry after ~0.25 s, then every ~2.5 s.
+                if age_ts >= 18 && age_ts % DSETUP_RETRY_INTERVAL_TS == 0 {
+                    Some(call_id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for call_id in retry_calls {
+            let Some(cached) = self.cached_setups.get(&call_id) else {
+                continue;
+            };
+            let dest_addr = cached.dest_addr;
+            // Same Energy-Economy monitoring-window gate as the circuit_mgr resend path: while the
+            // called MS's window is closed, hold this retry (the bounded fallback inside
+            // `ee_dsetup_blocks` resumes it if the granted window phase turns out wrong). This is
+            // what actually aligns the retry to the MS's wake window instead of blind spamming.
+            if self.ee_dsetup_blocks(call_id, dest_addr.ssi) {
+                tracing::debug!(
+                    "EE: holding D-SETUP setup-retry for {} (call_id {}) until its monitoring window",
+                    dest_addr.ssi, call_id
+                );
+                continue;
+            }
+            let mut sdu = BitBuffer::new_autoexpand(80);
+            if cached.pdu.to_bitbuf(&mut sdu).is_err() {
+                continue;
+            }
+            sdu.seek(0);
+            let prim = Self::build_sapmsg(sdu, None, self.dltime, dest_addr, None);
+            tracing::debug!(
+                "EE DSetup retry for call_id={} to ISSI {} (setup pending, MS reachable)",
+                call_id, dest_addr.ssi
+            );
+            queue.push_back(prim);
+        }
+    }
+
+    /// Energy-Economy monitoring-window gate for an individual-call D-SETUP resend (clause 16.7).
+    ///
+    /// Returns `true` when the called MS (`dest_ssi`) is under Energy Economy and its downlink
+    /// monitoring window is currently closed, so the resend should be held until the window opens.
+    /// Returns `false` — i.e. send now — when the MS is not in EE (absent from the published map),
+    /// when its window is open, or once setup has been pending longer than `EE_DSETUP_FALLBACK_TS`
+    /// (the bounded fallback: a wrong granted window phase degrades to the historical blind resend
+    /// rather than blocking setup until it times out unanswered).
+    fn ee_dsetup_blocks(&self, call_id: u16, dest_ssi: u32) -> bool {
+        let window_closed = {
+            let state = self.config.state_read();
+            match state.ee_monitoring_windows.get(&dest_ssi) {
+                Some(&(frame, mframe, cycle_len)) => !self.dltime.in_ee_monitoring_window(frame, mframe, cycle_len),
+                None => false, // not in energy economy — always reachable
+            }
+        };
+        if !window_closed {
+            return false;
+        }
+        // Bounded fallback: stop holding once setup has been pending too long.
+        match self.individual_calls.get(&call_id).and_then(|c| c.setup_timer_started) {
+            Some(started) => started.age(self.dltime) < EE_DSETUP_FALLBACK_TS,
+            None => false, // no setup clock to bound the wait — don't gate
+        }
+    }
+
+    /// Energy-economy group-call announce batching (ETSI EN 300 392-2 §23.5 / §23.7).
+    ///
+    /// A group D-SETUP sent once reaches only members awake at that instant. EE members sleep on
+    /// different phases (EG1/EG2/EG3 wake every 2/3/6 frames), so a member asleep at announce time
+    /// would miss the call. While a group call is young (within `EE_DSETUP_FALLBACK_TS` of
+    /// creation), this re-emits the cached group D-SETUP on each frame where a not-yet-covered
+    /// affiliated EE member wakes, marking members covered as their window opens, until every EE
+    /// member has had a wake frame. It is a strict no-op for an all-StayAlive group (those members
+    /// received the first send and need no window) and after coverage completes — the normal ~5 s
+    /// late-entry cadence then takes over for steady-state late joiners.
+    fn drive_group_ee_announce(&mut self, queue: &mut MessageQueue) {
+        // EE wake windows are whole-frame, so only act on frame boundaries (ts == 1).
+        if self.dltime.t != 1 {
+            return;
+        }
+        let now = self.dltime;
+
+        // Group calls still inside their bounded announce window.
+        let candidates: Vec<u16> = self
+            .active_calls
+            .iter()
+            .filter(|(_, c)| !c.ee_announce_done && c.created_at.age(now) < EE_DSETUP_FALLBACK_TS)
+            .map(|(&id, _)| id)
+            .collect();
+        if candidates.is_empty() {
+            return;
+        }
+
+        for call_id in candidates {
+            let Some(call) = self.active_calls.get(&call_id) else {
+                continue;
+            };
+            let gssi = call.dest_gssi;
+            let ts = call.ts;
+            let usage = call.usage;
+            // The current speaker is awake by definition (it is transmitting); exclude it from
+            // coverage so its own EE window — closed on most frames — can't keep the call from
+            // ever reaching ee_announce_done or trigger pointless re-emits. Reading source_issi
+            // (rather than the original caller) also tracks a mid-call floor handover.
+            let source_issi = call.source_issi;
+            let already_covered = call.ee_announce_covered.clone();
+
+            // Affiliated members of this GSSI (CMCE's authoritative reverse affiliation map),
+            // excluding the active speaker.
+            let members: Vec<u32> = self
+                .subscriber_groups
+                .iter()
+                .filter(|(issi, gs)| **issi != source_issi && gs.contains(&gssi))
+                .map(|(&issi, _)| issi)
+                .collect();
+
+            // Refresh coverage for this frame: a member is covered when it is StayAlive (no
+            // window — it got the first send) or its EE window is open this frame.
+            let mut newly_covered: Vec<u32> = Vec::new();
+            let mut any_ee_woke = false;
+            let mut all_covered = true;
+            {
+                let state = self.config.state_read();
+                for m in &members {
+                    if already_covered.contains(m) {
+                        continue;
+                    }
+                    match state.ee_monitoring_windows.get(m) {
+                        None => newly_covered.push(*m), // StayAlive — already reached
+                        Some(&(frame, mframe, cycle_len)) => {
+                            if now.in_ee_monitoring_window(frame, mframe, cycle_len) {
+                                newly_covered.push(*m);
+                                any_ee_woke = true;
+                            } else {
+                                all_covered = false; // still asleep this frame
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Apply coverage + completion to the call.
+            if let Some(call) = self.active_calls.get_mut(&call_id) {
+                for m in &newly_covered {
+                    call.ee_announce_covered.insert(*m);
+                }
+                if all_covered {
+                    call.ee_announce_done = true;
+                }
+            }
+
+            // Re-emit the cached group D-SETUP only when a sleeping EE member actually woke this
+            // frame, so it lands while the radio is listening. (Re-sending a group D-SETUP is the
+            // established late-entry mechanism, so already-joined members tolerate the duplicate.)
+            if any_ee_woke
+                && let Some(cached) = self.cached_setups.get_mut(&call_id)
+            {
+                // Same late-entry grant tweak as the steady-state resend path.
+                cached.pdu.transmission_grant = TransmissionGrant::GrantedToOtherUser;
+                cached.pdu.transmission_request_permission = false;
+                let dest_addr = cached.dest_addr;
+                let (sdu, chan_alloc) = Self::build_d_setup_prim(&cached.pdu, usage, ts, UlDlAssignment::Both);
+                let prim = Self::build_sapmsg(sdu, Some(chan_alloc), self.dltime, dest_addr, None);
+                queue.push_back(prim);
+                tracing::debug!(
+                    "EE: group {} announce re-sent (call_id {}) to cover newly-awake member(s)",
+                    gssi, call_id
+                );
+            }
+        }
     }
 
     /// Check if any active calls in NoActiveSpeaker (hangtime) have expired and release them.
     pub(super) fn check_hangtime_expiry(&mut self, queue: &mut MessageQueue) {
-        // NoActiveSpeaker (hangtime): 5 multiframes = ~5 seconds
-        const HANGTIME_FRAMES: i32 = 5 * 18 * 4;
+        // Hangtime in TDMA timeslots, from config (cell.hangtime_secs, default 5s).
+        // TETRA: 18 frames/multiframe, 4 timeslots/frame → 72 timeslots/second.
+        let hangtime_secs = self.config.config().cell.hangtime_secs as i32;
+        let hangtime_frames: i32 = hangtime_secs * 18 * 4;
 
         let expired: Vec<u16> = self
             .active_calls
             .iter()
             .filter_map(|(&call_id, call)| match call.state() {
-                GroupCallState::NoActiveSpeaker { since } if since.age(self.dltime) > HANGTIME_FRAMES => Some(call_id),
+                GroupCallState::NoActiveSpeaker { since } if since.age(self.dltime) > hangtime_frames => Some(call_id),
                 _ => None,
             })
             .collect();

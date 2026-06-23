@@ -991,7 +991,9 @@ impl CcBsSubentity {
                 handle: ul_handle,
                 endpoint_id: ul_endpoint_id,
                 link_id: ul_link_id,
-                layer2service: Layer2Service::Todo,
+                // D-RELEASE to the disconnecting MS: the legacy `main` code sent CC PDUs
+                // unacknowledged (FH FIX 2).
+                layer2service: Layer2Service::Unacknowledged,
                 pdu_prio: 0,
                 layer2_qos: 0,
                 stealing_permission: false,

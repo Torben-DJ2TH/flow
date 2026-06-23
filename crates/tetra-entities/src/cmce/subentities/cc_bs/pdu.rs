@@ -11,11 +11,25 @@ impl CcBsSubentity {
             individual_calls: HashMap::new(),
             subscriber_groups: HashMap::new(),
             group_listeners: HashMap::new(),
+            telemetry: None,
         }
     }
 
     pub fn set_config(&mut self, config: SharedConfig) {
         self.config = config;
+    }
+
+    /// Wire the dashboard telemetry sink so call-lifecycle events (Group/Individual
+    /// CallStarted/CallEnded) reach the dashboard. Mirrors `SdsBsSubentity::set_telemetry`.
+    pub fn set_telemetry(&mut self, sink: crate::net_telemetry::TelemetrySink) {
+        self.telemetry = Some(sink);
+    }
+
+    /// Fire-and-forget emit of a telemetry event. No-op when telemetry is disabled.
+    pub(super) fn emit(&self, event: crate::net_telemetry::TelemetryEvent) {
+        if let Some(sink) = &self.telemetry {
+            sink.send(event);
+        }
     }
 
     pub(super) fn is_locally_registered_issi(&self, issi: u32) -> bool {
@@ -84,7 +98,11 @@ impl CcBsSubentity {
                 handle: 0,
                 endpoint_id: 0,
                 link_id: 0,
-                layer2service: Layer2Service::Todo,
+                // Unacknowledged BL-UDATA. This builder carries the MCCH/group-addressed sends —
+                // D-SETUP and D-RELEASE to a GSSI have no single peer to ACK, so acknowledged LLC
+                // (the `Todo` default) is wrong and can stall/retry at LLC. The legacy `main` code
+                // sent every CC PDU here unacknowledged (FH FIX 2).
+                layer2service: Layer2Service::Unacknowledged,
                 pdu_prio: 0,
                 layer2_qos: 0,
                 stealing_permission: false,
@@ -113,7 +131,10 @@ impl CcBsSubentity {
                 handle,
                 endpoint_id,
                 link_id,
-                layer2service: Layer2Service::Todo,
+                // Unacknowledged BL-UDATA. This builder serves the direct/reject broadcast paths
+                // (e.g. congestion D-RELEASE in `reject_setup_request`); the legacy `main` code
+                // hardcoded these unacknowledged (FH FIX 2).
+                layer2service: Layer2Service::Unacknowledged,
                 pdu_prio: 0,
                 layer2_qos: 0,
                 stealing_permission: false,
@@ -157,7 +178,11 @@ impl CcBsSubentity {
                 handle: 0,
                 endpoint_id: 0,
                 link_id: 0,
-                layer2service: Layer2Service::Todo,
+                // Unacknowledged BL-UDATA over FACCH stealing. Group floor PDUs (D-TX-CEASED /
+                // D-SETUP late-entry re-sends) carried here are GSSI-addressed, so acknowledged
+                // LLC would have no single peer to ACK; the legacy `main` code sent these
+                // unacknowledged (FH FIX 2).
+                layer2service: Layer2Service::Unacknowledged,
                 pdu_prio: 0,
                 layer2_qos: 0,
                 stealing_permission: true,
@@ -478,7 +503,10 @@ impl CcBsSubentity {
                 handle: prim.handle,
                 endpoint_id: prim.endpoint_id,
                 link_id: prim.link_id,
-                layer2service: Layer2Service::Todo,
+                // D-CALL-PROCEEDING during setup: the legacy `main` code sent this unacknowledged
+                // (FH FIX 2). It is a setup-phase MCCH response where the addressed MS is not yet
+                // in a confirmed LLC link context, so acknowledged BL-DATA can stall.
+                layer2service: Layer2Service::Unacknowledged,
                 pdu_prio: 0,
                 layer2_qos: 0,
                 stealing_permission: false,
@@ -529,7 +557,10 @@ impl CcBsSubentity {
                 handle: calling_handle,
                 endpoint_id: calling_endpoint_id,
                 link_id: calling_link_id,
-                layer2service: Layer2Service::Todo,
+                // D-ALERT to the calling MS during individual setup: the legacy `main` code sent
+                // this unacknowledged (FH FIX 2). Setup-phase MCCH signalling, same rationale as
+                // D-CALL-PROCEEDING above.
+                layer2service: Layer2Service::Unacknowledged,
                 pdu_prio: 0,
                 layer2_qos: 0,
                 stealing_permission: false,
@@ -828,7 +859,14 @@ impl CcBsSubentity {
 
         // Clean up
         self.cached_setups.remove(&call_id);
-        self.active_calls.remove(&call_id);
+        let was_active = self.active_calls.remove(&call_id).is_some();
+
+        // Dashboard telemetry: group call released (normal disconnect, timeout, hangtime or
+        // pre-emption — all of which funnel through here). Only emit if a call was actually
+        // removed, so a double-release can't produce a phantom Ended.
+        if was_active {
+            self.emit(crate::net_telemetry::TelemetryEvent::GroupCallEnded { call_id, gssi: 0 });
+        }
     }
 
     /// Release an individual call: send D-RELEASE to both parties, close circuits, clean up state
@@ -948,12 +986,157 @@ impl CcBsSubentity {
                 self.notify_network_circuit_release(queue, brew_uuid, disconnect_cause);
             }
         }
+
+        // Dashboard telemetry: individual call released. Reaching here means the call was present
+        // and removed at the top of this function (early-return otherwise), so this fires exactly
+        // once per released individual call across every teardown path that funnels through here
+        // (normal disconnect, setup/active timeout, pre-emption).
+        self.emit(crate::net_telemetry::TelemetryEvent::IndividualCallEnded { call_id });
     }
 
     pub(super) fn release_timeslot(&mut self, ts: u8) {
         let mut state = self.config.state_write();
         if let Err(err) = state.timeslot_alloc.release(TimeslotOwner::Cmce, ts) {
             tracing::warn!("CcBsSubentity: failed to release timeslot ts={} err={:?}", ts, err);
+        }
+    }
+
+    /// Map `cell.call_timeout_secs` from config to the nearest ETSI `CallTimeout` enum value.
+    /// ETSI EN 300 392-2 Table 14.50: the BS sets D-SETUP/D-CONNECT call_time_out to indicate the
+    /// maximum call duration. 0 means "no limit" (Infinite). Default config value is 120s (→ T2m).
+    pub(super) fn config_call_timeout(&self) -> CallTimeout {
+        let secs = self.config.config().cell.call_timeout_secs;
+        match secs {
+            0 => CallTimeout::Infinite, // 0 = no limit
+            1..=37 => CallTimeout::T30s,
+            38..=52 => CallTimeout::T45s,
+            53..=90 => CallTimeout::T60s,
+            91..=150 => CallTimeout::T2m,
+            151..=210 => CallTimeout::T3m,
+            211..=270 => CallTimeout::T4m,
+            271..=390 => CallTimeout::T5m,
+            391..=540 => CallTimeout::T6m,
+            541..=720 => CallTimeout::T8m,
+            721..=900 => CallTimeout::T10m,
+            901..=1080 => CallTimeout::T12m,
+            1081..=1350 => CallTimeout::T15m,
+            1351..=1800 => CallTimeout::T20m,
+            _ => CallTimeout::T30m,
+        }
+    }
+
+    /// Number of currently free traffic timeslots (TS2..=TS4) on this cell.
+    fn free_timeslot_count(&self) -> usize {
+        self.config.state_read().timeslot_alloc.free_count()
+    }
+
+    /// Pick the best active call to pre-empt for a higher-priority call, or `None` if none is
+    /// eligible. Only calls of *strictly lower* priority than `incoming_priority` may be
+    /// pre-empted (equal priority keeps the channel — first come, first served). Among eligible
+    /// calls the victim is chosen by: lowest priority first; then a call that is not actively
+    /// transmitting (a group call in hangtime / a P2P call still in set-up — least disruptive to
+    /// release); then the lowest call_id, purely for deterministic behaviour. `exclude` holds
+    /// call_ids already released this round so the loop always makes progress.
+    fn select_preemption_victim(&self, incoming_priority: u8, exclude: &[u16]) -> Option<PreemptVictim> {
+        let mut candidates: Vec<(u8, u8, u16, PreemptVictim)> = Vec::new();
+        for (id, call) in self.active_calls.iter() {
+            if call.priority < incoming_priority && !exclude.contains(id) {
+                candidates.push((call.priority, call.tx_active as u8, *id, PreemptVictim::Group(*id)));
+            }
+        }
+        for (id, call) in self.individual_calls.iter() {
+            if call.priority < incoming_priority && !exclude.contains(id) {
+                candidates.push((call.priority, call.is_active() as u8, *id, PreemptVictim::Individual(*id)));
+            }
+        }
+        candidates
+            .into_iter()
+            .min_by_key(|(priority, active, call_id, _)| (*priority, *active, *call_id))
+            .map(|(_, _, _, victim)| victim)
+    }
+
+    /// ETSI EN 300 392-2 clause 14.8 pre-emptive priority handling. When a call requested at a
+    /// pre-emptive priority (>= 12, e.g. an emergency call) cannot be granted a traffic channel,
+    /// the SwMI may release active calls of strictly lower priority to free up to `needed` slots.
+    /// Each round releases the lowest-priority eligible call (see [`Self::select_preemption_victim`])
+    /// with `DisconnectCause::PreEmptiveUseOfResource`. This is a no-op for non-pre-emptive
+    /// priorities, and stops as soon as enough slots are free or no lower-priority call remains
+    /// (in which case the caller's own allocation will fail and reject the call normally).
+    pub(super) fn preempt_for_priority(&mut self, queue: &mut MessageQueue, needed: usize, incoming_priority: u8) {
+        if !is_preemptive_priority(incoming_priority) {
+            return;
+        }
+        let mut attempted: Vec<u16> = Vec::new();
+        while self.free_timeslot_count() < needed {
+            let Some(victim) = self.select_preemption_victim(incoming_priority, &attempted) else {
+                tracing::info!(
+                    "CMCE: pre-emption for priority {} call cannot free enough channels ({} of {} slots free, no lower-priority call to release)",
+                    incoming_priority,
+                    self.free_timeslot_count(),
+                    needed
+                );
+                break;
+            };
+            attempted.push(victim.call_id());
+            tracing::info!(
+                "CMCE: pre-empting {:?} to free a traffic channel for an incoming priority {} call",
+                victim,
+                incoming_priority
+            );
+            match victim {
+                PreemptVictim::Group(call_id) => {
+                    self.release_group_call(queue, call_id, DisconnectCause::PreEmptiveUseOfResource)
+                }
+                PreemptVictim::Individual(call_id) => {
+                    self.release_individual_call(queue, call_id, DisconnectCause::PreEmptiveUseOfResource)
+                }
+            }
+        }
+    }
+}
+
+// ── Call priority & pre-emption (ETSI EN 300 392-2 clause 14.8 "Call priority") ───────────────
+//
+// The call priority is a 4-bit field (0..=15) carried in U-SETUP / D-SETUP / D-CONNECT:
+//   0        → priority not defined (treated as the lowest / normal priority)
+//   1..=11   → ordinary priority levels (increasing)
+//   12..=15  → the four *pre-emptive* priority levels
+//   15       → highest priority; what a terminal's emergency button generates
+//
+// A call requested at a pre-emptive priority (>= 12) is entitled to pre-empt an active call of
+// *strictly lower* priority when no traffic channel is free. An emergency call (priority 15) is
+// the top pre-emptive level: it is surfaced distinctly on the dashboard and always granted the
+// floor immediately on set-up.
+
+/// Highest call priority (ETSI clause 14.8) — an emergency call.
+pub(super) const CALL_PRIORITY_EMERGENCY: u8 = 15;
+/// Lowest of the four pre-emptive priority levels (12..=15).
+pub(super) const CALL_PRIORITY_PREEMPTIVE_MIN: u8 = 12;
+
+/// True when a call at this priority may pre-empt a lower-priority call (pre-emptive priority).
+#[inline]
+pub(super) fn is_preemptive_priority(priority: u8) -> bool {
+    priority >= CALL_PRIORITY_PREEMPTIVE_MIN
+}
+
+/// True when this priority denotes an emergency call (the highest priority level).
+#[inline]
+pub(super) fn is_emergency_priority(priority: u8) -> bool {
+    priority >= CALL_PRIORITY_EMERGENCY
+}
+
+/// A call selected for pre-emption: either an active group call or an individual (P2P) call.
+#[derive(Clone, Copy, Debug)]
+enum PreemptVictim {
+    Group(u16),
+    Individual(u16),
+}
+
+impl PreemptVictim {
+    #[inline]
+    fn call_id(self) -> u16 {
+        match self {
+            PreemptVictim::Group(id) | PreemptVictim::Individual(id) => id,
         }
     }
 }

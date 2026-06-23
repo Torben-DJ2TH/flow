@@ -205,6 +205,7 @@ impl CcBsSubentity {
                 calling_usage: usage,
                 called_usage: usage,
                 simplex_duplex,
+                priority: call.priority,
                 state: IndividualCallState::IncomingSetupPending,
                 formal_state: CcFormalState::Idle.after(CcFormalEvent::SetupRequest),
                 setup_timer_started: Some(self.dltime),
@@ -334,7 +335,9 @@ impl CcBsSubentity {
                 handle: call.calling_handle,
                 endpoint_id: call.calling_endpoint_id,
                 link_id: call.calling_link_id,
-                layer2service: Layer2Service::Todo,
+                // Network individual-call D-CONNECT: the legacy `main` code sent CC PDUs
+                // unacknowledged (FH FIX 2).
+                layer2service: Layer2Service::Unacknowledged,
                 pdu_prio: 0,
                 layer2_qos: 0,
                 stealing_permission: false,
@@ -532,7 +535,9 @@ impl CcBsSubentity {
                 handle: called_handle,
                 endpoint_id: called_endpoint_id,
                 link_id: called_link_id,
-                layer2service: Layer2Service::Todo,
+                // Network individual-call D-CONNECT-ACK: the legacy `main` code sent CC PDUs
+                // unacknowledged (FH FIX 2).
+                layer2service: Layer2Service::Unacknowledged,
                 pdu_prio: 0,
                 layer2_qos: 0,
                 stealing_permission: false,
@@ -644,7 +649,7 @@ impl CcBsSubentity {
         brew_uuid: uuid::Uuid,
         source_issi: u32,
         dest_gssi: u32,
-        _priority: u8,
+        priority: u8,
     ) {
         assert!(brew::is_brew_gssi_routable(&self.config, dest_gssi));
 
@@ -812,7 +817,10 @@ impl CcBsSubentity {
                 handle: 0,
                 endpoint_id: 0,
                 link_id: 0,
-                layer2service: Layer2Service::Todo,
+                // GROUP-addressed D-CONNECT (main_address is the GSSI) for a network-initiated
+                // group call: acknowledged LLC has no single peer to ACK, so this must be
+                // unacknowledged BL-UDATA — same class as the FIX 2 group D-SETUP/D-RELEASE bug.
+                layer2service: Layer2Service::Unacknowledged,
                 pdu_prio: 0,
                 layer2_qos: 0,
                 stealing_permission: false,
@@ -826,8 +834,17 @@ impl CcBsSubentity {
 
         self.active_calls.insert(
             call_id,
-            ActiveCall::new_network(brew_uuid, dest_gssi, source_issi, ts, usage, self.dltime, CallTimeout::T5m),
+            ActiveCall::new_network(brew_uuid, dest_gssi, source_issi, ts, usage, self.dltime, self.config_call_timeout(), priority),
         );
+
+        // Dashboard telemetry: a Brew/network-initiated group call just became active.
+        self.emit(crate::net_telemetry::TelemetryEvent::GroupCallStarted {
+            call_id,
+            gssi: dest_gssi,
+            caller_issi: source_issi,
+            ts,
+            priority,
+        });
 
         queue.push_back(SapMsg {
             sap: Sap::Control,

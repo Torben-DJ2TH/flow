@@ -94,6 +94,20 @@ impl CcBsSubentity {
             return;
         }
 
+        if is_emergency_priority(pdu.call_priority) {
+            tracing::info!(
+                "CMCE: EMERGENCY group call set-up from ISSI {} to GSSI {} (priority {})",
+                calling_party.ssi,
+                dest_gssi,
+                pdu.call_priority
+            );
+        }
+
+        // Emergency / pre-emptive priority: if the cell is full, free one traffic channel by
+        // releasing a lower-priority call before allocating (ETSI EN 300 392-2 clause 14.8).
+        // No-op for ordinary priority.
+        self.preempt_for_priority(queue, 1, pdu.call_priority);
+
         // Allocate circuit (DL+UL for group call)
         let circuit = match {
             let mut state = self.config.state_write();
@@ -107,7 +121,21 @@ impl CcBsSubentity {
         } {
             Ok(circuit) => circuit.clone(),
             Err(e) => {
-                tracing::error!("Failed to allocate circuit for U-SETUP: {:?}", e);
+                // No free traffic channel (and pre-emption, if any, could not free one). Tell the
+                // calling MS rather than dropping the request silently. ETSI: congestion case.
+                tracing::info!(
+                    "CMCE: rejecting U-SETUP group from ISSI {} to GSSI {} (no free channel: {:?})",
+                    calling_party.ssi,
+                    dest_gssi,
+                    e
+                );
+                self.reject_setup_request(
+                    queue,
+                    message,
+                    calling_party,
+                    DisconnectCause::CongestionInInfrastructure,
+                    "no free traffic channel for group set-up",
+                );
                 return;
             }
         };
@@ -146,10 +174,17 @@ impl CcBsSubentity {
             pdu.hook_method_selection,
         );
 
+        // Group call duration: config-driven (ETSI EN 300 392-2 14.50), Infinite for duplex.
+        let group_call_timeout = if pdu.simplex_duplex_selection {
+            CallTimeout::Infinite
+        } else {
+            self.config_call_timeout()
+        };
+
         // 2) D-CONNECT to caller.
         let d_connect = DConnect {
             call_identifier: circuit.call_id,
-            call_time_out: Self::p2p_call_timeout(pdu.simplex_duplex_selection),
+            call_time_out: group_call_timeout,
             hook_method_selection: pdu.hook_method_selection,
             simplex_duplex_selection: pdu.simplex_duplex_selection,
             transmission_grant: TransmissionGrant::Granted,
@@ -177,7 +212,9 @@ impl CcBsSubentity {
                 handle: ul_handle,
                 endpoint_id: ul_endpoint_id,
                 link_id: ul_link_id,
-                layer2service: Layer2Service::Todo,
+                // D-CONNECT to the group caller: the legacy `main` code sent every CC PDU
+                // unacknowledged (FH FIX 2); kept here for fidelity with the old behaviour.
+                layer2service: Layer2Service::Unacknowledged,
                 pdu_prio: 0,
                 layer2_qos: 0,
                 stealing_permission: false,
@@ -198,7 +235,7 @@ impl CcBsSubentity {
         // 3) D-SETUP to group.
         let d_setup = DSetup {
             call_identifier: circuit.call_id,
-            call_time_out: Self::p2p_call_timeout(pdu.simplex_duplex_selection),
+            call_time_out: group_call_timeout,
             hook_method_selection: pdu.hook_method_selection,
             simplex_duplex_selection: pdu.simplex_duplex_selection,
             basic_service_information: pdu.basic_service_information.clone(),
@@ -240,9 +277,19 @@ impl CcBsSubentity {
                 circuit.ts,
                 circuit.usage,
                 self.dltime,
-                CallTimeout::T5m,
+                group_call_timeout,
+                pdu.call_priority,
             ),
         );
+
+        // Dashboard telemetry: a local group call just became active.
+        self.emit(crate::net_telemetry::TelemetryEvent::GroupCallStarted {
+            call_id: circuit.call_id,
+            gssi: dest_gssi,
+            caller_issi: calling_party.ssi,
+            ts: circuit.ts,
+            priority: pdu.call_priority,
+        });
 
         self.notify_floor_granted(
             queue,
@@ -346,6 +393,24 @@ impl CcBsSubentity {
             self.reject_setup_request(queue, message, calling_party, cause, "individual setup collision");
             return;
         }
+
+        if is_emergency_priority(pdu.call_priority) {
+            tracing::info!(
+                "CMCE: EMERGENCY individual call set-up from ISSI {} to ISSI {} (priority {})",
+                calling_party.ssi,
+                called_addr.ssi,
+                pdu.call_priority
+            );
+        }
+
+        // Emergency / pre-emptive priority: if the cell is full, free the traffic channel(s) this
+        // call needs by releasing lower-priority calls before allocating (ETSI EN 300 392-2 clause
+        // 14.8). Duplex needs two slots, simplex one. No-op for ordinary priority.
+        self.preempt_for_priority(
+            queue,
+            if pdu.simplex_duplex_selection { 2 } else { 1 },
+            pdu.call_priority,
+        );
 
         // Allocate circuit(s). Duplex uses two traffic timeslots, one per MS, with cross-routing.
         let (circuit_calling, circuit_called) = {
@@ -494,6 +559,7 @@ impl CcBsSubentity {
                 calling_usage,
                 called_usage,
                 simplex_duplex: pdu.simplex_duplex_selection,
+                priority: pdu.call_priority,
                 state: IndividualCallState::CallSetupPending,
                 formal_state: CcFormalState::Idle.after(CcFormalEvent::SetupRequest),
                 setup_timer_started: Some(self.dltime),
@@ -722,6 +788,7 @@ impl CcBsSubentity {
                 calling_usage: usage,
                 called_usage: usage,
                 simplex_duplex: pdu.simplex_duplex_selection,
+                priority: pdu.call_priority,
                 state: IndividualCallState::CallSetupPending,
                 formal_state: CcFormalState::Idle.after(CcFormalEvent::SetupRequest),
                 setup_timer_started: Some(self.dltime),

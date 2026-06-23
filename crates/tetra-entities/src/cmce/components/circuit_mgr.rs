@@ -73,7 +73,9 @@ impl CircuitMgr {
             Direction::Dl => self.dl[ts as usize - 1].is_some(),
             Direction::Ul => {
                 let dl_is_both = if let Some(dl) = &self.dl[ts as usize - 1] {
-                    assert!(self.ul_only[ts as usize - 1].is_none());
+                    if self.ul_only[ts as usize - 1].is_some() {
+                        tracing::warn!("CMCE: circuit_mgr ts={} has both dl and ul_only set simultaneously (invariant violation)", ts);
+                    }
                     dl.direction == Direction::Both
                 } else {
                     false
@@ -81,7 +83,10 @@ impl CircuitMgr {
                 self.ul_only[ts as usize - 1].is_some() || dl_is_both
             }
 
-            _ => panic!("can only use with specific ul/dl direction"),
+            _ => {
+                tracing::error!("CMCE: is_active_dir called with non-specific direction {:?}, returning false", dir);
+                false
+            }
         }
     }
 
@@ -93,7 +98,9 @@ impl CircuitMgr {
             (None, false)
         };
         let ul_usage = if dl_is_both {
-            assert!(self.ul_only[ts as usize - 1].is_none());
+            if self.ul_only[ts as usize - 1].is_some() {
+                tracing::warn!("CMCE: circuit_mgr ts={} get_usage has both Dl+Ul circuit and ul_only set simultaneously (invariant violation)", ts);
+            }
             dl_usage
         } else if let Some(ul) = &self.ul_only[ts as usize - 1] {
             Some(ul.usage)
@@ -307,15 +314,20 @@ impl CircuitMgr {
     }
 
     /// Closes any circuits that have expired.
-    /// Safety timeout: 6 minutes (beyond the 5-minute call timeout T5m).
+    /// Safety timeout for simplex (HDX/PTT) circuits: 6 minutes (beyond the 5-minute call timeout T5m).
+    /// Full-duplex (FDX) circuits — normal voice calls — have no timeout here;
+    /// they are released by normal call signalling (U-DISCONNECT / CALL_RELEASE).
+    /// ETSI EN 300 392-2 §14.9: call timeout does not apply to FDX individual calls.
     /// Active calls are cleaned up earlier by CMCE hangtime/release logic.
     fn close_expired_circuits(&mut self, mut tasks: Option<Vec<CircuitMgrCmd>>) -> Option<Vec<CircuitMgrCmd>> {
-        const CIRCUIT_EXPIRY_TIMESLOTS: i32 = 6 * 60 * 18 * 4; // 6 minutes
+        const CIRCUIT_EXPIRY_TIMESLOTS: i32 = 6 * 60 * 18 * 4; // 6 minutes for simplex
 
         let mut to_close: Vec<_> = self
             .dl
             .iter()
             .filter_map(|circuit| circuit.as_ref())
+            // FDX circuits (simplex_duplex=true) have no safety timeout — skip them.
+            .filter(|circuit| !circuit.simplex_duplex)
             .filter(|circuit| circuit.ts_created.age(self.dltime) > CIRCUIT_EXPIRY_TIMESLOTS)
             .map(|circuit| (circuit.direction, circuit.ts, circuit.call_id))
             .collect();
@@ -323,12 +335,23 @@ impl CircuitMgr {
             self.ul_only
                 .iter()
                 .filter_map(|circuit| circuit.as_ref())
+                .filter(|circuit| !circuit.simplex_duplex)
                 .filter(|circuit| circuit.ts_created.age(self.dltime) > CIRCUIT_EXPIRY_TIMESLOTS)
                 .map(|circuit| (circuit.direction, circuit.ts, circuit.call_id)),
         );
         for (dir, ts, call_id) in to_close {
-            let circuit = self.close_circuit(dir, ts).unwrap(); // TODO FIXME not so sure about this one
-            tasks.get_or_insert_with(Vec::new).push(CircuitMgrCmd::SendClose(call_id, circuit));
+            match self.close_circuit(dir, ts) {
+                Ok(circuit) => {
+                    tasks.get_or_insert_with(Vec::new).push(CircuitMgrCmd::SendClose(call_id, circuit));
+                }
+                Err(_) => {
+                    // Already closed by normal release path racing with the expiry timer — safe to ignore.
+                    tracing::debug!(
+                        "circuit_mgr: expiry close skipped for call_id={} ts={} dir={:?} (already closed)",
+                        call_id, ts, dir
+                    );
+                }
+            }
         }
         tasks
     }
@@ -367,5 +390,62 @@ impl CircuitMgr {
             return tasks;
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression (ETSI EN 300 392-2 §14.9): full-duplex (FDX) circuits must NOT be
+    /// force-closed by the 6-minute safety timeout — only simplex (HDX/PTT) circuits are.
+    /// The CMCE rewrite dropped the `simplex_duplex` filter, force-closing duplex voice
+    /// calls after 6 minutes; this verifies the exemption is restored.
+    #[test]
+    fn duplex_circuit_not_closed_after_six_minutes() {
+        let mut mgr = CircuitMgr::new();
+        // Initialise the manager clock to a t==1 slot (close_expired_circuits only runs then).
+        let start = TdmaTime { h: 0, m: 1, f: 1, t: 1 };
+        mgr.tick_start(start);
+
+        // Simplex (HDX) circuit on one timeslot, full-duplex (FDX) on another.
+        let simplex_ts = mgr
+            .allocate_circuit(Direction::Both, CommunicationType::P2p, false)
+            .expect("allocate simplex circuit")
+            .ts;
+        let duplex_ts = mgr
+            .allocate_circuit(Direction::Both, CommunicationType::P2p, true)
+            .expect("allocate duplex circuit")
+            .ts;
+        assert_ne!(simplex_ts, duplex_ts);
+
+        // Advance > 6 minutes, landing on a t==1 slot so the expiry sweep runs.
+        let seven_minutes = 7 * 60 * 18 * 4;
+        let later = start.add_timeslots(seven_minutes);
+        assert_eq!(later.t, 1, "expiry sweep only runs on t==1");
+        let tasks = mgr.tick_start(later);
+
+        // The simplex circuit must have been force-closed (SendClose queued)...
+        let closes: Vec<_> = tasks
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|cmd| match cmd {
+                CircuitMgrCmd::SendClose(_, circuit) => Some(circuit),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(closes.len(), 1, "exactly the simplex circuit should be force-closed");
+        assert_eq!(closes[0].ts, simplex_ts);
+        assert!(!closes[0].simplex_duplex, "the closed circuit must be the simplex one");
+
+        // ...and the duplex circuit must still be active.
+        assert!(
+            mgr.is_active_dir(duplex_ts, Direction::Dl),
+            "FDX circuit must survive the 6-minute safety timeout"
+        );
+        assert!(
+            !mgr.is_active_dir(simplex_ts, Direction::Dl),
+            "simplex circuit should be gone after the safety timeout"
+        );
     }
 }
