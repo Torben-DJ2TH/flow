@@ -1,16 +1,26 @@
 mod common;
 
-use tetra_config::bluestation::StackMode;
+use std::time::Duration;
+
+use tetra_config::bluestation::{CfgBrew, StackMode};
 use tetra_core::tetra_entities::TetraEntity;
-use tetra_core::{BitBuffer, Sap, SsiType, TdmaTime, TetraAddress, TxState, debug};
-use tetra_pdus::cmce::enums::party_type_identifier::PartyTypeIdentifier;
+use tetra_core::{BitBuffer, Direction, Sap, SsiType, TdmaTime, TetraAddress, TxState, debug};
+use tetra_pdus::cmce::enums::{
+    call_timeout::CallTimeout, cmce_pdu_type_dl::CmcePduTypeDl, party_type_identifier::PartyTypeIdentifier,
+    transmission_grant::TransmissionGrant,
+};
 use tetra_pdus::cmce::fields::basic_service_information::BasicServiceInformation;
-use tetra_pdus::cmce::pdus::u_setup::USetup;
+use tetra_pdus::cmce::enums::disconnect_cause::DisconnectCause;
+use tetra_pdus::cmce::pdus::{
+    d_connect::DConnect, d_connect_acknowledge::DConnectAcknowledge, d_setup::DSetup, d_tx_ceased::DTxCeased, d_tx_granted::DTxGranted,
+    u_connect::UConnect, u_disconnect::UDisconnect, u_setup::USetup, u_tx_ceased::UTxCeased, u_tx_demand::UTxDemand,
+};
 use tetra_saps::control::brew::{BrewSubscriberAction, MmSubscriberUpdate};
+use tetra_saps::control::call_control::{CallControl, NetworkCircuitCall};
 use tetra_saps::control::enums::circuit_mode_type::CircuitModeType;
 use tetra_saps::control::enums::communication_type::CommunicationType;
-use tetra_saps::control::call_control::CallControl;
 use tetra_saps::lcmc::LcmcMleUnitdataInd;
+use tetra_saps::lcmc::enums::ul_dl_assignment::UlDlAssignment;
 use tetra_saps::sapmsg::{SapMsg, SapMsgInner};
 
 use crate::common::ComponentTest;
@@ -48,9 +58,100 @@ fn register_subscriber(test: &mut ComponentTest, issi: u32, gssi: u32) {
     test.dump_sinks();
 }
 
-/// Helper: build a U-SETUP SAP message for a group call (ordinary priority 0).
+/// Helper: build a U-SETUP SAP message for a group call.
 fn build_u_setup_msg(calling_issi: u32, dest_gssi: u32) -> SapMsg {
-    build_u_setup_msg_prio(calling_issi, dest_gssi, 0)
+    let u_setup = USetup {
+        area_selection: 0,
+        hook_method_selection: false,
+        simplex_duplex_selection: false,
+        basic_service_information: BasicServiceInformation {
+            circuit_mode_type: CircuitModeType::TchS,
+            encryption_flag: false,
+            communication_type: CommunicationType::P2Mp,
+            slots_per_frame: None,
+            speech_service: Some(0),
+        },
+        request_to_transmit_send_data: false,
+        call_priority: 0,
+        clir_control: 0,
+        called_party_type_identifier: PartyTypeIdentifier::Ssi,
+        called_party_ssi: Some(dest_gssi as u64),
+        called_party_short_number_address: None,
+        called_party_extension: None,
+        external_subscriber_number: None,
+        facility: None,
+        dm_ms_address: None,
+        proprietary: None,
+    };
+
+    let mut sdu = BitBuffer::new_autoexpand(80);
+    u_setup.to_bitbuf(&mut sdu).expect("Failed to serialize USetup");
+    sdu.seek(0);
+
+    SapMsg {
+        sap: Sap::LcmcSap,
+        src: TetraEntity::Mle,
+        dest: TetraEntity::Cmce,
+        msg: SapMsgInner::LcmcMleUnitdataInd(LcmcMleUnitdataInd {
+            sdu,
+            handle: 1,
+            endpoint_id: 1,
+            link_id: 1,
+            received_tetra_address: TetraAddress::new(calling_issi, SsiType::Issi),
+            chan_change_resp_req: false,
+            chan_change_handle: None,
+        }),
+    }
+}
+
+/// Helper: build a U-SETUP SAP message for an individual call.
+fn build_individual_u_setup_msg(calling_issi: u32, called_issi: u32) -> SapMsg {
+    build_individual_u_setup_msg_with_mode(calling_issi, called_issi, true)
+}
+
+fn build_individual_u_setup_msg_with_mode(calling_issi: u32, called_issi: u32, simplex_duplex_selection: bool) -> SapMsg {
+    let u_setup = USetup {
+        area_selection: 0,
+        hook_method_selection: true,
+        simplex_duplex_selection,
+        basic_service_information: BasicServiceInformation {
+            circuit_mode_type: CircuitModeType::TchS,
+            encryption_flag: false,
+            communication_type: CommunicationType::P2p,
+            slots_per_frame: None,
+            speech_service: Some(0),
+        },
+        request_to_transmit_send_data: false,
+        call_priority: 0,
+        clir_control: 0,
+        called_party_type_identifier: PartyTypeIdentifier::Ssi,
+        called_party_ssi: Some(called_issi as u64),
+        called_party_short_number_address: None,
+        called_party_extension: None,
+        external_subscriber_number: None,
+        facility: None,
+        dm_ms_address: None,
+        proprietary: None,
+    };
+
+    let mut sdu = BitBuffer::new_autoexpand(80);
+    u_setup.to_bitbuf(&mut sdu).expect("Failed to serialize USetup");
+    sdu.seek(0);
+
+    SapMsg {
+        sap: Sap::LcmcSap,
+        src: TetraEntity::Mle,
+        dest: TetraEntity::Cmce,
+        msg: SapMsgInner::LcmcMleUnitdataInd(LcmcMleUnitdataInd {
+            sdu,
+            handle: 1,
+            endpoint_id: 1,
+            link_id: 1,
+            received_tetra_address: TetraAddress::new(calling_issi, SsiType::Issi),
+            chan_change_resp_req: false,
+            chan_change_handle: None,
+        }),
+    }
 }
 
 /// Helper: build a U-SETUP SAP message for a group call with an explicit ETSI call priority
@@ -100,17 +201,265 @@ fn build_u_setup_msg_prio(calling_issi: u32, dest_gssi: u32, call_priority: u8) 
     }
 }
 
+/// Helper: build a U-SETUP SAP message for a simplex P2P (individual) call to `called_issi`.
+fn build_u_setup_p2p_msg(calling_issi: u32, called_issi: u32) -> SapMsg {
+    let u_setup = USetup {
+        area_selection: 0,
+        hook_method_selection: false,
+        simplex_duplex_selection: false,
+        basic_service_information: BasicServiceInformation {
+            circuit_mode_type: CircuitModeType::TchS,
+            encryption_flag: false,
+            communication_type: CommunicationType::P2p,
+            slots_per_frame: None,
+            speech_service: Some(0),
+        },
+        request_to_transmit_send_data: false,
+        call_priority: 0,
+        clir_control: 0,
+        called_party_type_identifier: PartyTypeIdentifier::Ssi,
+        called_party_ssi: Some(called_issi as u64),
+        called_party_short_number_address: None,
+        called_party_extension: None,
+        external_subscriber_number: None,
+        facility: None,
+        dm_ms_address: None,
+        proprietary: None,
+    };
+
+    let mut sdu = BitBuffer::new_autoexpand(80);
+    u_setup.to_bitbuf(&mut sdu).expect("Failed to serialize USetup");
+    sdu.seek(0);
+
+    SapMsg {
+        sap: Sap::LcmcSap,
+        src: TetraEntity::Mle,
+        dest: TetraEntity::Cmce,
+        msg: SapMsgInner::LcmcMleUnitdataInd(LcmcMleUnitdataInd {
+            sdu,
+            handle: 1,
+            endpoint_id: 1,
+            link_id: 1,
+            received_tetra_address: TetraAddress::new(calling_issi, SsiType::Issi),
+            chan_change_resp_req: false,
+            chan_change_handle: None,
+        }),
+    }
+}
+
+/// Count individual-call D-SETUP resends addressed to `ssi` on the MCCH (no chan_alloc).
+fn count_individual_dsetup_to(msgs: &[SapMsg], ssi: u32) -> usize {
+    msgs.iter()
+        .filter(|m| {
+            m.dest == TetraEntity::Mle
+                && matches!(&m.msg, SapMsgInner::LcmcMleUnitdataReq(p)
+                    if p.main_address.ssi == ssi && p.chan_alloc.is_none())
+        })
+        .count()
+}
+
+fn lcmc_ind(sender_issi: u32, sdu: BitBuffer) -> SapMsg {
+    SapMsg {
+        sap: Sap::LcmcSap,
+        src: TetraEntity::Mle,
+        dest: TetraEntity::Cmce,
+        msg: SapMsgInner::LcmcMleUnitdataInd(LcmcMleUnitdataInd {
+            sdu,
+            handle: 1,
+            endpoint_id: 1,
+            link_id: 1,
+            received_tetra_address: TetraAddress::new(sender_issi, SsiType::Issi),
+            chan_change_resp_req: false,
+            chan_change_handle: None,
+        }),
+    }
+}
+
+fn build_u_connect_msg(sender_issi: u32, call_id: u16, simplex_duplex_selection: bool) -> SapMsg {
+    let u_connect = UConnect {
+        call_identifier: call_id,
+        hook_method_selection: true,
+        simplex_duplex_selection,
+        basic_service_information: None,
+        facility: None,
+        proprietary: None,
+    };
+
+    let mut sdu = BitBuffer::new_autoexpand(80);
+    u_connect.to_bitbuf(&mut sdu).expect("Failed to serialize UConnect");
+    sdu.seek(0);
+    lcmc_ind(sender_issi, sdu)
+}
+
+fn build_u_tx_demand_msg(sender_issi: u32, call_id: u16) -> SapMsg {
+    let u_tx_demand = UTxDemand {
+        call_identifier: call_id,
+        tx_demand_priority: 0,
+        encryption_control: false,
+        reserved: false,
+        facility: None,
+        dm_ms_address: None,
+        proprietary: None,
+    };
+
+    let mut sdu = BitBuffer::new_autoexpand(80);
+    u_tx_demand.to_bitbuf(&mut sdu).expect("Failed to serialize UTxDemand");
+    sdu.seek(0);
+    lcmc_ind(sender_issi, sdu)
+}
+
+fn build_u_disconnect_msg(sender_issi: u32, call_id: u16) -> SapMsg {
+    let u_disconnect = UDisconnect {
+        call_identifier: call_id,
+        disconnect_cause: DisconnectCause::UserRequestedDisconnection,
+        facility: None,
+        proprietary: None,
+    };
+
+    let mut sdu = BitBuffer::new_autoexpand(80);
+    u_disconnect.to_bitbuf(&mut sdu).expect("Failed to serialize UDisconnect");
+    sdu.seek(0);
+    lcmc_ind(sender_issi, sdu)
+}
+
+fn build_u_tx_ceased_msg(sender_issi: u32, call_id: u16) -> SapMsg {
+    let u_tx_ceased = UTxCeased {
+        call_identifier: call_id,
+        facility: None,
+        dm_ms_address: None,
+        proprietary: None,
+    };
+
+    let mut sdu = BitBuffer::new_autoexpand(80);
+    u_tx_ceased.to_bitbuf(&mut sdu).expect("Failed to serialize UTxCeased");
+    sdu.seek(0);
+    lcmc_ind(sender_issi, sdu)
+}
+
+fn dl_pdu_type(sdu: &BitBuffer) -> Option<CmcePduTypeDl> {
+    CmcePduTypeDl::try_from(sdu.peek_bits(5)?).ok()
+}
+
+fn find_lcmc_req(msgs: &[SapMsg], address_issi: u32, pdu_type: CmcePduTypeDl) -> Option<(BitBuffer, Option<UlDlAssignment>)> {
+    msgs.iter().find_map(|msg| {
+        if msg.dest != TetraEntity::Mle {
+            return None;
+        }
+
+        let SapMsgInner::LcmcMleUnitdataReq(prim) = &msg.msg else {
+            return None;
+        };
+
+        if prim.main_address.ssi != address_issi || dl_pdu_type(&prim.sdu) != Some(pdu_type) {
+            return None;
+        }
+
+        Some((
+            prim.sdu.clone(),
+            prim.chan_alloc.as_ref().map(|chan_alloc| chan_alloc.ul_dl_assigned),
+        ))
+    })
+}
+
+fn first_d_setup_call_id(msgs: &[SapMsg], called_issi: u32) -> u16 {
+    let (mut sdu, _) = find_lcmc_req(msgs, called_issi, CmcePduTypeDl::DSetup).expect("Expected D-SETUP to called ISSI");
+    let d_setup = DSetup::from_bitbuf(&mut sdu).expect("Failed to parse DSetup");
+    d_setup.call_identifier
+}
+
+fn connected_simplex_individual_call(calling_issi: u32, called_issi: u32) -> (ComponentTest, u16, Vec<SapMsg>) {
+    let dltime = TdmaTime { h: 0, m: 1, f: 1, t: 1 };
+    let mut test = ComponentTest::new(StackMode::Bs, Some(dltime));
+
+    let components = vec![TetraEntity::Cmce];
+    let sinks = vec![TetraEntity::Mle, TetraEntity::Umac, TetraEntity::Brew];
+    test.populate_entities(components, sinks);
+    test.config.state_write().subscribers.register(called_issi);
+
+    test.submit_message(build_individual_u_setup_msg_with_mode(calling_issi, called_issi, false));
+    test.run_stack(Some(1));
+    let setup_msgs = test.dump_sinks();
+    let call_id = first_d_setup_call_id(&setup_msgs, called_issi);
+
+    test.submit_message(build_u_connect_msg(called_issi, call_id, false));
+    test.run_stack(Some(1));
+    let connect_msgs = test.dump_sinks();
+
+    (test, call_id, connect_msgs)
+}
+
+fn connected_brew_originated_simplex_call(remote_issi: u32, local_issi: u32) -> (ComponentTest, u16, uuid::Uuid) {
+    let dltime = TdmaTime { h: 0, m: 1, f: 1, t: 1 };
+    let mut test = ComponentTest::new(StackMode::Bs, Some(dltime));
+
+    let components = vec![TetraEntity::Cmce];
+    let sinks = vec![TetraEntity::Mle, TetraEntity::Umac, TetraEntity::Brew];
+    test.populate_entities(components, sinks);
+    test.config.state_write().subscribers.register(local_issi);
+
+    let brew_uuid = uuid::Uuid::parse_str("a9661625-c1f2-42bb-b256-c44e14677307").unwrap();
+    test.submit_message(SapMsg {
+        sap: Sap::Control,
+        src: TetraEntity::Brew,
+        dest: TetraEntity::Cmce,
+        msg: SapMsgInner::CmceCallControl(CallControl::NetworkCircuitSetupRequest {
+            brew_uuid,
+            call: NetworkCircuitCall {
+                source_issi: remote_issi,
+                destination: local_issi,
+                number: String::new(),
+                priority: 1,
+                service: 0,
+                mode: 0,
+                duplex: 0,
+                method: 0,
+                communication: 0,
+                grant: TransmissionGrant::NotGranted.into_raw() as u8,
+                permission: 0,
+                timeout: 0,
+                ownership: 0,
+                queued: 0,
+            },
+        }),
+    });
+    test.run_stack(Some(1));
+    let setup_msgs = test.dump_sinks();
+    let call_id = first_d_setup_call_id(&setup_msgs, local_issi);
+
+    test.submit_message(build_u_connect_msg(local_issi, call_id, false));
+    test.run_stack(Some(1));
+    test.dump_sinks();
+
+    test.submit_message(SapMsg {
+        sap: Sap::Control,
+        src: TetraEntity::Brew,
+        dest: TetraEntity::Cmce,
+        msg: SapMsgInner::CmceCallControl(CallControl::NetworkCircuitConnectConfirm {
+            brew_uuid,
+            grant: TransmissionGrant::Granted.into_raw() as u8,
+            permission: 0,
+        }),
+    });
+    test.run_stack(Some(1));
+    test.dump_sinks();
+
+    (test, call_id, brew_uuid)
+}
+
 /// Extract tx_reporters from D-SETUP messages in the sink output.
 /// D-SETUPs are identified as LcmcMleUnitdataReq with a chan_alloc that has a usage field.
 fn extract_d_setup_reporters(msgs: &mut Vec<SapMsg>) -> Vec<tetra_core::TxReporter> {
     let mut reporters = vec![];
     for msg in msgs.iter_mut() {
-        if msg.dest == TetraEntity::Mle
-            && let SapMsgInner::LcmcMleUnitdataReq(ref mut prim) = msg.msg
-                && prim.chan_alloc.as_ref().is_some_and(|ca| ca.usage.is_some())
-                    && let Some(reporter) = prim.tx_reporter.take() {
+        if msg.dest == TetraEntity::Mle {
+            if let SapMsgInner::LcmcMleUnitdataReq(ref mut prim) = msg.msg {
+                if prim.chan_alloc.as_ref().is_some_and(|ca| ca.usage.is_some()) {
+                    if let Some(reporter) = prim.tx_reporter.take() {
                         reporters.push(reporter);
                     }
+                }
+            }
+        }
     }
     reporters
 }
@@ -121,9 +470,642 @@ fn count_d_setups(msgs: &[SapMsg]) -> usize {
         .filter(|msg| {
             msg.dest == TetraEntity::Mle
                 && matches!(&msg.msg, SapMsgInner::LcmcMleUnitdataReq(prim)
-                    if prim.chan_alloc.as_ref().is_some_and(|ca| ca.usage.is_some()))
+                    if dl_pdu_type(&prim.sdu) == Some(CmcePduTypeDl::DSetup))
         })
         .count()
+}
+
+#[test]
+fn test_individual_setup_uses_central_subscriber_registry_for_local_destination() {
+    debug::setup_logging_verbose();
+
+    let dltime = TdmaTime { h: 0, m: 1, f: 1, t: 1 };
+    let mut test = ComponentTest::new(StackMode::Bs, Some(dltime));
+
+    let components = vec![TetraEntity::Cmce];
+    let sinks = vec![TetraEntity::Mle, TetraEntity::Umac, TetraEntity::Brew];
+    test.populate_entities(components, sinks);
+
+    let calling_issi = 1000001;
+    let called_issi = 1000002;
+    test.config.state_write().subscribers.register(called_issi);
+
+    test.submit_message(build_individual_u_setup_msg(calling_issi, called_issi));
+    test.run_stack(Some(1));
+
+    let msgs = test.dump_sinks();
+    assert!(
+        count_d_setups(&msgs) > 0,
+        "Expected local D-SETUP for centrally registered called ISSI"
+    );
+    assert!(
+        !msgs.iter().any(|msg| matches!(
+            &msg.msg,
+            SapMsgInner::CmceCallControl(CallControl::NetworkCircuitSetupRequest { .. })
+        )),
+        "Local registered ISSI should not be routed over Brew"
+    );
+}
+
+#[test]
+fn test_duplex_individual_uses_infinite_timeout() {
+    debug::setup_logging_verbose();
+
+    let dltime = TdmaTime { h: 0, m: 1, f: 1, t: 1 };
+    let mut test = ComponentTest::new(StackMode::Bs, Some(dltime));
+
+    let components = vec![TetraEntity::Cmce];
+    let sinks = vec![TetraEntity::Mle, TetraEntity::Umac, TetraEntity::Brew];
+    test.populate_entities(components, sinks);
+
+    let calling_issi = 1000001;
+    let called_issi = 1000002;
+    test.config.state_write().subscribers.register(called_issi);
+
+    test.submit_message(build_individual_u_setup_msg(calling_issi, called_issi));
+    test.run_stack(Some(1));
+    let setup_msgs = test.dump_sinks();
+
+    let (mut setup_sdu, _) = find_lcmc_req(&setup_msgs, called_issi, CmcePduTypeDl::DSetup).expect("Expected D-SETUP to called ISSI");
+    let d_setup = DSetup::from_bitbuf(&mut setup_sdu).expect("Failed to parse DSetup");
+    assert_eq!(d_setup.call_time_out, CallTimeout::Infinite);
+    assert!(d_setup.simplex_duplex_selection);
+    let call_id = d_setup.call_identifier;
+
+    test.submit_message(build_u_connect_msg(called_issi, call_id, true));
+    test.run_stack(Some(1));
+    let connect_msgs = test.dump_sinks();
+
+    let (mut connect_sdu, _) =
+        find_lcmc_req(&connect_msgs, calling_issi, CmcePduTypeDl::DConnect).expect("Expected D-CONNECT to calling ISSI");
+    let d_connect = DConnect::from_bitbuf(&mut connect_sdu).expect("Failed to parse DConnect");
+    assert_eq!(d_connect.call_time_out, CallTimeout::Infinite);
+    assert!(d_connect.simplex_duplex_selection);
+
+    let (mut ack_sdu, _) = find_lcmc_req(&connect_msgs, called_issi, CmcePduTypeDl::DConnectAcknowledge)
+        .expect("Expected D-CONNECT ACKNOWLEDGE to called ISSI");
+    let d_ack = DConnectAcknowledge::from_bitbuf(&mut ack_sdu).expect("Failed to parse DConnectAcknowledge");
+    assert_eq!(CallTimeout::try_from(d_ack.call_time_out as u64).ok(), Some(CallTimeout::Infinite));
+}
+
+#[test]
+fn test_simplex_individual_connect_grants_calling_ms_initial_floor() {
+    debug::setup_logging_verbose();
+
+    let calling_issi = 1000001;
+    let called_issi = 1000002;
+    let (_test, call_id, msgs) = connected_simplex_individual_call(calling_issi, called_issi);
+
+    let (mut connect_sdu, connect_alloc) =
+        find_lcmc_req(&msgs, calling_issi, CmcePduTypeDl::DConnect).expect("Expected D-CONNECT to calling ISSI");
+    let d_connect = DConnect::from_bitbuf(&mut connect_sdu).expect("Failed to parse DConnect");
+    assert_eq!(d_connect.call_identifier, call_id);
+    assert_eq!(d_connect.transmission_grant, TransmissionGrant::Granted);
+    assert_eq!(connect_alloc, Some(UlDlAssignment::Both));
+
+    let (mut ack_sdu, ack_alloc) =
+        find_lcmc_req(&msgs, called_issi, CmcePduTypeDl::DConnectAcknowledge).expect("Expected D-CONNECT ACKNOWLEDGE to called ISSI");
+    let d_ack = DConnectAcknowledge::from_bitbuf(&mut ack_sdu).expect("Failed to parse DConnectAcknowledge");
+    assert_eq!(d_ack.call_identifier, call_id);
+    assert_eq!(d_ack.transmission_grant, TransmissionGrant::GrantedToOtherUser.into_raw() as u8);
+    assert_eq!(ack_alloc, Some(UlDlAssignment::Both));
+
+    assert!(msgs.iter().any(|msg| matches!(
+        &msg.msg,
+        SapMsgInner::CmceCallControl(CallControl::FloorGranted { source_issi, dest_gssi, .. })
+            if *source_issi == calling_issi && *dest_gssi == called_issi
+    )));
+}
+
+#[test]
+fn test_brew_originated_simplex_connect_confirm_makes_local_ms_listener() {
+    debug::setup_logging_verbose();
+
+    let dltime = TdmaTime { h: 0, m: 1, f: 1, t: 1 };
+    let mut test = ComponentTest::new(StackMode::Bs, Some(dltime));
+
+    let components = vec![TetraEntity::Cmce];
+    let sinks = vec![TetraEntity::Mle, TetraEntity::Umac, TetraEntity::Brew];
+    test.populate_entities(components, sinks);
+
+    let remote_issi = 2200699;
+    let local_issi = 2200769;
+    let brew_uuid = uuid::Uuid::parse_str("a9661625-c1f2-42bb-b256-c44e14677307").unwrap();
+    test.config.state_write().subscribers.register(local_issi);
+
+    test.submit_message(SapMsg {
+        sap: Sap::Control,
+        src: TetraEntity::Brew,
+        dest: TetraEntity::Cmce,
+        msg: SapMsgInner::CmceCallControl(CallControl::NetworkCircuitSetupRequest {
+            brew_uuid,
+            call: NetworkCircuitCall {
+                source_issi: remote_issi,
+                destination: local_issi,
+                number: String::new(),
+                priority: 1,
+                service: 0,
+                mode: 0,
+                duplex: 0,
+                method: 0,
+                communication: 0,
+                grant: 1,
+                permission: 0,
+                timeout: 0,
+                ownership: 0,
+                queued: 0,
+            },
+        }),
+    });
+    test.run_stack(Some(1));
+    let setup_msgs = test.dump_sinks();
+
+    assert!(setup_msgs.iter().any(|msg| matches!(
+        &msg.msg,
+        SapMsgInner::CmceCallControl(CallControl::NetworkCircuitSetupAccept { brew_uuid: accepted_uuid })
+            if *accepted_uuid == brew_uuid
+    )));
+    let (mut setup_sdu, _) = find_lcmc_req(&setup_msgs, local_issi, CmcePduTypeDl::DSetup).expect("Expected D-SETUP to local ISSI");
+    let d_setup = DSetup::from_bitbuf(&mut setup_sdu).expect("Failed to parse DSetup");
+    assert_eq!(d_setup.calling_party_address_ssi, Some(remote_issi));
+    assert!(!d_setup.hook_method_selection);
+    assert_eq!(d_setup.transmission_grant, TransmissionGrant::GrantedToOtherUser);
+    let call_id = d_setup.call_identifier;
+
+    test.submit_message(build_u_connect_msg(local_issi, call_id, false));
+    test.run_stack(Some(1));
+    let connect_request_msgs = test.dump_sinks();
+    assert!(connect_request_msgs.iter().any(|msg| matches!(
+        &msg.msg,
+        SapMsgInner::CmceCallControl(CallControl::NetworkCircuitConnectRequest { brew_uuid: request_uuid, .. })
+            if *request_uuid == brew_uuid
+    )));
+
+    test.submit_message(SapMsg {
+        sap: Sap::Control,
+        src: TetraEntity::Brew,
+        dest: TetraEntity::Cmce,
+        msg: SapMsgInner::CmceCallControl(CallControl::NetworkCircuitConnectConfirm {
+            brew_uuid,
+            grant: TransmissionGrant::Granted.into_raw() as u8,
+            permission: 0,
+        }),
+    });
+    test.run_stack(Some(1));
+    let confirm_msgs = test.dump_sinks();
+
+    let (mut ack_sdu, ack_alloc) =
+        find_lcmc_req(&confirm_msgs, local_issi, CmcePduTypeDl::DConnectAcknowledge).expect("Expected D-CONNECT ACKNOWLEDGE to local ISSI");
+    let d_ack = DConnectAcknowledge::from_bitbuf(&mut ack_sdu).expect("Failed to parse DConnectAcknowledge");
+    assert_eq!(d_ack.call_identifier, call_id);
+    assert_eq!(d_ack.transmission_grant, TransmissionGrant::GrantedToOtherUser.into_raw() as u8);
+    assert_eq!(ack_alloc, Some(UlDlAssignment::Both));
+
+    assert!(confirm_msgs.iter().any(|msg| matches!(
+        &msg.msg,
+        SapMsgInner::CmceCallControl(CallControl::Open(circuit))
+            if circuit.direction == Direction::Both && circuit.ts == 2
+    )));
+    assert!(
+        !confirm_msgs.iter().any(|msg| matches!(
+            &msg.msg,
+            SapMsgInner::CmceCallControl(CallControl::Open(circuit))
+                if (circuit.direction == Direction::Ul || circuit.direction == Direction::Dl) && circuit.ts == 2
+        )),
+        "Brew-originated simplex media should open the shared traffic circuit once"
+    );
+
+    assert!(confirm_msgs.iter().any(|msg| matches!(
+        &msg.msg,
+        SapMsgInner::CmceCallControl(CallControl::NetworkCircuitMediaReady {
+            brew_uuid: ready_uuid,
+            call_id: ready_call_id,
+            ts: 2,
+        }) if *ready_uuid == brew_uuid && *ready_call_id == call_id
+    )));
+    assert!(
+        !confirm_msgs.iter().any(|msg| matches!(
+            &msg.msg,
+            SapMsgInner::CmceCallControl(CallControl::FloorGranted { source_issi, .. })
+                if *source_issi == local_issi
+        )),
+        "Brew-originated media must not grant the local called MS uplink floor"
+    );
+}
+
+#[test]
+fn test_brew_originated_simplex_remote_idle_hands_floor_to_queued_local_ms() {
+    debug::setup_logging_verbose();
+
+    let remote_issi = 2200699;
+    let local_issi = 2200769;
+    let (mut test, call_id, brew_uuid) = connected_brew_originated_simplex_call(remote_issi, local_issi);
+
+    test.submit_message(build_u_tx_demand_msg(local_issi, call_id));
+    test.run_stack(Some(1));
+    let demand_msgs = test.dump_sinks();
+    let (mut queued_sdu, queued_alloc) =
+        find_lcmc_req(&demand_msgs, local_issi, CmcePduTypeDl::DTxGranted).expect("Expected queued D-TX GRANTED");
+    let queued = DTxGranted::from_bitbuf(&mut queued_sdu).expect("Failed to parse queued DTxGranted");
+    assert_eq!(queued.call_identifier, call_id);
+    assert_eq!(queued.transmission_grant, TransmissionGrant::RequestQueued.into_raw() as u8);
+    assert_eq!(queued_alloc, Some(UlDlAssignment::Dl));
+    assert!(
+        !demand_msgs.iter().any(|msg| matches!(
+            &msg.msg,
+            SapMsgInner::CmceCallControl(CallControl::NetworkCircuitSimplexGranted { .. })
+        )),
+        "Local queued demand must not tell Brew that local already has the floor"
+    );
+
+    test.submit_message(SapMsg {
+        sap: Sap::Control,
+        src: TetraEntity::Brew,
+        dest: TetraEntity::Cmce,
+        msg: SapMsgInner::CmceCallControl(CallControl::NetworkCircuitSimplexIdle {
+            brew_uuid,
+            grant: TransmissionGrant::NotGranted.into_raw() as u8,
+            permission: 0,
+        }),
+    });
+    test.run_stack(Some(1));
+    let idle_msgs = test.dump_sinks();
+
+    let (mut grant_sdu, grant_alloc) =
+        find_lcmc_req(&idle_msgs, local_issi, CmcePduTypeDl::DTxGranted).expect("Expected local floor grant after Brew idle");
+    let granted = DTxGranted::from_bitbuf(&mut grant_sdu).expect("Failed to parse granted DTxGranted");
+    assert_eq!(granted.call_identifier, call_id);
+    assert_eq!(granted.transmission_grant, TransmissionGrant::Granted.into_raw() as u8);
+    assert_eq!(grant_alloc, Some(UlDlAssignment::Ul));
+
+    assert!(idle_msgs.iter().any(|msg| matches!(
+        &msg.msg,
+        SapMsgInner::CmceCallControl(CallControl::FloorGranted { source_issi, .. })
+            if *source_issi == local_issi
+    )));
+    assert!(idle_msgs.iter().any(|msg| matches!(
+        &msg.msg,
+        SapMsgInner::CmceCallControl(CallControl::NetworkCircuitSimplexGranted {
+            brew_uuid: msg_uuid,
+            grant,
+            permission: 0,
+        }) if *msg_uuid == brew_uuid && *grant == TransmissionGrant::Granted.into_raw() as u8
+    )));
+}
+
+#[test]
+fn test_brew_originated_simplex_local_tx_ceased_notifies_brew_idle() {
+    debug::setup_logging_verbose();
+
+    let remote_issi = 2200699;
+    let local_issi = 2200769;
+    let (mut test, call_id, brew_uuid) = connected_brew_originated_simplex_call(remote_issi, local_issi);
+
+    test.submit_message(SapMsg {
+        sap: Sap::Control,
+        src: TetraEntity::Brew,
+        dest: TetraEntity::Cmce,
+        msg: SapMsgInner::CmceCallControl(CallControl::NetworkCircuitSimplexIdle {
+            brew_uuid,
+            grant: TransmissionGrant::NotGranted.into_raw() as u8,
+            permission: 0,
+        }),
+    });
+    test.run_stack(Some(1));
+    test.dump_sinks();
+
+    test.submit_message(build_u_tx_demand_msg(local_issi, call_id));
+    test.run_stack(Some(1));
+    test.dump_sinks();
+
+    test.submit_message(build_u_tx_ceased_msg(local_issi, call_id));
+    test.run_stack(Some(1));
+    let ceased_msgs = test.dump_sinks();
+
+    assert!(ceased_msgs.iter().any(|msg| matches!(
+        &msg.msg,
+        SapMsgInner::CmceCallControl(CallControl::NetworkCircuitSimplexIdle {
+            brew_uuid: msg_uuid,
+            grant,
+            permission: 0,
+        }) if *msg_uuid == brew_uuid && *grant == TransmissionGrant::NotGranted.into_raw() as u8
+    )));
+}
+
+#[test]
+fn test_brew_simplex_granted_resumes_remote_downlink_without_ul_timer() {
+    debug::setup_logging_verbose();
+
+    let remote_issi = 2200699;
+    let local_issi = 2200769;
+    let (mut test, call_id, brew_uuid) = connected_brew_originated_simplex_call(remote_issi, local_issi);
+
+    test.submit_message(SapMsg {
+        sap: Sap::Control,
+        src: TetraEntity::Brew,
+        dest: TetraEntity::Cmce,
+        msg: SapMsgInner::CmceCallControl(CallControl::NetworkCircuitSimplexGranted {
+            brew_uuid,
+            grant: TransmissionGrant::Granted.into_raw() as u8,
+            permission: 0,
+        }),
+    });
+    test.run_stack(Some(1));
+    let granted_msgs = test.dump_sinks();
+
+    let (mut grant_sdu, grant_alloc) =
+        find_lcmc_req(&granted_msgs, local_issi, CmcePduTypeDl::DTxGranted).expect("Expected listener D-TX GRANTED");
+    let granted = DTxGranted::from_bitbuf(&mut grant_sdu).expect("Failed to parse listener DTxGranted");
+    assert_eq!(granted.call_identifier, call_id);
+    assert_eq!(granted.transmission_grant, TransmissionGrant::GrantedToOtherUser.into_raw() as u8);
+    assert_eq!(grant_alloc, Some(UlDlAssignment::Dl));
+
+    assert!(granted_msgs.iter().any(|msg| matches!(
+        &msg.msg,
+        SapMsgInner::CmceCallControl(CallControl::RemoteFloorGranted { call_id: msg_call_id, ts: 2 })
+            if *msg_call_id == call_id
+    )));
+    assert!(
+        !granted_msgs.iter().any(|msg| matches!(
+            &msg.msg,
+            SapMsgInner::CmceCallControl(CallControl::FloorGranted { source_issi, .. })
+                if *source_issi == remote_issi
+        )),
+        "Remote Brew floor must not use local FloorGranted because that arms UL inactivity"
+    );
+}
+
+#[test]
+fn test_network_group_speaker_change_uses_remote_floor_grant() {
+    debug::setup_logging_verbose();
+
+    let gssi = 220;
+    let local_issi = 2200699;
+    let first_speaker = 2200107;
+    let second_speaker = 2200061;
+    let first_uuid = uuid::Uuid::parse_str("9179c03c-0489-4106-a246-5ccddf75e657").unwrap();
+    let second_uuid = uuid::Uuid::parse_str("ad740a0d-8ab9-43c1-a09c-72590f4d39de").unwrap();
+
+    let mut config = ComponentTest::get_default_test_config(StackMode::Bs);
+    config.brew = Some(CfgBrew {
+        host: "test.local".into(),
+        port: 3000,
+        tls: false,
+        username: None,
+        password: None,
+        reconnect_delay: Duration::from_secs(1),
+        jitter_initial_latency_frames: 0,
+        feature_sds_enabled: true,
+        whitelisted_ssis: None,
+        feature_rssi_export: false,
+        pbx_gateway_issis: None,
+    });
+    let mut test = ComponentTest::from_config(config, Some(TdmaTime { h: 0, m: 1, f: 1, t: 1 }));
+    test.populate_entities(
+        vec![TetraEntity::Cmce],
+        vec![TetraEntity::Mle, TetraEntity::Umac, TetraEntity::Brew],
+    );
+
+    register_subscriber(&mut test, local_issi, gssi);
+
+    test.submit_message(SapMsg {
+        sap: Sap::Control,
+        src: TetraEntity::Brew,
+        dest: TetraEntity::Cmce,
+        msg: SapMsgInner::CmceCallControl(CallControl::NetworkCallStart {
+            brew_uuid: first_uuid,
+            source_issi: first_speaker,
+            dest_gssi: gssi,
+            priority: 1,
+        }),
+    });
+    test.run_stack(Some(1));
+    let initial_msgs = test.dump_sinks();
+    let (call_id, ts) = initial_msgs
+        .iter()
+        .find_map(|msg| match &msg.msg {
+            SapMsgInner::CmceCallControl(CallControl::NetworkCallReady {
+                brew_uuid, call_id, ts, ..
+            }) if *brew_uuid == first_uuid => Some((*call_id, *ts)),
+            _ => None,
+        })
+        .expect("Expected first network call to become ready");
+
+    test.submit_message(SapMsg {
+        sap: Sap::Control,
+        src: TetraEntity::Brew,
+        dest: TetraEntity::Cmce,
+        msg: SapMsgInner::CmceCallControl(CallControl::NetworkCallStart {
+            brew_uuid: second_uuid,
+            source_issi: second_speaker,
+            dest_gssi: gssi,
+            priority: 1,
+        }),
+    });
+    test.run_stack(Some(1));
+    let speaker_change_msgs = test.dump_sinks();
+
+    assert!(speaker_change_msgs.iter().any(|msg| matches!(
+        &msg.msg,
+        SapMsgInner::CmceCallControl(CallControl::RemoteFloorGranted { call_id: msg_call_id, ts: msg_ts })
+            if *msg_call_id == call_id && *msg_ts == ts
+    )));
+    assert!(
+        !speaker_change_msgs.iter().any(|msg| matches!(
+            &msg.msg,
+            SapMsgInner::CmceCallControl(CallControl::FloorGranted { source_issi, .. })
+                if *source_issi == second_speaker
+        )),
+        "Network group speakers must not use local FloorGranted because that arms UL inactivity"
+    );
+}
+
+#[test]
+fn test_simplex_individual_tx_ceased_without_queued_demand_releases_floor() {
+    debug::setup_logging_verbose();
+
+    let calling_issi = 1000001;
+    let called_issi = 1000002;
+    let (mut test, call_id, _) = connected_simplex_individual_call(calling_issi, called_issi);
+
+    test.submit_message(build_u_tx_ceased_msg(calling_issi, call_id));
+    test.run_stack(Some(1));
+    let ceased_msgs = test.dump_sinks();
+
+    let (mut ceased_sdu, ceased_alloc) =
+        find_lcmc_req(&ceased_msgs, calling_issi, CmcePduTypeDl::DTxCeased).expect("Expected D-TX CEASED to former speaker");
+    let ceased = DTxCeased::from_bitbuf(&mut ceased_sdu).expect("Failed to parse DTxCeased");
+    assert_eq!(ceased.call_identifier, call_id);
+    assert!(!ceased.transmission_request_permission);
+    assert_eq!(ceased_alloc, Some(UlDlAssignment::Dl));
+
+    let (mut listener_ceased_sdu, listener_ceased_alloc) =
+        find_lcmc_req(&ceased_msgs, called_issi, CmcePduTypeDl::DTxCeased).expect("Expected D-TX CEASED to listener");
+    let listener_ceased = DTxCeased::from_bitbuf(&mut listener_ceased_sdu).expect("Failed to parse listener DTxCeased");
+    assert_eq!(listener_ceased.call_identifier, call_id);
+    assert_eq!(listener_ceased_alloc, Some(UlDlAssignment::Dl));
+
+    assert!(
+        find_lcmc_req(&ceased_msgs, calling_issi, CmcePduTypeDl::DTxGranted).is_none(),
+        "U-TX CEASED without a queued requester must not auto-grant the peer"
+    );
+    assert!(
+        find_lcmc_req(&ceased_msgs, called_issi, CmcePduTypeDl::DTxGranted).is_none(),
+        "U-TX CEASED without a queued requester must not send a listener grant"
+    );
+
+    assert!(ceased_msgs.iter().any(|msg| matches!(
+        &msg.msg,
+        SapMsgInner::CmceCallControl(CallControl::FloorReleased { call_id: released_call_id, .. })
+            if *released_call_id == call_id
+    )));
+}
+
+#[test]
+fn test_simplex_individual_tx_demand_queues_and_hands_off_on_ceased() {
+    debug::setup_logging_verbose();
+
+    let calling_issi = 1000001;
+    let called_issi = 1000002;
+    let (mut test, call_id, _) = connected_simplex_individual_call(calling_issi, called_issi);
+
+    test.submit_message(build_u_tx_demand_msg(called_issi, call_id));
+    test.run_stack(Some(1));
+    let demand_msgs = test.dump_sinks();
+
+    let (mut queued_sdu, queued_alloc) =
+        find_lcmc_req(&demand_msgs, called_issi, CmcePduTypeDl::DTxGranted).expect("Expected queued D-TX GRANTED");
+    let queued = DTxGranted::from_bitbuf(&mut queued_sdu).expect("Failed to parse queued DTxGranted");
+    assert_eq!(queued.transmission_grant, TransmissionGrant::RequestQueued.into_raw() as u8);
+    assert_eq!(queued_alloc, Some(UlDlAssignment::Dl));
+    assert_eq!(queued.transmitting_party_address_ssi, Some(calling_issi as u64));
+
+    test.submit_message(build_u_tx_ceased_msg(calling_issi, call_id));
+    test.run_stack(Some(1));
+    let ceased_msgs = test.dump_sinks();
+
+    let (mut grant_sdu, grant_alloc) =
+        find_lcmc_req(&ceased_msgs, called_issi, CmcePduTypeDl::DTxGranted).expect("Expected granted D-TX GRANTED");
+    let grant = DTxGranted::from_bitbuf(&mut grant_sdu).expect("Failed to parse granted DTxGranted");
+    assert_eq!(grant.transmission_grant, TransmissionGrant::Granted.into_raw() as u8);
+    assert_eq!(grant_alloc, Some(UlDlAssignment::Ul));
+    assert_eq!(grant.transmitting_party_address_ssi, Some(called_issi as u64));
+
+    let (mut listener_sdu, listener_alloc) =
+        find_lcmc_req(&ceased_msgs, calling_issi, CmcePduTypeDl::DTxGranted).expect("Expected listener D-TX GRANTED");
+    let listener = DTxGranted::from_bitbuf(&mut listener_sdu).expect("Failed to parse listener DTxGranted");
+    assert_eq!(listener.transmission_grant, TransmissionGrant::GrantedToOtherUser.into_raw() as u8);
+    assert_eq!(listener_alloc, Some(UlDlAssignment::Dl));
+    assert_eq!(listener.transmitting_party_address_ssi, Some(called_issi as u64));
+
+    assert!(ceased_msgs.iter().any(|msg| matches!(
+        &msg.msg,
+        SapMsgInner::CmceCallControl(CallControl::FloorGranted { source_issi, dest_gssi, .. })
+            if *source_issi == called_issi && *dest_gssi == calling_issi
+    )));
+}
+
+#[test]
+fn test_simplex_individual_current_speaker_tx_demand_is_granted() {
+    debug::setup_logging_verbose();
+
+    let calling_issi = 1000001;
+    let called_issi = 1000002;
+    let (mut test, call_id, _) = connected_simplex_individual_call(calling_issi, called_issi);
+
+    test.submit_message(build_u_tx_demand_msg(calling_issi, call_id));
+    test.run_stack(Some(1));
+    let demand_msgs = test.dump_sinks();
+
+    let (mut grant_sdu, grant_alloc) =
+        find_lcmc_req(&demand_msgs, calling_issi, CmcePduTypeDl::DTxGranted).expect("Expected granted D-TX GRANTED");
+    let grant = DTxGranted::from_bitbuf(&mut grant_sdu).expect("Failed to parse granted DTxGranted");
+    assert_eq!(grant.transmission_grant, TransmissionGrant::Granted.into_raw() as u8);
+    assert_eq!(grant_alloc, Some(UlDlAssignment::Ul));
+    assert_eq!(grant.transmitting_party_address_ssi, Some(calling_issi as u64));
+
+    assert!(
+        find_lcmc_req(&demand_msgs, called_issi, CmcePduTypeDl::DTxGranted).is_none(),
+        "Current-speaker demand should not re-announce a listener grant"
+    );
+    assert!(
+        !demand_msgs
+            .iter()
+            .any(|msg| matches!(&msg.msg, SapMsgInner::CmceCallControl(CallControl::FloorGranted { .. }))),
+        "Current-speaker demand should not emit a duplicate floor grant"
+    );
+}
+
+/// Test that late-entry D-SETUP re-sends are throttled when the previous
+/// D-SETUP's TxReceipt is still in Pending state (UMAC hasn't transmitted it yet),
+/// and that they resume once the receipt reaches a final state.
+#[test]
+fn test_dsetup_late_entry_throttle() {
+    debug::setup_logging_verbose();
+
+    // Start at timeslot 1 so circuit creation aligns cleanly with tick_start checks
+    let dltime = TdmaTime { h: 0, m: 1, f: 1, t: 1 };
+    let mut test = ComponentTest::new(StackMode::Bs, Some(dltime));
+
+    let components = vec![TetraEntity::Cmce];
+    let sinks = vec![TetraEntity::Mle, TetraEntity::Umac, TetraEntity::Brew];
+    test.populate_entities(components, sinks);
+
+    register_subscriber(&mut test, TEST_ISSI, TEST_GSSI);
+
+    // Send U-SETUP to start a group call
+    let u_setup_msg = build_u_setup_msg(TEST_ISSI, TEST_GSSI);
+    test.submit_message(u_setup_msg);
+    test.run_stack(Some(1));
+
+    // Collect initial output — should contain D-SETUP (initial send with no tracked receipt)
+    let initial_msgs = test.dump_sinks();
+    let initial_setups = count_d_setups(&initial_msgs);
+    assert!(initial_setups > 0, "Expected initial D-SETUP after U-SETUP");
+
+    // Run a few more ticks to get through the D_SETUP_REPEATS backup window.
+    // The backup send goes through (receipt is None) and creates a tracked receipt.
+    test.run_stack(Some(8));
+    let mut backup_msgs = test.dump_sinks();
+    let backup_reporters = extract_d_setup_reporters(&mut backup_msgs);
+
+    // We should have at least one reporter from the backup send
+    assert!(
+        !backup_reporters.is_empty(),
+        "Expected backup D-SETUP with tx_reporter in initial window"
+    );
+    let last_reporter = &backup_reporters[backup_reporters.len() - 1];
+    assert_eq!(last_reporter.get_state(), TxState::Pending);
+
+    // Run for 2 full late-entry intervals (720 ticks). With the receipt still Pending,
+    // ALL late-entry D-SETUPs should be suppressed.
+    test.run_stack(Some(720));
+    let throttled_msgs = test.dump_sinks();
+    let throttled_count = count_d_setups(&throttled_msgs);
+    assert_eq!(
+        throttled_count, 0,
+        "Late-entry D-SETUPs should be suppressed while receipt is Pending"
+    );
+
+    // Now mark the previous D-SETUP as transmitted (simulating UMAC sending it over the air)
+    last_reporter.mark_transmitted();
+
+    // Run for 2 more late-entry intervals. Now D-SETUPs should go through.
+    test.run_stack(Some(720));
+    let mut unthrottled_msgs = test.dump_sinks();
+    let unthrottled_count = count_d_setups(&unthrottled_msgs);
+    assert!(
+        unthrottled_count > 0,
+        "Late-entry D-SETUPs should resume once receipt reaches final state"
+    );
+
+    // Each re-send that went through should have created a fresh reporter
+    let new_reporters = extract_d_setup_reporters(&mut unthrottled_msgs);
+    assert_eq!(
+        new_reporters.len(),
+        unthrottled_count,
+        "Each re-sent D-SETUP should carry a fresh tx_reporter"
+    );
 }
 
 /// Emergency pre-emption (ETSI EN 300 392-2 clause 14.8 "Call priority"): when every traffic
@@ -233,148 +1215,11 @@ fn test_ordinary_call_does_not_preempt_when_cell_full() {
     assert_eq!(test.config.state_read().timeslot_alloc.free_count(), 0);
 }
 
-/// Test that late-entry D-SETUP re-sends are throttled when the previous
-/// D-SETUP's TxReceipt is still in Pending state (UMAC hasn't transmitted it yet),
-/// and that they resume once the receipt reaches a final state.
-///
-/// IGNORED: this covers a receipt-based throttle that no longer exists. `circuit_mgr`
-/// now resends late-entry D-SETUP on a fixed ~5s schedule (1 initial + 1 backup, then
-/// every LATE_ENTRY_INTERVAL) with no tx_reporter on the resends and no Pending-receipt
-/// suppression — see `circuit_mgr::tick_start` and `cc_bs::timers` (resends built with
-/// `tx_reporter = None`). The current unthrottled behaviour is intentional and verified
-/// in production. Re-enable only if receipt-based throttling is reintroduced.
-#[ignore = "throttle feature removed; late-entry D-SETUP now resends on a fixed schedule"]
-#[test]
-fn test_dsetup_late_entry_throttle() {
-    debug::setup_logging_verbose();
-
-    // Start at timeslot 1 so circuit creation aligns cleanly with tick_start checks
-    let dltime = TdmaTime { h: 0, m: 1, f: 1, t: 1 };
-    let mut test = ComponentTest::new(StackMode::Bs, Some(dltime));
-
-    let components = vec![TetraEntity::Cmce];
-    let sinks = vec![TetraEntity::Mle, TetraEntity::Umac, TetraEntity::Brew];
-    test.populate_entities(components, sinks);
-
-    register_subscriber(&mut test, TEST_ISSI, TEST_GSSI);
-
-    // Send U-SETUP to start a group call
-    let u_setup_msg = build_u_setup_msg(TEST_ISSI, TEST_GSSI);
-    test.submit_message(u_setup_msg);
-    test.run_stack(Some(1));
-
-    // Collect initial output — should contain D-SETUP (initial send with no tracked receipt)
-    let initial_msgs = test.dump_sinks();
-    let initial_setups = count_d_setups(&initial_msgs);
-    assert!(initial_setups > 0, "Expected initial D-SETUP after U-SETUP");
-
-    // Run a few more ticks to get through the D_SETUP_REPEATS backup window.
-    // The backup send goes through (receipt is None) and creates a tracked receipt.
-    test.run_stack(Some(8));
-    let mut backup_msgs = test.dump_sinks();
-    let backup_reporters = extract_d_setup_reporters(&mut backup_msgs);
-
-    // We should have at least one reporter from the backup send
-    assert!(
-        !backup_reporters.is_empty(),
-        "Expected backup D-SETUP with tx_reporter in initial window"
-    );
-    let last_reporter = &backup_reporters[backup_reporters.len() - 1];
-    assert_eq!(last_reporter.get_state(), TxState::Pending);
-
-    // Run for 2 full late-entry intervals (720 ticks). With the receipt still Pending,
-    // ALL late-entry D-SETUPs should be suppressed.
-    test.run_stack(Some(720));
-    let throttled_msgs = test.dump_sinks();
-    let throttled_count = count_d_setups(&throttled_msgs);
-    assert_eq!(
-        throttled_count, 0,
-        "Late-entry D-SETUPs should be suppressed while receipt is Pending"
-    );
-
-    // Now mark the previous D-SETUP as transmitted (simulating UMAC sending it over the air)
-    last_reporter.mark_transmitted();
-
-    // Run for 2 more late-entry intervals. Now D-SETUPs should go through.
-    test.run_stack(Some(720));
-    let mut unthrottled_msgs = test.dump_sinks();
-    let unthrottled_count = count_d_setups(&unthrottled_msgs);
-    assert!(
-        unthrottled_count > 0,
-        "Late-entry D-SETUPs should resume once receipt reaches final state"
-    );
-
-    // Each re-send that went through should have created a fresh reporter
-    let new_reporters = extract_d_setup_reporters(&mut unthrottled_msgs);
-    assert_eq!(
-        new_reporters.len(),
-        unthrottled_count,
-        "Each re-sent D-SETUP should carry a fresh tx_reporter"
-    );
-}
-
-/// Helper: build a U-SETUP SAP message for a P2P (individual) call to `called_issi`.
-fn build_u_setup_p2p_msg(calling_issi: u32, called_issi: u32) -> SapMsg {
-    let u_setup = USetup {
-        area_selection: 0,
-        hook_method_selection: false,
-        simplex_duplex_selection: false,
-        basic_service_information: BasicServiceInformation {
-            circuit_mode_type: CircuitModeType::TchS,
-            encryption_flag: false,
-            communication_type: CommunicationType::P2p,
-            slots_per_frame: None,
-            speech_service: Some(0),
-        },
-        request_to_transmit_send_data: false,
-        call_priority: 0,
-        clir_control: 0,
-        called_party_type_identifier: PartyTypeIdentifier::Ssi,
-        called_party_ssi: Some(called_issi as u64),
-        called_party_short_number_address: None,
-        called_party_extension: None,
-        external_subscriber_number: None,
-        facility: None,
-        dm_ms_address: None,
-        proprietary: None,
-    };
-
-    let mut sdu = BitBuffer::new_autoexpand(80);
-    u_setup.to_bitbuf(&mut sdu).expect("Failed to serialize USetup");
-    sdu.seek(0);
-
-    SapMsg {
-        sap: Sap::LcmcSap,
-        src: TetraEntity::Mle,
-        dest: TetraEntity::Cmce,
-        msg: SapMsgInner::LcmcMleUnitdataInd(LcmcMleUnitdataInd {
-            sdu,
-            handle: 1,
-            endpoint_id: 1,
-            link_id: 1,
-            received_tetra_address: TetraAddress::new(calling_issi, SsiType::Issi),
-            chan_change_resp_req: false,
-            chan_change_handle: None,
-        }),
-    }
-}
-
-/// Count individual-call D-SETUP resends addressed to `ssi` on the MCCH (no chan_alloc).
-fn count_individual_dsetup_to(msgs: &[SapMsg], ssi: u32) -> usize {
-    msgs.iter()
-        .filter(|m| {
-            m.dest == TetraEntity::Mle
-                && matches!(&m.msg, SapMsgInner::LcmcMleUnitdataReq(p)
-                    if p.main_address.ssi == ssi && p.chan_alloc.is_none())
-        })
-        .count()
-}
-
 // Energy-Economy D-SETUP gate (clause 16.7): individual-call setup resends to a sleeping EE MS
 // are held for the MS's downlink monitoring window, with a bounded fallback (EE_DSETUP_FALLBACK_TS
 // ≈ 423 timeslots / ~105 frames) to the historical blind resend. The empirically-observed resend
-// cadence (initial + late-entry) fires several individual D-SETUPs to the called MS within the
-// fallback window (around frames 0/44/89), which the tests below rely on.
+// cadence (initial + setup-retry) fires several individual D-SETUPs to the called MS within the
+// fallback window, which the tests below rely on.
 
 /// A sleeping EE MS (monitoring window closed for the whole sub-fallback run) must NOT receive
 /// any D-SETUP resend — they are held for its window.
@@ -387,7 +1232,7 @@ fn test_dsetup_to_ee_ms_held_outside_monitoring_window() {
 
     let calling = 3000001;
     let called = 2000002;
-    register_subscriber(&mut test, called, 9); // local registration -> local P2P (not Brew)
+    test.config.state_write().subscribers.register(called); // local registration -> local P2P (not Brew)
 
     // Window = frame 1, offset 30, cycle 60: open only when multiframe_index % 60 == 30. The run
     // below spans multiframe_index 0..~6, so the window is CLOSED for its entire duration.
@@ -417,7 +1262,7 @@ fn test_dsetup_to_non_ee_ms_resends_normally() {
 
     let calling = 3000001;
     let called = 2000002;
-    register_subscriber(&mut test, called, 9);
+    test.config.state_write().subscribers.register(called);
     // No ee_monitoring_windows entry for `called` -> not in EE -> always reachable.
 
     test.submit_message(build_u_setup_p2p_msg(calling, called));
@@ -444,7 +1289,7 @@ fn test_dsetup_ee_fallback_resends_after_timeout() {
 
     let calling = 3000001;
     let called = 2000002;
-    register_subscriber(&mut test, called, 9);
+    test.config.state_write().subscribers.register(called);
 
     // Window that never opens during the run (closed throughout) -> only the fallback can release.
     test.config.state_write().ee_monitoring_windows.insert(called, (1, 30, 60));
@@ -534,5 +1379,193 @@ fn test_group_ee_announce_excludes_speaker() {
     assert_eq!(
         batched, 0,
         "the speaker's own EE window must not trigger batched re-sends (got {batched})"
+    );
+}
+
+// ─── FH FIX 2 guard: group-addressed PDUs must use unacknowledged LLC ──────────────────────────
+//
+// D-SETUP / D-RELEASE to a GSSI have no single peer to acknowledge, so they must go out as
+// unacknowledged BL-UDATA (`Layer2Service::Unacknowledged`), not the acknowledged default. MLE
+// routes Unacknowledged → TlaTlUnitdataReqBl (BL-UDATA) and everything else → TlaTlDataReqBl
+// (acknowledged BL-DATA), so the LcmcMleUnitdataReq.layer2service is the load-bearing field.
+
+/// Find the LcmcMleUnitdataReq carrying `pdu_type` addressed to `address` and return its
+/// `layer2service`. `None` if no such PDU was emitted.
+fn lcmc_req_layer2service(msgs: &[SapMsg], address: u32, pdu_type: CmcePduTypeDl) -> Option<tetra_core::Layer2Service> {
+    msgs.iter().find_map(|msg| {
+        if msg.dest != TetraEntity::Mle {
+            return None;
+        }
+        let SapMsgInner::LcmcMleUnitdataReq(prim) = &msg.msg else {
+            return None;
+        };
+        if prim.main_address.ssi != address || dl_pdu_type(&prim.sdu) != Some(pdu_type) {
+            return None;
+        }
+        Some(prim.layer2service)
+    })
+}
+
+#[test]
+fn test_group_d_setup_uses_unacknowledged_llc() {
+    debug::setup_logging_verbose();
+
+    let dltime = TdmaTime { h: 0, m: 1, f: 1, t: 1 };
+    let mut test = ComponentTest::new(StackMode::Bs, Some(dltime));
+    test.populate_entities(
+        vec![TetraEntity::Cmce],
+        vec![TetraEntity::Mle, TetraEntity::Umac, TetraEntity::Brew],
+    );
+
+    register_subscriber(&mut test, TEST_ISSI, TEST_GSSI);
+
+    test.submit_message(build_u_setup_msg(TEST_ISSI, TEST_GSSI));
+    test.run_stack(Some(1));
+    let setup_msgs = test.dump_sinks();
+
+    let l2 = lcmc_req_layer2service(&setup_msgs, TEST_GSSI, CmcePduTypeDl::DSetup)
+        .expect("Expected a group D-SETUP addressed to the GSSI");
+    assert_eq!(
+        l2,
+        tetra_core::Layer2Service::Unacknowledged,
+        "group D-SETUP to a GSSI must use unacknowledged BL-UDATA (no single peer to ACK), got {l2:?}"
+    );
+}
+
+#[test]
+fn test_group_d_release_uses_unacknowledged_llc() {
+    debug::setup_logging_verbose();
+
+    let dltime = TdmaTime { h: 0, m: 1, f: 1, t: 1 };
+    let mut test = ComponentTest::new(StackMode::Bs, Some(dltime));
+    test.populate_entities(
+        vec![TetraEntity::Cmce],
+        vec![TetraEntity::Mle, TetraEntity::Umac, TetraEntity::Brew],
+    );
+
+    register_subscriber(&mut test, TEST_ISSI, TEST_GSSI);
+
+    test.submit_message(build_u_setup_msg(TEST_ISSI, TEST_GSSI));
+    test.run_stack(Some(1));
+    let setup_msgs = test.dump_sinks();
+    let call_id = first_d_setup_call_id(&setup_msgs, TEST_GSSI);
+
+    // The call owner (the original caller) disconnects → release_group_call sends the group
+    // D-RELEASE addressed to the GSSI.
+    test.submit_message(build_u_disconnect_msg(TEST_ISSI, call_id));
+    test.run_stack(Some(1));
+    let release_msgs = test.dump_sinks();
+
+    let l2 = lcmc_req_layer2service(&release_msgs, TEST_GSSI, CmcePduTypeDl::DRelease)
+        .expect("Expected a group D-RELEASE addressed to the GSSI");
+    assert_eq!(
+        l2,
+        tetra_core::Layer2Service::Unacknowledged,
+        "group D-RELEASE to a GSSI must use unacknowledged BL-UDATA, got {l2:?}"
+    );
+}
+
+// ─── FH FIX 1 guard: call-lifecycle telemetry must reach the dashboard sink ────────────────────
+
+#[test]
+fn test_group_call_emits_started_and_ended_telemetry() {
+    use tetra_entities::cmce::cmce_bs::CmceBs;
+    use tetra_entities::net_telemetry::{TelemetryEvent, telemetry_channel};
+
+    debug::setup_logging_verbose();
+
+    let dltime = TdmaTime { h: 0, m: 1, f: 1, t: 1 };
+    let mut test = ComponentTest::new(StackMode::Bs, Some(dltime));
+    // Build the sinks but NOT the CMCE — we register a telemetry-wired CmceBs ourselves below.
+    test.populate_entities(vec![], vec![TetraEntity::Mle, TetraEntity::Umac, TetraEntity::Brew]);
+
+    let (sink, source) = telemetry_channel();
+    let cmce = CmceBs::new(test.config.clone(), Some(sink), None);
+    test.register_entity(cmce);
+
+    register_subscriber(&mut test, TEST_ISSI, TEST_GSSI);
+    // Drain any telemetry produced by registration (there should be none for call lifecycle).
+    while source.try_recv().is_some() {}
+
+    // Start a group call.
+    test.submit_message(build_u_setup_msg(TEST_ISSI, TEST_GSSI));
+    test.run_stack(Some(1));
+    let setup_msgs = test.dump_sinks();
+    let call_id = first_d_setup_call_id(&setup_msgs, TEST_GSSI);
+
+    let mut started = None;
+    while let Some(ev) = source.try_recv() {
+        if let TelemetryEvent::GroupCallStarted {
+            call_id: ev_call_id,
+            gssi,
+            caller_issi,
+            ..
+        } = ev
+        {
+            started = Some((ev_call_id, gssi, caller_issi));
+        }
+    }
+    let (ev_call_id, gssi, caller_issi) = started.expect("Expected a GroupCallStarted telemetry event on call setup");
+    assert_eq!(ev_call_id, call_id, "GroupCallStarted call_id mismatch");
+    assert_eq!(gssi, TEST_GSSI, "GroupCallStarted gssi mismatch");
+    assert_eq!(caller_issi, TEST_ISSI, "GroupCallStarted caller_issi mismatch");
+
+    // End the group call (owner disconnects).
+    test.submit_message(build_u_disconnect_msg(TEST_ISSI, call_id));
+    test.run_stack(Some(1));
+    test.dump_sinks();
+
+    let mut ended = false;
+    while let Some(ev) = source.try_recv() {
+        if let TelemetryEvent::GroupCallEnded { call_id: ev_call_id, .. } = ev {
+            if ev_call_id == call_id {
+                ended = true;
+            }
+        }
+    }
+    assert!(ended, "Expected a GroupCallEnded telemetry event on call release");
+}
+
+/// Regression: a U-FACILITY (supplementary service) request from an MS must be answered
+/// with D-CMCE-FUNCTION-NOT-SUPPORTED (ETSI EN 300 392-2 §14.7.2.5). The CMCE rewrite
+/// routed U-FACILITY to ss_bs::route_re_deliver which only logged and sent nothing, so the
+/// MS received no response to its SS request. The BS must reply, not stay silent (and must
+/// not crash).
+#[test]
+fn test_u_facility_answered_with_function_not_supported() {
+    use tetra_pdus::cmce::enums::cmce_pdu_type_ul::CmcePduTypeUl;
+    use tetra_pdus::cmce::pdus::cmce_function_not_supported::CmceFunctionNotSupported;
+    use tetra_pdus::cmce::pdus::u_facility::UFacility;
+
+    let calling_issi = TEST_ISSI;
+    let dltime = TdmaTime { h: 0, m: 1, f: 1, t: 1 };
+    let mut test = ComponentTest::new(StackMode::Bs, Some(dltime));
+
+    let components = vec![TetraEntity::Cmce];
+    let sinks = vec![TetraEntity::Mle, TetraEntity::Umac, TetraEntity::Brew];
+    test.populate_entities(components, sinks);
+
+    // Build and submit a U-FACILITY uplink PDU.
+    let mut sdu = BitBuffer::new_autoexpand(16);
+    UFacility {}.to_bitbuf(&mut sdu).expect("Failed to serialize UFacility");
+    sdu.seek(0);
+    test.submit_message(lcmc_ind(calling_issi, sdu));
+    test.run_stack(Some(1));
+    let msgs = test.dump_sinks();
+
+    // Expect a D-CMCE-FUNCTION-NOT-SUPPORTED back to the requesting MS.
+    let (mut resp_sdu, _) = find_lcmc_req(&msgs, calling_issi, CmcePduTypeDl::CmceFunctionNotSupported)
+        .expect("Expected D-CMCE-FUNCTION-NOT-SUPPORTED to requesting ISSI");
+
+    let pdu = CmceFunctionNotSupported::from_bitbuf(&mut resp_sdu)
+        .expect("Failed to parse D-CMCE-FUNCTION-NOT-SUPPORTED");
+    assert_eq!(
+        pdu.not_supported_pdu_type,
+        CmcePduTypeUl::UFacility.into_raw() as u8,
+        "not_supported_pdu_type should identify U-FACILITY"
+    );
+    assert_eq!(
+        pdu.function_not_supported_pointer, 0,
+        "pointer 0 = the whole PDU type is not supported"
     );
 }

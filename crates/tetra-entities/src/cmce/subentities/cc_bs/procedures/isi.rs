@@ -1,7 +1,13 @@
 use super::*;
 
+/// ANF-ISIIC/ANF-ISIGC-adjacent procedures for the local network bridge.
+///
+/// The implementation still speaks the internal Brew control protocol, not
+/// ETSI PSS1/ROSE ISI PDUs. The split is intentional: individual-call and
+/// group-call interworking belongs beside CC procedures, while PC remains the
+/// CMCE route discriminator.
 impl CcBsSubentity {
-    /// Handle network-initiated circuit setup request (Brew -> local called MS).
+    /// Handle network-initiated circuit setup request (network bridge -> local called MS).
     pub(in crate::cmce::subentities::cc_bs) fn fsm_on_network_circuit_setup_request(
         &mut self,
         queue: &mut MessageQueue,
@@ -30,14 +36,15 @@ impl CcBsSubentity {
             return;
         }
 
-        if !self.subscriber_groups.contains_key(&called_addr.ssi) {
+        if !self.is_locally_registered_issi(called_addr.ssi) {
             tracing::info!(
-                "CMCE: rejecting {:?} setup request uuid={} src={} dst={} number='{}' (called ISSI not registered locally)",
+                "CMCE: rejecting {:?} setup request uuid={} src={} dst={} number='{}' (called ISSI not registered locally, known registry ISSIs={:?})",
                 network_entity,
                 brew_uuid,
                 call.source_issi,
                 call.destination,
-                call.number
+                call.number,
+                self.known_local_issis()
             );
             queue.push_back(SapMsg {
                 sap: Sap::Control,
@@ -75,34 +82,15 @@ impl CcBsSubentity {
         }
 
         let communication = CommunicationType::try_from(call.communication as u64).unwrap_or(CommunicationType::P2p);
-        let network_requested_duplex = call.duplex != 0;
-        let ms_duplex_capable = self.config.state_read().subscribers.duplex_capable(called_addr.ssi);
-        let bridge_forces_duplex = matches!(network_entity, TetraEntity::Asterisk | TetraEntity::Echolink)
-            && network_requested_duplex;
-        let simplex_duplex = network_requested_duplex && (bridge_forces_duplex || ms_duplex_capable.unwrap_or(false));
-        if bridge_forces_duplex && ms_duplex_capable != Some(true) {
-            tracing::info!(
-                "CMCE: keeping inbound {:?} setup uuid={} dst={} as duplex despite ms_duplex_capable={:?} (number='{}')",
-                network_entity,
-                brew_uuid,
-                call.destination,
-                ms_duplex_capable,
-                call.number
-            );
-        } else if network_requested_duplex && ms_duplex_capable != Some(true) {
-            tracing::info!(
-                "CMCE: downgrading inbound {:?} setup uuid={} dst={} to simplex (ms_duplex_capable={:?}, number='{}')",
-                network_entity,
-                brew_uuid,
-                call.destination,
-                ms_duplex_capable,
-                call.number
-            );
-        }
+        let simplex_duplex = call.duplex != 0;
+        let hook_method_selection = call.method != 0;
 
         let circuit_called = {
             let mut state = self.config.state_write();
-            match self.circuits.allocate_circuit_with_allocator_duplex(Direction::Both, communication, simplex_duplex,
+            match self.circuits.allocate_circuit_with_allocator(
+                Direction::Both,
+                communication,
+                simplex_duplex,
                 &mut state.timeslot_alloc,
                 TimeslotOwner::Cmce,
             ) {
@@ -148,6 +136,15 @@ impl CcBsSubentity {
         } else {
             None
         };
+        let calling_party_extension = if calling_party_address_ssi.is_none() {
+            external_number
+                .trim()
+                .parse::<u32>()
+                .ok()
+                .filter(|value| *value <= 0x00ff_ffff)
+        } else {
+            None
+        };
 
         tracing::info!(
             "CMCE: accepting {:?} setup request uuid={} call_id={} src={} dst={} ts={} duplex={} number='{}' display_ssi={:?}",
@@ -162,7 +159,7 @@ impl CcBsSubentity {
             calling_party_address_ssi
         );
 
-        // Acknowledge setup to Brew first so network call state progresses while local MS is alerted.
+        // Acknowledge setup first so network call state progresses while local MS is alerted.
         queue.push_back(SapMsg {
             sap: Sap::Control,
             src: TetraEntity::Cmce,
@@ -170,10 +167,16 @@ impl CcBsSubentity {
             msg: SapMsgInner::CmceCallControl(CallControl::NetworkCircuitSetupAccept { brew_uuid }),
         });
 
+        let setup_transmission_grant = if simplex_duplex {
+            TransmissionGrant::NotGranted
+        } else {
+            TransmissionGrant::GrantedToOtherUser
+        };
+
         let d_setup = DSetup {
             call_identifier: call_id,
             call_time_out: call_timeout,
-            hook_method_selection: true,
+            hook_method_selection,
             simplex_duplex_selection: simplex_duplex,
             basic_service_information: BasicServiceInformation {
                 circuit_mode_type: circuit_mode,
@@ -182,13 +185,13 @@ impl CcBsSubentity {
                 slots_per_frame: None,
                 speech_service: Some(call.service),
             },
-            transmission_grant: TransmissionGrant::NotGranted,
+            transmission_grant: setup_transmission_grant,
             transmission_request_permission: false,
             call_priority: call.priority,
             notification_indicator: None,
             temporary_address: None,
             calling_party_address_ssi,
-            calling_party_extension: None,
+            calling_party_extension,
             external_subscriber_number,
             facility: None,
             dm_ms_address: None,
@@ -202,7 +205,7 @@ impl CcBsSubentity {
                 pdu: d_setup,
                 dest_addr: called_addr,
                 resend: false, // no late-entry resends for individual calls
-                is_individual: true,
+                tx_receipt: None,
             },
         );
 
@@ -210,13 +213,13 @@ impl CcBsSubentity {
         let mut setup_sdu = BitBuffer::new_autoexpand(80);
         d_setup_ref.to_bitbuf(&mut setup_sdu).expect("Failed to serialize DSetup");
         setup_sdu.seek(0);
-        let setup_msg = Self::build_sapmsg(setup_sdu, None, called_addr, Layer2Service::Unacknowledged, None);
+        let setup_msg = Self::build_sapmsg(setup_sdu, None, self.dltime, called_addr, None);
         queue.push_back(setup_msg);
 
         if let Err(err) = self.fsm_individual_create_setup_call(
             call_id,
             IndividualCall {
-                calling_addr: TetraAddress::new(0, SsiType::Unknown),
+                calling_addr: TetraAddress::new(call.source_issi, SsiType::Issi),
                 called_addr,
                 calling_handle: 0,
                 calling_link_id: 0,
@@ -231,6 +234,7 @@ impl CcBsSubentity {
                 simplex_duplex,
                 priority: call.priority,
                 state: IndividualCallState::IncomingSetupPending,
+                formal_state: CcFormalState::Idle.after(CcFormalEvent::SetupRequest),
                 setup_timer_started: Some(self.dltime),
                 setup_timeout: Some(CallTimeoutSetupPhase::T60s),
                 active_timer_started: None,
@@ -239,21 +243,20 @@ impl CcBsSubentity {
                 calling_over_brew: true,
                 brew_uuid: Some(brew_uuid),
                 network_entity: Some(network_entity),
-                network_call: Some(NetworkCircuitCall {
-                    duplex: simplex_duplex as u8,
-                    ..call
-                }),
+                network_call: Some(call),
                 connect_request_sent: false,
                 floor_holder: None,
+                queued_tx_demand: None,
             },
         ) {
             match err {
                 IndividualTransitionError::DuplicateCall(_) => {
-                    tracing::warn!("CMCE: duplicate call_id={} while creating inbound Brew setup", call_id);
+                    tracing::warn!("CMCE: duplicate call_id={} while creating inbound {:?} setup", call_id, network_entity);
                 }
                 IndividualTransitionError::InvalidTransition { state, .. } => {
                     tracing::warn!(
-                        "CMCE: inbound Brew setup call_id={} creation rejected for state {:?}",
+                        "CMCE: inbound {:?} setup call_id={} creation rejected for state {:?}",
+                        network_entity,
                         call_id,
                         state
                     );
@@ -266,7 +269,7 @@ impl CcBsSubentity {
         }
     }
 
-    /// Handle network circuit connect request (Brew -> local called MS).
+    /// Handle network circuit connect request (network bridge -> local called MS).
     pub(in crate::cmce::subentities::cc_bs) fn fsm_on_network_circuit_connect_request(
         &mut self,
         queue: &mut MessageQueue,
@@ -303,6 +306,7 @@ impl CcBsSubentity {
             call_info.destination,
             call_info.number
         );
+        let is_simplex = call.is_simplex();
 
         if let Err(err) = self.fsm_individual_set_network_call(call_id, call_info.clone()) {
             match err {
@@ -336,7 +340,7 @@ impl CcBsSubentity {
 
         let d_connect = DConnect {
             call_identifier: call_id,
-            call_time_out: self.config_call_timeout(),
+            call_time_out: Self::p2p_call_timeout(call.simplex_duplex),
             hook_method_selection: call.simplex_duplex,
             simplex_duplex_selection: call.simplex_duplex,
             transmission_grant: TransmissionGrant::Granted,
@@ -364,6 +368,8 @@ impl CcBsSubentity {
                 handle: call.calling_handle,
                 endpoint_id: call.calling_endpoint_id,
                 link_id: call.calling_link_id,
+                // Network individual-call D-CONNECT: the legacy `main` code sent CC PDUs
+                // unacknowledged (FH FIX 2).
                 layer2service: Layer2Service::Unacknowledged,
                 pdu_prio: 0,
                 layer2_qos: 0,
@@ -388,27 +394,55 @@ impl CcBsSubentity {
             speech_service: Some(0),
             etee_encrypted: false,
         };
-        Self::signal_umac_circuit_open(queue, &circuit, None, CircuitDlMediaSource::SwMI);
+        Self::signal_umac_circuit_open(queue, &circuit, self.dltime, None, CircuitDlMediaSource::SwMI);
 
-        if let Err(err) = self.fsm_individual_transition_to_active(call_id) {
-            match err {
-                IndividualTransitionError::UnknownCall(_) => {
-                    tracing::warn!("CMCE: {:?} connect request activation unknown call_id={}", network_entity, call_id);
+        let activated = match self.fsm_individual_transition_to_active(call_id) {
+            Ok(()) => true,
+            Err(err) => {
+                match err {
+                    IndividualTransitionError::UnknownCall(_) => {
+                        tracing::warn!("CMCE: {:?} connect request activation unknown call_id={}", network_entity, call_id);
+                    }
+                    IndividualTransitionError::InvalidTransition { state, .. } => {
+                        tracing::warn!(
+                            "CMCE: {:?} connect request activation rejected call_id={} from state {:?}",
+                            network_entity,
+                            call_id,
+                            state
+                        );
+                    }
+                    IndividualTransitionError::MissingBrewUuid(_)
+                    | IndividualTransitionError::DuplicateCall(_)
+                    | IndividualTransitionError::NotBrewOriginated(_)
+                    | IndividualTransitionError::ConnectRequestAlreadySent(_) => {}
                 }
-                IndividualTransitionError::InvalidTransition { state, .. } => {
-                    tracing::warn!(
-                        "CMCE: {:?} connect request activation rejected call_id={} from state {:?}",
-                        network_entity,
-                        call_id,
-                        state
-                    );
-                }
-                IndividualTransitionError::MissingBrewUuid(_)
-                | IndividualTransitionError::DuplicateCall(_)
-                | IndividualTransitionError::NotBrewOriginated(_)
-                | IndividualTransitionError::ConnectRequestAlreadySent(_) => {}
+                false
             }
+        };
+
+        if activated && is_simplex {
+            if let Some(call_state) = self.individual_calls.get_mut(&call_id) {
+                let holder = call_state.calling_addr;
+                call_state.grant_floor(holder);
+            }
+            self.notify_floor_granted(
+                queue,
+                GroupFloorGrant {
+                    call_id,
+                    source_issi: call.calling_addr.ssi,
+                    dest_gssi: call.called_addr.ssi,
+                    ts: call.calling_ts,
+                },
+                true,
+                BrewNotification::Never,
+            );
         }
+
+        let remote_grant = if is_simplex {
+            TransmissionGrant::GrantedToOtherUser
+        } else {
+            TransmissionGrant::Granted
+        };
 
         queue.push_back(SapMsg {
             sap: Sap::Control,
@@ -416,7 +450,7 @@ impl CcBsSubentity {
             dest: network_entity,
             msg: SapMsgInner::CmceCallControl(CallControl::NetworkCircuitConnectConfirm {
                 brew_uuid,
-                grant: 0,
+                grant: remote_grant.into_raw() as u8,
                 permission: 0,
             }),
         });
@@ -433,7 +467,7 @@ impl CcBsSubentity {
         });
     }
 
-    /// Handle network circuit connect confirm (Brew -> local calling MS).
+    /// Handle network circuit connect confirm (network bridge -> local calling MS).
     pub(in crate::cmce::subentities::cc_bs) fn fsm_on_network_circuit_connect_confirm(
         &mut self,
         queue: &mut MessageQueue,
@@ -443,7 +477,7 @@ impl CcBsSubentity {
     ) {
         let Some((call_id, call)) = self.find_brew_individual_call(brew_uuid) else {
             tracing::debug!(
-                "CMCE: Brew connect confirm for unknown uuid={} grant={} permission={}",
+                "CMCE: network connect confirm for unknown uuid={} grant={} permission={}",
                 brew_uuid,
                 grant,
                 permission
@@ -454,7 +488,8 @@ impl CcBsSubentity {
 
         if !call.calling_over_brew {
             tracing::trace!(
-                "CMCE: ignoring unexpected Brew connect confirm for local-origin call uuid={} call_id={}",
+                "CMCE: ignoring unexpected {:?} connect confirm for local-origin call uuid={} call_id={}",
+                network_entity,
                 brew_uuid,
                 call_id
             );
@@ -478,14 +513,29 @@ impl CcBsSubentity {
             return;
         };
 
+        let is_simplex = call.is_simplex();
+        let remote_grant = TransmissionGrant::try_from((grant & 0x03) as u64).unwrap_or(TransmissionGrant::Granted);
+        let local_grant = if is_simplex {
+            match remote_grant {
+                TransmissionGrant::Granted => TransmissionGrant::GrantedToOtherUser,
+                TransmissionGrant::GrantedToOtherUser => TransmissionGrant::Granted,
+                TransmissionGrant::RequestQueued => TransmissionGrant::RequestQueued,
+                TransmissionGrant::NotGranted => TransmissionGrant::NotGranted,
+            }
+        } else {
+            remote_grant
+        };
+
         tracing::info!(
-            "CMCE: {:?} connect confirm uuid={} call_id={} grant={} permission={}",
+            "CMCE: {:?} connect confirm uuid={} call_id={} remote_grant={} local_grant={:?} permission={}",
             network_entity,
             brew_uuid,
             call_id,
             grant,
+            local_grant,
             permission
         );
+        let ul_dl_assigned = UlDlAssignment::Both;
 
         let mut called_timeslots = [false; 4];
         called_timeslots[call.called_ts as usize - 1] = true;
@@ -494,14 +544,13 @@ impl CcBsSubentity {
             alloc_type: ChanAllocType::Replace,
             carrier: None,
             timeslots: called_timeslots,
-            ul_dl_assigned: UlDlAssignment::Both,
+            ul_dl_assigned,
         };
 
-        let grant_enum = TransmissionGrant::try_from((grant & 0x03) as u64).unwrap_or(TransmissionGrant::Granted);
         let d_connect_ack = DConnectAcknowledge {
             call_identifier: call_id,
-            call_time_out: CallTimeout::T5m.into_raw() as u8,
-            transmission_grant: grant_enum.into_raw() as u8,
+            call_time_out: Self::p2p_call_timeout(call.simplex_duplex).into_raw() as u8,
+            transmission_grant: local_grant.into_raw() as u8,
             transmission_request_permission: permission != 0,
             notification_indicator: None,
             facility: None,
@@ -524,6 +573,8 @@ impl CcBsSubentity {
                 handle: called_handle,
                 endpoint_id: called_endpoint_id,
                 link_id: called_link_id,
+                // Network individual-call D-CONNECT-ACK: the legacy `main` code sent CC PDUs
+                // unacknowledged (FH FIX 2).
                 layer2service: Layer2Service::Unacknowledged,
                 pdu_prio: 0,
                 layer2_qos: 0,
@@ -559,25 +610,62 @@ impl CcBsSubentity {
             speech_service,
             etee_encrypted,
         };
-        Self::signal_umac_circuit_open(queue, &circuit, None, CircuitDlMediaSource::SwMI);
+        Self::signal_umac_circuit_open(queue, &circuit, self.dltime, None, CircuitDlMediaSource::SwMI);
 
-        if let Err(err) = self.fsm_individual_transition_to_active(call_id) {
-            match err {
-                IndividualTransitionError::UnknownCall(_) => {
-                    tracing::warn!("CMCE: {:?} connect confirm activation unknown call_id={}", network_entity, call_id);
+        let activated = match self.fsm_individual_transition_to_active(call_id) {
+            Ok(()) => true,
+            Err(err) => {
+                match err {
+                    IndividualTransitionError::UnknownCall(_) => {
+                        tracing::warn!("CMCE: {:?} connect confirm activation unknown call_id={}", network_entity, call_id);
+                    }
+                    IndividualTransitionError::InvalidTransition { state, .. } => {
+                        tracing::warn!(
+                            "CMCE: {:?} connect confirm activation rejected call_id={} from state {:?}",
+                            network_entity,
+                            call_id,
+                            state
+                        );
+                    }
+                    IndividualTransitionError::MissingBrewUuid(_)
+                    | IndividualTransitionError::DuplicateCall(_)
+                    | IndividualTransitionError::NotBrewOriginated(_)
+                    | IndividualTransitionError::ConnectRequestAlreadySent(_) => {}
                 }
-                IndividualTransitionError::InvalidTransition { state, .. } => {
-                    tracing::warn!(
-                        "CMCE: {:?} connect confirm activation rejected call_id={} from state {:?}",
-                        network_entity,
-                        call_id,
-                        state
+                false
+            }
+        };
+
+        if activated && is_simplex {
+            match local_grant {
+                TransmissionGrant::Granted => {
+                    if let Some(call_state) = self.individual_calls.get_mut(&call_id) {
+                        let holder = call_state.called_addr;
+                        call_state.grant_floor(holder);
+                    }
+                    self.notify_floor_granted(
+                        queue,
+                        GroupFloorGrant {
+                            call_id,
+                            source_issi: call.called_addr.ssi,
+                            dest_gssi: call.calling_addr.ssi,
+                            ts: call.called_ts,
+                        },
+                        true,
+                        BrewNotification::Never,
                     );
                 }
-                IndividualTransitionError::MissingBrewUuid(_)
-                | IndividualTransitionError::DuplicateCall(_)
-                | IndividualTransitionError::NotBrewOriginated(_)
-                | IndividualTransitionError::ConnectRequestAlreadySent(_) => {}
+                TransmissionGrant::GrantedToOtherUser => {
+                    if let Some(call_state) = self.individual_calls.get_mut(&call_id) {
+                        let holder = call_state.calling_addr;
+                        call_state.grant_floor(holder);
+                    }
+                }
+                TransmissionGrant::RequestQueued | TransmissionGrant::NotGranted => {
+                    if let Some(call_state) = self.individual_calls.get_mut(&call_id) {
+                        call_state.release_floor();
+                    }
+                }
             }
         }
 
@@ -602,22 +690,7 @@ impl CcBsSubentity {
         dest_gssi: u32,
         priority: u8,
     ) {
-        // Inbound admission (FH-FEAT-032 R3): admit Brew-originated calls for any non-local GSSI,
-        // including bridging/foreign GSSIs absent from the outbound `whitelisted_ssis`.
-        if !net_brew::is_brew_inbound_allowed(&self.config, dest_gssi) {
-            tracing::warn!(
-                "CMCE: fsm_on_network_call_start called for inactive/local-only gssi={}, uuid={}, dropping",
-                dest_gssi,
-                brew_uuid
-            );
-            queue.push_back(SapMsg {
-                sap: Sap::Control,
-                src: TetraEntity::Cmce,
-                dest: TetraEntity::Brew,
-                msg: SapMsgInner::CmceCallControl(CallControl::NetworkCallEnd { brew_uuid }),
-            });
-            return;
-        }
+        assert!(brew::is_brew_gssi_routable(&self.config, dest_gssi));
 
         if !self.has_listener(dest_gssi) {
             tracing::info!(
@@ -627,12 +700,7 @@ impl CcBsSubentity {
             );
             self.drop_group_calls_if_unlistened(queue, dest_gssi);
 
-            queue.push_back(SapMsg {
-                sap: Sap::Control,
-                src: TetraEntity::Cmce,
-                dest: TetraEntity::Brew,
-                msg: SapMsgInner::CmceCallControl(CallControl::NetworkCallEnd { brew_uuid }),
-            });
+            self.notify_network_call_end(queue, brew_uuid);
             return;
         }
 
@@ -643,30 +711,6 @@ impl CcBsSubentity {
             .find(|(_, c)| c.dest_gssi == dest_gssi)
             .map(|(id, c)| (*id, c.source_issi))
         {
-            // If a local MS currently holds the floor, protect it against network preemption
-            // unless the incoming network call has STRICTLY higher priority.
-            // ETSI EN 300 392-2 §14.8: priority 0 is lowest, 15 is highest (emergency).
-            if let Some(call) = self.active_calls.get(&call_id) {
-                if call.tx_active && matches!(call.origin, crate::cmce::subentities::cc_bs::call::CallOrigin::Local { .. }) {
-                    // Incoming network speaker must out-rank the local floor-holder to take over.
-                    // Equal or lower priority keeps the local MS on the floor.
-                    if priority <= call.priority {
-                        tracing::info!(
-                            "CMCE: ignoring network speaker change gssi={} src={} — \
-                             local MS {} holds floor at equal/higher priority (held={}, incoming={})",
-                            dest_gssi, source_issi, call.source_issi, call.priority, priority
-                        );
-                        queue.push_back(SapMsg {
-                            sap: Sap::Control,
-                            src: TetraEntity::Cmce,
-                            dest: TetraEntity::Brew,
-                            msg: SapMsgInner::CmceCallControl(CallControl::NetworkCallEnd { brew_uuid }),
-                        });
-                        return;
-                    }
-                }
-            }
-
             tracing::info!(
                 "CMCE: network call speaker change gssi={} new_speaker={} (was {})",
                 dest_gssi,
@@ -706,7 +750,10 @@ impl CcBsSubentity {
         // New network call - allocate circuit
         let circuit = match {
             let mut state = self.config.state_write();
-            self.circuits.allocate_circuit_with_allocator_duplex(Direction::Both, CommunicationType::P2Mp, false,
+            self.circuits.allocate_circuit_with_allocator(
+                Direction::Both,
+                CommunicationType::P2Mp,
+                false,
                 &mut state.timeslot_alloc,
                 TimeslotOwner::Cmce,
             )
@@ -731,7 +778,7 @@ impl CcBsSubentity {
             call_id
         );
 
-        Self::signal_umac_circuit_open(queue, &circuit, None, CircuitDlMediaSource::LocalLoopback);
+        Self::signal_umac_circuit_open(queue, &circuit, self.dltime, None, CircuitDlMediaSource::LocalLoopback);
 
         tracing::debug!(
             "CMCE: sending D-SETUP for NEW call call_id={} gssi={} (network-initiated)",
@@ -742,7 +789,7 @@ impl CcBsSubentity {
         let dest_addr = TetraAddress::new(dest_gssi, SsiType::Gssi);
         let d_setup = DSetup {
             call_identifier: call_id,
-            call_time_out: self.config_call_timeout(),
+            call_time_out: CallTimeout::T5m,
             hook_method_selection: false,
             simplex_duplex_selection: false,
             basic_service_information: BasicServiceInformation {
@@ -754,7 +801,7 @@ impl CcBsSubentity {
             },
             transmission_grant: TransmissionGrant::GrantedToOtherUser,
             transmission_request_permission: false,
-            call_priority: priority,
+            call_priority: 0,
             notification_indicator: None,
             temporary_address: None,
             calling_party_address_ssi: Some(source_issi),
@@ -771,18 +818,18 @@ impl CcBsSubentity {
                 pdu: d_setup,
                 dest_addr: dest_addr.clone(),
                 resend: true,
-                is_individual: false,
+                tx_receipt: None,
             },
         );
         let d_setup_ref = &self.cached_setups.get(&call_id).unwrap().pdu;
 
         let (setup_sdu, setup_chan_alloc) = Self::build_d_setup_prim(d_setup_ref, usage, ts, UlDlAssignment::Both);
-        let setup_msg = Self::build_sapmsg(setup_sdu, Some(setup_chan_alloc), dest_addr.clone(), Layer2Service::Unacknowledged, None);
+        let setup_msg = Self::build_sapmsg(setup_sdu, Some(setup_chan_alloc), self.dltime, dest_addr.clone(), None);
         queue.push_back(setup_msg);
 
         let d_connect = DConnect {
             call_identifier: call_id,
-            call_time_out: self.config_call_timeout(),
+            call_time_out: CallTimeout::T5m,
             hook_method_selection: false,
             simplex_duplex_selection: false,
             transmission_grant: TransmissionGrant::GrantedToOtherUser,
@@ -809,6 +856,9 @@ impl CcBsSubentity {
                 handle: 0,
                 endpoint_id: 0,
                 link_id: 0,
+                // GROUP-addressed D-CONNECT (main_address is the GSSI) for a network-initiated
+                // group call: acknowledged LLC has no single peer to ACK, so this must be
+                // unacknowledged BL-UDATA — same class as the FIX 2 group D-SETUP/D-RELEASE bug.
                 layer2service: Layer2Service::Unacknowledged,
                 pdu_prio: 0,
                 layer2_qos: 0,
@@ -826,7 +876,7 @@ impl CcBsSubentity {
             ActiveCall::new_network(brew_uuid, dest_gssi, source_issi, ts, usage, self.dltime, self.config_call_timeout(), priority),
         );
 
-        // Emit telemetry so dashboard shows Brew-initiated calls
+        // Dashboard telemetry: a Brew/network-initiated group call just became active.
         self.emit(crate::net_telemetry::TelemetryEvent::GroupCallStarted {
             call_id,
             gssi: dest_gssi,
