@@ -354,7 +354,7 @@ pub fn cell_dto_to_cfg(ci: CellInfoDto) -> CfgCellInfo {
 /// This helps prevent excessive flows of unroutable traffic to TetraPack, and can be overridden
 /// by users if needed.
 fn default_tetrapack_local_ranges() -> SortedDisjointSsiRanges {
-    SortedDisjointSsiRanges::from_vec_ssirange(vec![SsiRange::new(80, 90)])
+    SortedDisjointSsiRanges::from_vec_ssirange(vec![SsiRange::new(0, 90)])
 }
 
 // ── SDS command control ────────────────────────────────────────────────────
