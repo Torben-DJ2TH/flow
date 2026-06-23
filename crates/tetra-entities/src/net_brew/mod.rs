@@ -38,7 +38,7 @@ pub fn websocket_transport_config(cfg: &CfgBrew) -> WebSocketTransportConfig {
         },
         endpoint_path: "/brew/".to_string(),
         subprotocol: Some(BREW_PROTOCOL_VERSION.to_string()),
-        user_agent: "BlueStation/0.5.9-67890".to_string(),
+        user_agent: format!("FlowStation/{}", tetra_core::STACK_VERSION),
         heartbeat_interval: Duration::from_secs(10),
         heartbeat_timeout: Duration::from_secs(30),
         custom_root_certs: None,
