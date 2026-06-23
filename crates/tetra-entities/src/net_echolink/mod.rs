@@ -8,7 +8,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use tetra_config::bluestation::{
-    CfgEcholink, EcholinkRuntimeStatus, SharedConfig, normalize_echolink_target,
+    CfgEcholink, EcholinkDirectoryStationStatus, EcholinkRuntimeStatus, SharedConfig,
+    normalize_echolink_target,
 };
 use tetra_core::{Sap, TdmaTime, tetra_entities::TetraEntity};
 use tetra_pdus::cmce::enums::call_timeout::CallTimeout;
@@ -109,6 +110,7 @@ pub struct EcholinkEntity {
     last_enabled: Option<bool>,
     last_directory_status: String,
     directory_stations: Vec<DirectoryStation>,
+    directory_stations_dirty: bool,
     directory_event_tx: crossbeam_channel::Sender<EcholinkDirectoryEvent>,
     directory_event_rx: crossbeam_channel::Receiver<EcholinkDirectoryEvent>,
     directory_stop_tx: Option<crossbeam_channel::Sender<()>>,
@@ -122,7 +124,7 @@ pub struct EcholinkEntity {
 impl EcholinkEntity {
     pub fn new(config: SharedConfig, cmd_rx: EcholinkCmdReceiver) -> Self {
         let (directory_event_tx, directory_event_rx) = crossbeam_channel::unbounded();
-        let entity = Self {
+        let mut entity = Self {
             config,
             cmd_rx,
             audio_socket: None,
@@ -134,6 +136,7 @@ impl EcholinkEntity {
             last_enabled: None,
             last_directory_status: "disabled".to_string(),
             directory_stations: Vec::new(),
+            directory_stations_dirty: true,
             directory_event_tx,
             directory_event_rx,
             directory_stop_tx: None,
@@ -151,7 +154,7 @@ impl EcholinkEntity {
         self.config.effective_echolink()
     }
 
-    fn refresh_status(&self) {
+    fn refresh_status(&mut self) {
         let cfg = self.effective();
         let connected = self
             .dialogs
@@ -171,7 +174,24 @@ impl EcholinkEntity {
         } else {
             "idle"
         };
+        let directory_stations = self.directory_stations_dirty.then(|| {
+            self.directory_stations
+                .iter()
+                .map(|s| EcholinkDirectoryStationStatus {
+                    callsign: s.callsign.clone(),
+                    id: s.id,
+                    ip: s.ip.to_string(),
+                })
+                .collect::<Vec<_>>()
+        });
+        if directory_stations.is_some() {
+            self.directory_stations_dirty = false;
+        }
         let mut state = self.config.state_write();
+        let directory_stations = match directory_stations {
+            Some(stations) => stations,
+            None => std::mem::take(&mut state.echolink_status.directory_stations),
+        };
         state.echolink_status = EcholinkRuntimeStatus {
             configured: true,
             enabled: cfg.enabled,
@@ -184,6 +204,7 @@ impl EcholinkEntity {
             last_rx: self.last_rx.clone(),
             last_tx: self.last_tx.clone(),
             last_error: self.last_error.clone(),
+            directory_stations,
         };
     }
 
@@ -961,6 +982,7 @@ impl EcholinkEntity {
         }
         self.directory_config_key = None;
         self.directory_stations.clear();
+        self.directory_stations_dirty = true;
     }
 
     fn ensure_directory_worker(&mut self, cfg: &CfgEcholink) {
@@ -982,6 +1004,7 @@ impl EcholinkEntity {
                 } if generation == self.directory_generation => {
                     let station_count = stations.len();
                     self.directory_stations = stations;
+                    self.directory_stations_dirty = true;
                     self.last_directory_status = format!("online; {} stations", station_count);
                     self.last_error = None;
                     self.last_tx = Some(format!(

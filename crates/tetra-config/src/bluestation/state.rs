@@ -358,6 +358,13 @@ impl Default for DapnetRuntimeStatus {
 }
 
 #[derive(Debug, Clone)]
+pub struct EcholinkDirectoryStationStatus {
+    pub callsign: String,
+    pub id: u32,
+    pub ip: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct EcholinkRuntimeStatus {
     pub configured: bool,
     pub enabled: bool,
@@ -370,6 +377,7 @@ pub struct EcholinkRuntimeStatus {
     pub last_rx: Option<String>,
     pub last_tx: Option<String>,
     pub last_error: Option<String>,
+    pub directory_stations: Vec<EcholinkDirectoryStationStatus>,
 }
 
 impl Default for EcholinkRuntimeStatus {
@@ -386,6 +394,7 @@ impl Default for EcholinkRuntimeStatus {
             last_rx: None,
             last_tx: None,
             last_error: None,
+            directory_stations: Vec::new(),
         }
     }
 }

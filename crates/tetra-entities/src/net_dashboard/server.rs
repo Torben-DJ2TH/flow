@@ -1802,6 +1802,10 @@ fn handle_connection(
         let mut s = stream;
         drain_http_headers(&mut s);
         serve_echolink_disconnect(s, &echolink_cmd_tx);
+    } else if req_line.contains("GET /api/echolink/directory") {
+        let mut s = stream;
+        drain_http_headers(&mut s);
+        serve_echolink_directory(s, &shared_config);
     } else if req_line.contains("GET /api/echolink") {
         let mut s = stream;
         drain_http_headers(&mut s);
@@ -3429,6 +3433,38 @@ fn serve_echolink_get(
     if let Some(obj) = body.as_object_mut() {
         obj.insert("runtime".to_string(), runtime_body);
     }
+    http_json_response(stream, 200, &body.to_string());
+}
+
+/// GET /api/echolink/directory — return the last downloaded EchoLink directory list.
+fn serve_echolink_directory(
+    stream: TcpStream,
+    shared_config: &Option<tetra_config::bluestation::SharedConfig>,
+) {
+    let runtime = shared_config
+        .as_ref()
+        .map(|cfg| cfg.state_read().echolink_status.clone())
+        .unwrap_or_default();
+    let stations = runtime
+        .directory_stations
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "callsign": s.callsign.clone(),
+                "id": s.id,
+                "ip": s.ip.clone(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let body = serde_json::json!({
+        "configured": runtime.configured,
+        "enabled": runtime.enabled,
+        "directory_status": runtime.directory_status.clone(),
+        "count": stations.len(),
+        "stations": stations,
+        "last_tx": runtime.last_tx.clone(),
+        "last_error": runtime.last_error.clone(),
+    });
     http_json_response(stream, 200, &body.to_string());
 }
 

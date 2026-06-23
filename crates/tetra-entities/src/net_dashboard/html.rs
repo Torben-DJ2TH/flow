@@ -2735,6 +2735,35 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
           <div class="help-text" style="margin-top:10px">EchoLink voice uses UDP 5198/5199 with GSM-FR audio. Calls can be routed from TETRA service numbers/prefixes to EchoLink targets and inbound EchoLink QSOs can ring the configured TETRA ISSI.</div>
         </div>
       </div>
+
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title">EchoLink Directory</div>
+          <div class="card-actions">
+            <input type="text" id="el-directory-filter" class="form-input" style="width:220px" placeholder="Search callsign, node ID or IP" oninput="echolinkDirectoryPageIndex=0;renderEcholinkDirectory()">
+            <button class="btn btn-sm" onclick="loadEcholinkDirectory()">⟳ Refresh</button>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="help-text" id="el-directory-summary">Directory not loaded yet.</div>
+          <div class="table-wrap" style="margin-top:10px">
+            <table>
+              <thead><tr>
+                <th>Callsign</th>
+                <th>Node ID</th>
+                <th>IP</th>
+                <th>Action</th>
+              </tr></thead>
+              <tbody id="el-directory-tbody"></tbody>
+            </table>
+          </div>
+          <div class="log-controls">
+            <button class="btn btn-sm" onclick="echolinkDirectoryPrevPage()">‹ Prev</button>
+            <span class="sds-empty" id="el-directory-page">Page 0 / 0 · 0</span>
+            <button class="btn btn-sm" onclick="echolinkDirectoryNextPage()">Next ›</button>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- ── CONFIG ── -->
@@ -3303,7 +3332,7 @@ const LANGS={
   en:{
     bts_ip:'BTS IP',offline:'OFFLINE',online:'ONLINE',
     brew_online:'ONLINE',brew_offline:'OFFLINE',
-    stations:'Radios',calls:'Calls',lastheard:'Last Heard',log:'Log',rf:'RF',health:'Health',asterisk:'Asterisk SIP',dapnet:'DAPNET',echolink:'EchoLink',config:'Config',
+    stations:'Radios',calls:'Calls',lastheard:'Last Heard',log:'Log',rf:'RF',health:'Health',asterisk:'Asterisk SIP',dapnet:'DAPNET',echolink:'EchoLink',echolink_title:'EchoLink',config:'Config',
     sdslog:'SDS Log',th_dir:'Dir',th_from:'From',th_to:'To',th_message:'Message',no_sds:'No SDS messages yet',sds_refresh:'⟳ Refresh',
     rf_freq:'Center freq',rf_rate:'Sample rate',rf_rms:'RMS',rf_peak:'Peak',rf_age:'Snapshot',
     rf_waiting:'waiting…',rf_live:'live',rf_stale:'stale',
@@ -3413,7 +3442,7 @@ const LANGS={
   ro:{
     bts_ip:'IP BTS',offline:'DECONECTAT',online:'CONECTAT',
     brew_online:'ONLINE',brew_offline:'OFFLINE',
-    stations:'Radiouri',calls:'Apeluri',lastheard:'Ultima Activitate',log:'Log',rf:'RF',health:'Health',echolink:'EchoLink',config:'Config',
+    stations:'Radiouri',calls:'Apeluri',lastheard:'Ultima Activitate',log:'Log',rf:'RF',health:'Health',echolink:'EchoLink',echolink_title:'EchoLink',config:'Config',
     sdslog:'Jurnal SDS',th_dir:'Dir',th_from:'De la',th_to:'Către',th_message:'Mesaj',no_sds:'Niciun mesaj SDS încă',sds_refresh:'⟳ Reîmprospătează',
     rf_freq:'Frecvență centru',rf_rate:'Rată eșantion',rf_rms:'RMS',rf_peak:'Vârf',rf_age:'Captură',
     rf_waiting:'în așteptare…',rf_live:'live',rf_stale:'expirat',
@@ -3512,7 +3541,7 @@ const LANGS={
   de:{
     bts_ip:'BTS-IP',offline:'OFFLINE',online:'ONLINE',
     brew_online:'ONLINE',brew_offline:'OFFLINE',
-    stations:'Radios',calls:'Anrufe',lastheard:'Zuletzt Gehört',log:'Log',rf:'RF',health:'Health',asterisk:'Asterisk SIP',dapnet:'DAPNET',echolink:'EchoLink',config:'Config',
+    stations:'Radios',calls:'Anrufe',lastheard:'Zuletzt Gehört',log:'Log',rf:'RF',health:'Health',asterisk:'Asterisk SIP',dapnet:'DAPNET',echolink:'EchoLink',echolink_title:'EchoLink',config:'Config',
     sdslog:'SDS-Log',th_dir:'Ri.',th_from:'Von',th_to:'An',th_message:'Nachricht',no_sds:'Noch keine SDS-Nachrichten',sds_refresh:'⟳ Aktualisieren',
     rf_freq:'Mittenfrequenz',rf_rate:'Abtastrate',rf_rms:'RMS',rf_peak:'Spitze',rf_age:'Aufnahme',
     rf_waiting:'wartet…',rf_live:'live',rf_stale:'veraltet',
@@ -3593,7 +3622,7 @@ const LANGS={
   es:{
     bts_ip:'IP BTS',offline:'SIN CONEXIÓN',online:'EN LÍNEA',
     brew_online:'EN LÍNEA',brew_offline:'SIN CONEXIÓN',
-    stations:'Radios',calls:'Llamadas',lastheard:'Última Actividad',log:'Log',rf:'RF',health:'Health',echolink:'EchoLink',config:'Config',
+    stations:'Radios',calls:'Llamadas',lastheard:'Última Actividad',log:'Log',rf:'RF',health:'Health',echolink:'EchoLink',echolink_title:'EchoLink',config:'Config',
     sdslog:'Registro SDS',th_dir:'Dir',th_from:'De',th_to:'Para',th_message:'Mensaje',no_sds:'Aún no hay mensajes SDS',sds_refresh:'⟳ Actualizar',
     rf_freq:'Frecuencia central',rf_rate:'Tasa de muestreo',rf_rms:'RMS',rf_peak:'Pico',rf_age:'Captura',
     rf_waiting:'esperando…',rf_live:'en vivo',rf_stale:'obsoleto',
@@ -3664,7 +3693,7 @@ const LANGS={
   hu:{
     bts_ip:'BTS IP',offline:'OFFLINE',online:'ONLINE',
     brew_online:'ONLINE',brew_offline:'OFFLINE',
-    stations:'Rádiók',calls:'Hívások',lastheard:'Utoljára Hallott',log:'Napló',rf:'RF',health:'Health',echolink:'EchoLink',config:'Konfig',
+    stations:'Rádiók',calls:'Hívások',lastheard:'Utoljára Hallott',log:'Napló',rf:'RF',health:'Health',echolink:'EchoLink',echolink_title:'EchoLink',config:'Konfig',
     sdslog:'SDS Napló',th_dir:'Irány',th_from:'Feladó',th_to:'Címzett',th_message:'Üzenet',no_sds:'Még nincs SDS üzenet',sds_refresh:'⟳ Frissítés',
     rf_freq:'Központi frekvencia',rf_rate:'Mintavételezési ráta',rf_rms:'RMS',rf_peak:'Csúcs',rf_age:'Pillanatkép',
     rf_waiting:'várakozás…',rf_live:'élő',rf_stale:'elavult',
@@ -3727,7 +3756,7 @@ const LANGS={
   zh:{
     bts_ip:'BTS IP',offline:'离线',online:'在线',
     brew_online:'在线',brew_offline:'离线',
-    stations:'终端',calls:'通话',lastheard:'最近通话',log:'日志',rf:'RF',health:'Health',echolink:'EchoLink',config:'配置',
+    stations:'终端',calls:'通话',lastheard:'最近通话',log:'日志',rf:'RF',health:'Health',echolink:'EchoLink',echolink_title:'EchoLink',config:'配置',
     sdslog:'SDS日志',th_dir:'方向',th_from:'发件',th_to:'收件',th_message:'消息',no_sds:'暂无SDS消息',sds_refresh:'⟳ 刷新',
     rf_freq:'中心频率',rf_rate:'采样率',rf_rms:'RMS',rf_peak:'峰值',rf_age:'快照',
     rf_waiting:'等待中…',rf_live:'实时',rf_stale:'已过期',
@@ -4226,7 +4255,7 @@ async function wifiCall(url, body){
 function escAttr(s){ return String(s).replace(/&/g,'&amp;').replace(/'/g,"&#39;").replace(/"/g,'&quot;'); }
 
 // ── State + WS ────────────────────────────────────────────────────────────
-let ws=null,state={ms:{},calls:{},emergencies:{},lastHeard:[],sdsLog:[],dapnetLog:[],brewOnline:false,brewVer:0},sdsDest=0;
+let ws=null,state={ms:{},calls:{},emergencies:{},lastHeard:[],sdsLog:[],dapnetLog:[],echolinkDirectory:[],echolinkDirectoryStatus:'',brewOnline:false,brewVer:0},sdsDest=0;
 
 // ── RadioID callsigns (indicativ) ──────────────────────────────────────────────
 // issi -> {cs:"CALLSIGN", fl:"🇷🇴"} (found; fl is the country flag emoji from the prefix, or "")
@@ -4719,7 +4748,7 @@ function _p2(n){return String(n).padStart(2,'0');}
 // live rows arriving over the WS; rows fetched from /api/sds-log already carry a server stamp.
 function nowStamp(){const d=new Date();return `${d.getFullYear()}-${_p2(d.getMonth()+1)}-${_p2(d.getDate())} ${_p2(d.getHours())}:${_p2(d.getMinutes())}:${_p2(d.getSeconds())}`;}
 const LOG_PAGE_SIZE=50;
-let sdsLogPageIndex=0,dapnetLogPageIndex=0;
+let sdsLogPageIndex=0,dapnetLogPageIndex=0,echolinkDirectoryPageIndex=0;
 function setLogPager(id,page,total){
   const el=document.getElementById(id);if(!el)return;
   if(!total){el.textContent='Page 0 / 0 · 0';return;}
@@ -4812,7 +4841,12 @@ function exportSdsLog(){
 
 // ── DAPNET ────────────────────────────────────────────────────────────────
 let dapPasswordDirty=false,dapAuthDirty=false;
-function dapSet(id,v){const el=document.getElementById(id);if(el)el.value=(v===null||v===undefined)?'':v;}
+function dapSet(id,v){
+  const el=document.getElementById(id);if(!el)return;
+  const value=(v===null||v===undefined)?'':v;
+  if('value' in el)el.value=value;
+  else el.textContent=value;
+}
 function dapCheck(id,v){const el=document.getElementById(id);if(el)el.checked=!!v;}
 function dapVal(id){const el=document.getElementById(id);return el?(el.value||'').trim():'';}
 function dapNum(id,def,min,max){
@@ -5043,6 +5077,57 @@ function echolinkU32ListBody(id){
   }
   return out;
 }
+function echolinkDirectoryFiltered(){
+  const q=(document.getElementById('el-directory-filter')?.value||'').trim().toUpperCase();
+  const rows=(state.echolinkDirectory||[]).slice().sort((a,b)=>String(a.callsign||'').localeCompare(String(b.callsign||'')));
+  if(!q)return rows;
+  return rows.filter(s=>
+    String(s.callsign||'').toUpperCase().includes(q) ||
+    String(s.id||'').includes(q) ||
+    String(s.ip||'').includes(q)
+  );
+}
+function echolinkDirectoryRow(s){
+  const call=String(s.callsign||'').toUpperCase();
+  return `<tr>
+    <td><span class="badge badge-blue" style="font-size:10px">${escHtml(call||'—')}</span></td>
+    <td class="sds-time">${escHtml(s.id??'')}</td>
+    <td class="sds-time">${escHtml(s.ip||'')}</td>
+    <td><button class="btn btn-sm" onclick="echolinkUseDirectoryTarget('${escAttr(call)}')">Use</button></td>
+  </tr>`;
+}
+function renderEcholinkDirectory(){
+  const tb=document.getElementById('el-directory-tbody');if(!tb)return;
+  const rows=echolinkDirectoryFiltered();
+  echolinkDirectoryPageIndex=clampLogPage(echolinkDirectoryPageIndex,rows.length);
+  setLogPager('el-directory-page',echolinkDirectoryPageIndex,rows.length);
+  const summary=document.getElementById('el-directory-summary');
+  if(summary){
+    const total=(state.echolinkDirectory||[]).length;
+    const status=state.echolinkDirectoryStatus||'Directory';
+    summary.textContent=total?`${status} · ${rows.length} shown · ${total} total`:'Directory not loaded yet.';
+  }
+  if(!rows.length){tb.innerHTML=`<tr><td colspan="4" class="sds-empty" style="text-align:center;padding:24px">No directory entries</td></tr>`;return;}
+  const start=echolinkDirectoryPageIndex*LOG_PAGE_SIZE;
+  tb.innerHTML=rows.slice(start,start+LOG_PAGE_SIZE).map(echolinkDirectoryRow).join('');
+}
+function echolinkDirectoryPrevPage(){echolinkDirectoryPageIndex--;renderEcholinkDirectory();}
+function echolinkDirectoryNextPage(){echolinkDirectoryPageIndex++;renderEcholinkDirectory();}
+function echolinkUseDirectoryTarget(target){
+  dapSet('el-connect-target',target);
+  setElMsg(`Target selected: ${target}`,true);
+}
+async function loadEcholinkDirectory(){
+  try{
+    const r=await fetch('/api/echolink/directory');
+    if(!r.ok)return;
+    const d=await r.json();
+    state.echolinkDirectory=d.stations||[];
+    state.echolinkDirectoryStatus=d.directory_status||'unknown';
+    echolinkDirectoryPageIndex=0;
+    renderEcholinkDirectory();
+  }catch{}
+}
 async function loadEcholink(){
   try{
     const r=await fetch('/api/echolink');
@@ -5082,6 +5167,7 @@ async function loadEcholink(){
     dapSet('el-last-tx',rt.last_tx||'—');
     dapSet('el-last-error',rt.last_error||'—');
     setElMsg('',true);
+    loadEcholinkDirectory();
   }catch{setElMsg(t('conn_error'),false);}
 }
 async function saveEcholink(){
