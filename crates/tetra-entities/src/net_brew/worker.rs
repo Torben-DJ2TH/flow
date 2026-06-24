@@ -323,10 +323,11 @@ impl<T: NetworkTransport> BrewWorker<T> {
             let now = Instant::now();
 
             // Expire stale pending SDS entries (SHORT_TRANSFER without matching SDS_TRANSFER)
+            let log_label = self.log_label().to_string();
             self.pending_sds.retain(|uuid, pending| {
                 let age = now.duration_since(pending.received_at);
                 if age > Duration::from_secs(30) {
-                    tracing::warn!("[{}] BrewWorker: expiring stale pending SDS uuid={}", self.log_label(), uuid);
+                    tracing::warn!("[{}] BrewWorker: expiring stale pending SDS uuid={}", log_label, uuid);
                     false
                 } else {
                     true
