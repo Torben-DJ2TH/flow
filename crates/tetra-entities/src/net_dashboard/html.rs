@@ -5248,7 +5248,7 @@ async function wifiCall(url, body){
 function escAttr(s){ return String(s).replace(/&/g,'&amp;').replace(/'/g,"&#39;").replace(/"/g,'&quot;'); }
 
 // ── State + WS ────────────────────────────────────────────────────────────
-let ws=null,state={ms:{},calls:{},emergencies:{},lastHeard:[],sdsLog:[],dapnetLog:[],echolinkDirectory:[],echolinkDirectoryStatus:'',meshcomNodes:[],meshcomMessages:[],geoalarmEvents:[],brewOnline:false,brewVer:0},sdsDest=0;
+let ws=null,state={ms:{},calls:{},emergencies:{},lastHeard:[],sdsLog:[],dapnetLog:[],echolinkDirectory:[],echolinkDirectoryStatus:'',meshcomNodes:[],meshcomMessages:[],geoalarmEvents:[],brewOnline:false,brewVer:0,brewStatus:null,brewStatusLoadedAt:0},sdsDest=0;
 
 // ── RadioID callsigns (indicativ) ──────────────────────────────────────────────
 // issi -> {cs:"CALLSIGN", fl:"🇷🇴"} (found; fl is the country flag emoji from the prefix, or "")
@@ -5313,6 +5313,62 @@ function clearEmergency(issi){if(!confirm(t('confirm_clear_emergency',{issi})))r
 
 // ── Topbar status chips (BS / Brew / Emergency) — calm always-visible state.
 // Mirrors the footer LEDs + emergency state onto the .pill chips in the header.
+let brewStatusFetchInFlight=false;
+function configuredBrewServers(){
+  const servers=(state.brewStatus&&state.brewStatus.servers)||[];
+  return servers.filter(function(s){return s&&s.configured;});
+}
+function brewUiSummary(online,version){
+  const servers=configuredBrewServers();
+  if(servers.length>1){
+    const connected=servers.filter(function(s){return !!s.connected;}).length;
+    const total=servers.length;
+    const all=connected===total;
+    const any=connected>0;
+    const statusText=connected+'/'+total+' '+t('brew_online');
+    const detail=servers.map(function(s){
+      return (s.title||s.entity||'Brew')+': '+(s.connected?t('brew_online'):t('brew_offline'));
+    }).join(' · ');
+    return {
+      online:any,
+      multi:true,
+      cardClass:all?'is-info':(any?'is-warn':'is-danger'),
+      pillClass:all?'pill-info':(any?'pill-warn':'pill-idle'),
+      value:statusText,
+      detail,
+      hero:connected+'/'+total,
+      chip:'Brew '+connected+'/'+total,
+      badge:connected+'/'+total,
+    };
+  }
+  return {
+    online,
+    multi:false,
+    cardClass:online?'is-info':'is-danger',
+    pillClass:online?'pill-info':'pill-idle',
+    value:online?t('brew_online'):t('brew_offline'),
+    detail:online?`Brew v${version||0}`:'—',
+    hero:online?`v${version||0}`:t('brew_offline'),
+    chip:online?('Brew v'+(version||0)):'Brew',
+    badge:online?('v'+(version||0)):'',
+  };
+}
+async function refreshBrewServerStatus(force){
+  const now=Date.now();
+  if(brewStatusFetchInFlight)return;
+  if(!force&&state.brewStatusLoadedAt&&now-state.brewStatusLoadedAt<5000)return;
+  brewStatusFetchInFlight=true;
+  try{
+    const r=await fetch('/api/brew/status');
+    if(r.ok){
+      state.brewStatus=await r.json();
+      state.brewStatusLoadedAt=Date.now();
+      renderBrewStatus();
+    }
+  }catch{}finally{
+    brewStatusFetchInFlight=false;
+  }
+}
 function syncTopbarChips(){
   const led=document.getElementById('connLed');
   const bsOn=!!(led&&led.classList.contains('on'));
@@ -5324,44 +5380,55 @@ function syncTopbarChips(){
   }
   const brew=document.getElementById('chip-brew');
   if(brew){
-    brew.className='pill '+(state.brewOnline?'pill-info':'pill-idle');
+    const summary=brewUiSummary(state.brewOnline,state.brewVer);
+    brew.className='pill '+summary.pillClass;
     const span=brew.querySelector('span');
-    if(span)span.textContent=state.brewOnline?('Brew v'+(state.brewVer||0)):'Brew';
+    if(span)span.textContent=summary.chip;
   }
   const emg=document.getElementById('chip-emergency');
   if(emg)emg.style.display=Object.keys(state.emergencies||{}).length?'inline-flex':'none';
 }
 
-function setBrewStatus(online,version){
-  state.brewOnline=online;state.brewVer=version||0;
+function renderBrewStatus(){
+  const summary=brewUiSummary(state.brewOnline,state.brewVer);
   const led=document.getElementById('brewLed');
   const txt=document.getElementById('brewText');
   const vbadge=document.getElementById('brewVerBadge');
-  if(online){
+  if(summary.online){
     led.classList.add('on');
-    txt.textContent=t('brew_online');txt.style.color='var(--accent2)';
-    if(vbadge){
-      const v=version||0;
-      vbadge.textContent='v'+v;vbadge.style.display='inline-block';
-      if(v>=1){vbadge.style.background='rgba(0,212,168,0.15)';vbadge.style.color='var(--accent)';vbadge.style.border='1px solid rgba(0,212,168,0.4)';}
-      else{vbadge.style.background='rgba(255,178,36,0.15)';vbadge.style.color='var(--warn)';vbadge.style.border='1px solid rgba(255,178,36,0.4)';}
-    }
+    txt.textContent=summary.value;txt.style.color=summary.multi&&summary.cardClass==='is-warn'?'var(--warn)':'var(--accent2)';
   } else {
-    led.classList.remove('on');txt.textContent=t('brew_offline');txt.style.color='';
-    if(vbadge)vbadge.style.display='none';
+    led.classList.remove('on');txt.textContent=summary.value;txt.style.color='';
+  }
+  if(vbadge){
+    if(summary.badge){
+      vbadge.textContent=summary.badge;vbadge.style.display='inline-block';
+      const warn=summary.cardClass==='is-warn';
+      const ok=summary.cardClass==='is-info';
+      vbadge.style.background=ok?'rgba(0,212,168,0.15)':(warn?'rgba(255,178,36,0.15)':'rgba(255,76,76,0.15)');
+      vbadge.style.color=ok?'var(--accent)':(warn?'var(--warn)':'var(--danger)');
+      vbadge.style.border=ok?'1px solid rgba(0,212,168,0.4)':(warn?'1px solid rgba(255,178,36,0.4)':'1px solid rgba(255,76,76,0.4)');
+    } else {
+      vbadge.style.display='none';
+    }
   }
   // Update stat card — state via ONE class (kills inline color split).
   const bv=document.getElementById('stat-brew-val');
   const bs=document.getElementById('stat-brew-sub');
   const bcard=document.getElementById('stat-brew-card');
-  if(bv){bv.textContent=online?t('brew_online'):t('brew_offline');}
-  if(bcard){bcard.classList.remove('is-info','is-danger');bcard.classList.add(online?'is-info':'is-danger');}
-  if(bs)bs.textContent=online?`Brew v${version||0}`:'—';
+  if(bv){bv.textContent=summary.value;}
+  if(bcard){bcard.classList.remove('is-info','is-warn','is-danger');bcard.classList.add(summary.cardClass);}
+  if(bs)bs.textContent=summary.detail;
   const hb=document.getElementById('stations-hero-brew');
-  if(hb)hb.textContent=online?`v${version||0}`:t('brew_offline');
+  if(hb)hb.textContent=summary.hero;
   // System panel
-  updateSysBtsPanel(document.getElementById('connLed').classList.contains('on'),online,version||0);
+  updateSysBtsPanel(document.getElementById('connLed').classList.contains('on'),state.brewOnline,state.brewVer||0);
   syncTopbarChips();
+}
+function setBrewStatus(online,version){
+  state.brewOnline=online;state.brewVer=version||0;
+  renderBrewStatus();
+  refreshBrewServerStatus(false);
 }
 
 function connect(){
@@ -5373,10 +5440,12 @@ function connect(){
     updateSysBtsPanel(true,state.brewOnline,state.brewVer);
     syncTopbarChips();
     ws.send(JSON.stringify({type:'subscribe'}));
+    refreshBrewServerStatus(true);
   };
   ws.onclose=()=>{
     document.getElementById('connLed').classList.remove('on');
     const ct=document.getElementById('connText');ct.textContent=t('offline');ct.style.color='var(--danger)';
+    state.brewStatus=null;state.brewStatusLoadedAt=0;
     setBrewStatus(false,0);
     updateSysBtsPanel(false,false,0);
     syncTopbarChips();
@@ -7157,12 +7226,11 @@ function updateSysHero(){
   const tempV=document.getElementById('sysHeroTemp');
   const btsCard=document.getElementById('sysBtsCard');
   const btsOnline=btsCard&&btsCard.classList.contains('is-ok');
-  const brewCard=document.getElementById('sysBrewCard');
-  const brewOnline=brewCard&&brewCard.classList.contains('is-info');
+  const brewSummary=brewUiSummary(state.brewOnline,state.brewVer);
   if(dot) dot.className='hero-dot '+(btsOnline?'is-ok':'is-danger');
   if(sub){
     const host=(sysData&&sysData.hostname)||document.getElementById('sysHostname').textContent||'—';
-    sub.textContent=(btsOnline?t('online'):t('offline'))+' · '+(brewOnline?t('brew_online'):t('brew_offline'))+' · '+host;
+    sub.textContent=(btsOnline?t('online'):t('offline'))+' · '+brewSummary.value+' · '+host;
   }
   if(tempV){
     const tc=document.getElementById('sysCpuTemp');
@@ -7207,6 +7275,7 @@ async function activateProfile(name){
 }
 
 function updateSysBtsPanel(online,brewOnline,brewVer){
+  const summary=brewUiSummary(brewOnline,brewVer);
   const ipEl=document.getElementById('sysBtsIp');
   const stEl=document.getElementById('sysBtsStatus');
   const bsEl=document.getElementById('sysBrewStatus');
@@ -7216,9 +7285,9 @@ function updateSysBtsPanel(online,brewOnline,brewVer){
   if(ipEl)ipEl.textContent=online?location.hostname:'—';
   if(stEl)stEl.textContent=online?t('online'):t('offline');
   if(btsCard)btsCard.className='stat-card '+(online?'is-ok':'is-danger');
-  if(bsEl)bsEl.textContent=brewOnline?t('brew_online'):t('brew_offline');
-  if(brewCard)brewCard.className='stat-card '+(brewOnline?'is-info':'is-danger');
-  if(bdEl){bdEl.textContent=brewOnline?`Brew v${brewVer||0}`:'—';}
+  if(bsEl)bsEl.textContent=summary.value;
+  if(brewCard)brewCard.className='stat-card '+summary.cardClass;
+  if(bdEl){bdEl.textContent=summary.detail;}
   updateSysHero();
 }
 
@@ -8393,6 +8462,8 @@ async function boot(){
   // instead of waiting for the user to open the System tab.
   loadSystemInfo();
   loadBtsInfo();        // TETRA BTS Details card on the default (Radios) page
+  refreshBrewServerStatus(true);
+  setInterval(()=>refreshBrewServerStatus(true),10000);
   wifiProbeAvailable(); // toggles the WiFi nav item
   checkUpdate();
 }
