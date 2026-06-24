@@ -5,6 +5,7 @@ use tetra_core::tetra_entities::TetraEntity;
 use tetra_core::{BitBuffer, Sap, SsiType, TdmaTime, TetraAddress, debug};
 use tetra_pdus::mm::enums::location_update_type::LocationUpdateType;
 use tetra_pdus::mm::pdus::d_attach_detach_group_identity::DAttachDetachGroupIdentity;
+use tetra_pdus::mm::enums::mm_pdu_type_dl::MmPduTypeDl;
 use tetra_pdus::mm::pdus::d_mm_status::DMmStatus;
 use tetra_pdus::mm::pdus::u_location_update_demand::ULocationUpdateDemand;
 use tetra_saps::lmm::LmmMleUnitdataInd;
@@ -64,6 +65,111 @@ fn find_attach_detach(msgs: &[SapMsg]) -> Option<(u32, DAttachDetachGroupIdentit
         }
     }
     None
+}
+
+/// Pull the addressed ISSI of the first D-LOCATION-UPDATE-COMMAND in a batch of captured MLE
+/// messages, if any. Matched on the 4-bit MM downlink PDU-type discriminator (the PDU's own
+/// `from_bitbuf` decoder is an unimplemented stub — only the encoder MM uses is wired up).
+fn find_location_update_command(msgs: &[SapMsg]) -> Option<u32> {
+    let want = MmPduTypeDl::DLocationUpdateCommand.into_raw();
+    for m in msgs {
+        if let SapMsgInner::LmmMleUnitdataReq(ref req) = m.msg {
+            let mut sdu = BitBuffer::from_bitstr(&req.sdu.to_bitstr());
+            if sdu.read_field(4, "pdu_type").is_ok_and(|t| t == want) {
+                return Some(req.address.ssi);
+            }
+        }
+    }
+    None
+}
+
+/// Feed MM an uplink RSSI sample for `issi`, as UMAC does on every random-access/PTT burst.
+fn submit_uplink_rssi(test: &mut ComponentTest, issi: u32) {
+    test.submit_message(SapMsg {
+        sap: Sap::Control,
+        src: TetraEntity::Umac,
+        dest: TetraEntity::Mm,
+        msg: SapMsgInner::MsRssiUpdate { issi, rssi_dbfs: -31.0 },
+    });
+    test.run_stack(Some(2));
+}
+
+/// Reactive restart recovery: an *unknown* (unregistered) ISSI seen transmitting on the uplink
+/// must be commanded to re-register — this is the ghost-radio-after-restart fix. With reactive
+/// recovery on by default and no allowlist, a single RSSI sample yields a D-LOCATION-UPDATE-COMMAND
+/// addressed to that ISSI.
+#[test]
+fn test_reactive_recovery_commands_unknown_issi_on_uplink() {
+    debug::setup_logging_verbose();
+    const GHOST_ISSI: u32 = 2260301;
+
+    let mut test = ComponentTest::new(StackMode::Bs, Some(TdmaTime::default()));
+    test.populate_entities(vec![], vec![TetraEntity::Mle]);
+    let mm = MmBs::new(test.get_shared_config(), None, None);
+    test.register_entity(mm);
+
+    // The radio was never registered with MM (its record was lost to a restart), yet it keys up.
+    submit_uplink_rssi(&mut test, GHOST_ISSI);
+    let msgs = test.dump_sinks();
+
+    let target = find_location_update_command(&msgs).unwrap_or_else(|| {
+        panic!("expected a D-LOCATION-UPDATE-COMMAND for the unknown ISSI, got {} msgs", msgs.len())
+    });
+    assert_eq!(target, GHOST_ISSI, "the COMMAND must be addressed to the transmitting ghost ISSI");
+}
+
+/// A radio MM already knows must NOT be reactively commanded: its uplink RSSI is normal traffic.
+#[test]
+fn test_reactive_recovery_skips_known_issi() {
+    debug::setup_logging_verbose();
+    const KNOWN_ISSI: u32 = 2260570;
+
+    let mut test = ComponentTest::new(StackMode::Bs, Some(TdmaTime::default()));
+    test.populate_entities(vec![], vec![TetraEntity::Mle]);
+    let mm = MmBs::new(test.get_shared_config(), None, None);
+    test.register_entity(mm);
+
+    // Register it, then discard the registration ACCEPT (and the new-radio group-report COMMAND).
+    register_terminal(&mut test, KNOWN_ISSI);
+    let _ = test.dump_sinks();
+
+    // Now a normal uplink burst from the *known* radio must not produce any further COMMAND.
+    submit_uplink_rssi(&mut test, KNOWN_ISSI);
+    let msgs = test.dump_sinks();
+
+    assert!(
+        find_location_update_command(&msgs).is_none(),
+        "a known radio's uplink must not trigger reactive recovery, got {} msgs",
+        msgs.len()
+    );
+}
+
+/// Rate limiting: a burst of uplink samples from the same ghost (a single PTT yields several RSSI
+/// updates) must key only ONE COMMAND while it re-registers — the cooldown suppresses the rest.
+#[test]
+fn test_reactive_recovery_rate_limits_repeat_bursts() {
+    debug::setup_logging_verbose();
+    const GHOST_ISSI: u32 = 2260999;
+
+    let mut test = ComponentTest::new(StackMode::Bs, Some(TdmaTime::default()));
+    test.populate_entities(vec![], vec![TetraEntity::Mle]);
+    let mm = MmBs::new(test.get_shared_config(), None, None);
+    test.register_entity(mm);
+
+    // First burst → one COMMAND.
+    submit_uplink_rssi(&mut test, GHOST_ISSI);
+    assert_eq!(
+        find_location_update_command(&test.dump_sinks()),
+        Some(GHOST_ISSI),
+        "first uplink burst from the ghost must command a re-registration"
+    );
+
+    // Second burst within the cooldown (still unregistered) → suppressed.
+    submit_uplink_rssi(&mut test, GHOST_ISSI);
+    assert!(
+        find_location_update_command(&test.dump_sinks()).is_none(),
+        "a repeat burst inside the cooldown must not re-key the same ISSI"
+    );
 }
 
 /// End-to-end DGNA assign: a dashboard control command makes MM push an unsolicited
