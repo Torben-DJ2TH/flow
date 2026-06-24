@@ -2123,6 +2123,8 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
 .h-form-pair{display:grid;grid-template-columns:130px 1fr;gap:10px;align-items:center;}
 .h-flabel{color:var(--muted);font-size:13px;}
 .h-flabel.top{align-self:flex-start;padding-top:8px;}
+.h-field{display:flex;flex-direction:column;gap:5px;min-width:0;}
+.h-field-label{color:var(--muted);font-size:12px;font-weight:650;}
 .h-finline{display:flex;align-items:center;gap:10px;}
 .h-finline .h-flabel-sm{color:var(--muted);font-size:12px;}
 .h-fopts{display:flex;gap:14px;flex-wrap:wrap;}
@@ -3524,8 +3526,8 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
             <input type="number" id="geo-lon" class="form-input" step="0.000001" min="-180" max="180" placeholder="6.083887">
             <label class="h-flabel">Radius / cooldown</label>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-              <input type="number" id="geo-radius-m" class="form-input" min="1" step="1" placeholder="500">
-              <input type="number" id="geo-cooldown" class="form-input" min="1" max="86400" placeholder="300">
+              <label class="h-field"><span class="h-field-label">Alarm radius (m)</span><input type="number" id="geo-radius-m" class="form-input" min="1" step="1" placeholder="500"></label>
+              <label class="h-field"><span class="h-field-label">Cooldown (s)</span><input type="number" id="geo-cooldown" class="form-input" min="1" max="86400" placeholder="300"></label>
             </div>
             <label class="h-flabel">Input sources</label>
             <div class="h-fopts">
@@ -3550,14 +3552,14 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
                 <span class="sw"><input type="checkbox" id="geo-forward-tpg"><i></i></span>
               </label>
               <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px">
-                <input type="number" id="geo-tpg-source" class="form-input" min="1" max="16777215" placeholder="Source ISSI">
-                <input type="number" id="geo-tpg-dest" class="form-input" min="0" max="16777215" placeholder="TPG ISSI">
+                <label class="h-field"><span class="h-field-label">Source ISSI</span><input type="number" id="geo-tpg-source" class="form-input" min="1" max="16777215" placeholder="9999"></label>
+                <label class="h-field"><span class="h-field-label">TPG2200 ISSI</span><input type="number" id="geo-tpg-dest" class="form-input" min="0" max="16777215" placeholder="0"></label>
               </div>
               <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px">
-                <input type="number" id="geo-tpg-incident" class="form-input" min="1" max="256" placeholder="Incident base">
-                <input type="number" id="geo-tpg-max" class="form-input" min="8" max="160" placeholder="Max chars">
+                <label class="h-field"><span class="h-field-label">Incident base ID</span><input type="number" id="geo-tpg-incident" class="form-input" min="1" max="256" placeholder="1"></label>
+                <label class="h-field"><span class="h-field-label">Max text chars</span><input type="number" id="geo-tpg-max" class="form-input" min="8" max="160" placeholder="80"></label>
               </div>
-              <input type="text" id="geo-tpg-prefix" class="form-input" placeholder="TPG text prefix" style="margin-top:10px">
+              <label class="h-field" style="margin-top:10px"><span class="h-field-label">TPG text prefix</span><input type="text" id="geo-tpg-prefix" class="form-input" placeholder="GeoAlarm"></label>
             </div>
             <div>
               <label class="sw-row">
@@ -3565,8 +3567,8 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
                 <span class="sw"><input type="checkbox" id="geo-forward-sds"><i></i></span>
               </label>
               <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px">
-                <input type="number" id="geo-sds-source" class="form-input" min="1" max="16777215" placeholder="Source ISSI">
-                <input type="number" id="geo-sds-dest" class="form-input" min="0" max="16777215" placeholder="Destination ISSI/GSSI">
+                <label class="h-field"><span class="h-field-label">Source ISSI</span><input type="number" id="geo-sds-source" class="form-input" min="1" max="16777215" placeholder="9999"></label>
+                <label class="h-field"><span class="h-field-label">Destination ISSI/GSSI</span><input type="number" id="geo-sds-dest" class="form-input" min="0" max="16777215" placeholder="0"></label>
               </div>
               <label class="h-finline" style="margin-top:10px"><span class="sw"><input type="checkbox" id="geo-sds-group"><i></i></span><span class="h-flabel-sm">Destination is group/GSSI</span></label>
             </div>
@@ -3575,12 +3577,12 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
                 <span class="sw-text">Alarm → SIP/Snom</span>
                 <span class="sw"><input type="checkbox" id="geo-forward-sip"><i></i></span>
               </label>
-              <input type="text" id="geo-sip-prefix" class="form-input" placeholder="Snom title prefix" style="margin-top:10px">
+              <label class="h-field" style="margin-top:10px"><span class="h-field-label">Snom title prefix</span><input type="text" id="geo-sip-prefix" class="form-input" placeholder="GeoAlarm"></label>
               <label class="sw-row" style="margin-top:14px">
                 <span class="sw-text">Alarm → Telegram</span>
                 <span class="sw"><input type="checkbox" id="geo-forward-telegram"><i></i></span>
               </label>
-              <input type="text" id="geo-telegram-prefix" class="form-input" placeholder="Telegram prefix" style="margin-top:10px">
+              <label class="h-field" style="margin-top:10px"><span class="h-field-label">Telegram prefix</span><input type="text" id="geo-telegram-prefix" class="form-input" placeholder="GeoAlarm"></label>
             </div>
           </div>
         </div>
