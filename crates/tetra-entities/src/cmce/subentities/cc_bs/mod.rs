@@ -42,6 +42,11 @@ use crate::{
     cmce::components::circuit_mgr::{CircuitMgr, CircuitMgrCmd},
 };
 
+/// Short tolerance for Brew/MM affiliation resyncs that emit DEAFFILIATE immediately followed by
+/// AFFILIATE for the same ISSI/GSSI. Two seconds keeps active calls from being torn down by a
+/// transient empty listener set while still releasing genuinely unlistened calls promptly.
+const BREW_AFFILIATION_GRACE_TS: i32 = 144;
+
 mod dtmf;
 mod lifecycle;
 mod pdu;
@@ -73,6 +78,8 @@ pub struct CcBsSubentity {
     subscriber_groups: HashMap<u32, HashSet<u32>>,
     /// Listener counts per GSSI
     group_listeners: HashMap<u32, usize>,
+    /// Recently removed affiliations (ISSI, GSSI) kept alive briefly to absorb Brew resync races.
+    recent_deaffiliations: HashMap<(u32, u32), TdmaTime>,
     /// Dashboard telemetry sink (call-lifecycle events). `None` when telemetry is disabled.
     telemetry: Option<crate::net_telemetry::TelemetrySink>,
 }

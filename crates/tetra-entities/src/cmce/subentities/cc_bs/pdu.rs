@@ -11,6 +11,7 @@ impl CcBsSubentity {
             individual_calls: HashMap::new(),
             subscriber_groups: HashMap::new(),
             group_listeners: HashMap::new(),
+            recent_deaffiliations: HashMap::new(),
             telemetry: None,
         }
     }
@@ -287,7 +288,25 @@ impl CcBsSubentity {
     }
 
     pub(super) fn has_listener(&self, gssi: u32) -> bool {
-        self.group_listeners.get(&gssi).copied().unwrap_or(0) > 0
+        self.group_listener_count(gssi) > 0 || self.has_recent_deaffiliation_listener(gssi)
+    }
+
+    pub(super) fn group_listener_count(&self, gssi: u32) -> usize {
+        self.group_listeners.get(&gssi).copied().unwrap_or(0)
+    }
+
+    fn has_recent_deaffiliation_listener(&self, gssi: u32) -> bool {
+        self.recent_deaffiliations
+            .iter()
+            .any(|((_, grace_gssi), at)| *grace_gssi == gssi && at.age(self.dltime) <= BREW_AFFILIATION_GRACE_TS)
+    }
+
+    fn note_recent_deaffiliation(&mut self, issi: u32, gssi: u32) {
+        self.recent_deaffiliations.insert((issi, gssi), self.dltime);
+    }
+
+    fn clear_recent_deaffiliation(&mut self, issi: u32, gssi: u32) {
+        self.recent_deaffiliations.remove(&(issi, gssi));
     }
 
     pub(super) fn inc_group_listener(&mut self, gssi: u32) {
@@ -341,8 +360,10 @@ impl CcBsSubentity {
         if let Some(groups) = self.subscriber_groups.remove(&issi) {
             for g in &groups {
                 self.dec_group_listener(*g);
+                self.clear_recent_deaffiliation(issi, *g);
             }
         }
+        self.recent_deaffiliations.retain(|(grace_issi, _), _| *grace_issi != issi);
         // Tell MM to deregister the MS — this also notifies Brew
         queue.push_back(SapMsg {
             sap: Sap::Control,
@@ -366,7 +387,14 @@ impl CcBsSubentity {
     }
 
     pub(super) fn drop_group_calls_if_unlistened(&mut self, queue: &mut MessageQueue, gssi: u32) {
-        if self.has_listener(gssi) {
+        if self.group_listener_count(gssi) > 0 {
+            return;
+        }
+        if self.has_recent_deaffiliation_listener(gssi) {
+            tracing::debug!(
+                "CMCE: deferring unlistened-call drop for gssi={} during Brew affiliation grace",
+                gssi
+            );
             return;
         }
 
@@ -386,6 +414,37 @@ impl CcBsSubentity {
         }
     }
 
+    pub(super) fn expire_brew_affiliation_grace(&mut self, queue: &mut MessageQueue) {
+        if self.recent_deaffiliations.is_empty() {
+            return;
+        }
+
+        let expired: Vec<(u32, u32)> = self
+            .recent_deaffiliations
+            .iter()
+            .filter_map(|(key, at)| {
+                if at.age(self.dltime) > BREW_AFFILIATION_GRACE_TS {
+                    Some(*key)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if expired.is_empty() {
+            return;
+        }
+
+        let mut affected_gssis = HashSet::new();
+        for key @ (_, gssi) in expired {
+            self.recent_deaffiliations.remove(&key);
+            affected_gssis.insert(gssi);
+        }
+
+        for gssi in affected_gssis {
+            self.drop_group_calls_if_unlistened(queue, gssi);
+        }
+    }
+
     pub fn handle_subscriber_update(&mut self, queue: &mut MessageQueue, update: MmSubscriberUpdate) {
         let issi = update.issi;
         let groups = update.groups;
@@ -400,9 +459,11 @@ impl CcBsSubentity {
                 if let Some(existing) = self.subscriber_groups.remove(&issi) {
                     for gssi in existing {
                         self.dec_group_listener(gssi);
+                        self.clear_recent_deaffiliation(issi, gssi);
                         self.drop_group_calls_if_unlistened(queue, gssi);
                     }
                 }
+                self.recent_deaffiliations.retain(|(grace_issi, _), _| *grace_issi != issi);
                 tracing::info!("CMCE: subscriber deregister issi={}", issi);
             }
             BrewSubscriberAction::Affiliate => {
@@ -416,6 +477,7 @@ impl CcBsSubentity {
                     }
                 }
                 for gssi in &new_groups {
+                    self.clear_recent_deaffiliation(issi, *gssi);
                     self.inc_group_listener(*gssi);
                 }
 
@@ -441,6 +503,7 @@ impl CcBsSubentity {
                 if known_issi {
                     for gssi in &removed_groups {
                         self.dec_group_listener(*gssi);
+                        self.note_recent_deaffiliation(issi, *gssi);
                     }
                 }
 
@@ -1209,7 +1272,36 @@ impl PreemptVictim {
 
 #[cfg(test)]
 mod tests {
+    use super::super::BREW_AFFILIATION_GRACE_TS;
     use super::CcBsSubentity;
+    use crate::MessageQueue;
+    use tetra_config::bluestation::SharedConfig;
+    use tetra_saps::control::brew::{BrewSubscriberAction, MmSubscriberUpdate};
+
+    fn test_cfg() -> SharedConfig {
+        let toml = r#"
+config_version = "0.6"
+stack_mode = "Bs"
+[phy_io]
+backend = "None"
+[net_info]
+mcc = 901
+mnc = 9999
+[cell_info]
+main_carrier = 1584
+freq_band = 4
+freq_offset = 0
+duplex_spacing = 4
+reverse_operation = false
+location_area = 1
+"#;
+        let cfg = tetra_config::bluestation::parsing::from_toml_str(toml).unwrap();
+        SharedConfig::from_parts(cfg, None)
+    }
+
+    fn subscriber_update(issi: u32, groups: Vec<u32>, action: BrewSubscriberAction) -> MmSubscriberUpdate {
+        MmSubscriberUpdate { issi, groups, action }
+    }
 
     #[test]
     fn external_subscriber_number_supports_24_digits() {
@@ -1226,5 +1318,44 @@ mod tests {
         let field = CcBsSubentity::encode_external_subscriber_number(number).expect("field should be generated");
         assert_eq!(field.len, 96);
         assert_eq!(CcBsSubentity::decode_external_subscriber_number(&field), "123456789012345678901234");
+    }
+
+    #[test]
+    fn deaffiliate_keeps_listener_during_brew_resync_grace() {
+        let mut cc = CcBsSubentity::new(test_cfg());
+        let mut queue = MessageQueue::new();
+
+        cc.handle_subscriber_update(&mut queue, subscriber_update(2635411, Vec::new(), BrewSubscriberAction::Register));
+        cc.handle_subscriber_update(&mut queue, subscriber_update(2635411, vec![26225], BrewSubscriberAction::Affiliate));
+        assert!(cc.has_listener(26225));
+
+        cc.handle_subscriber_update(
+            &mut queue,
+            subscriber_update(2635411, vec![26225], BrewSubscriberAction::Deaffiliate),
+        );
+        assert_eq!(cc.group_listener_count(26225), 0);
+        assert!(cc.has_listener(26225));
+
+        cc.dltime = cc.dltime.add_timeslots(BREW_AFFILIATION_GRACE_TS + 1);
+        cc.expire_brew_affiliation_grace(&mut queue);
+        assert!(!cc.has_listener(26225));
+    }
+
+    #[test]
+    fn affiliate_clears_brew_resync_grace() {
+        let mut cc = CcBsSubentity::new(test_cfg());
+        let mut queue = MessageQueue::new();
+
+        cc.handle_subscriber_update(&mut queue, subscriber_update(2635411, Vec::new(), BrewSubscriberAction::Register));
+        cc.handle_subscriber_update(&mut queue, subscriber_update(2635411, vec![26225], BrewSubscriberAction::Affiliate));
+        cc.handle_subscriber_update(
+            &mut queue,
+            subscriber_update(2635411, vec![26225], BrewSubscriberAction::Deaffiliate),
+        );
+        cc.handle_subscriber_update(&mut queue, subscriber_update(2635411, vec![26225], BrewSubscriberAction::Affiliate));
+
+        assert_eq!(cc.group_listener_count(26225), 1);
+        assert!(cc.recent_deaffiliations.is_empty());
+        assert!(cc.has_listener(26225));
     }
 }

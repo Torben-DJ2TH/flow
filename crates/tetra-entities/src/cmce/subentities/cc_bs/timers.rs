@@ -12,6 +12,11 @@ impl CcBsSubentity {
     pub fn tick_start(&mut self, queue: &mut MessageQueue, dltime: TdmaTime) {
         self.dltime = dltime;
 
+        // Brew/MM resync can briefly emit DEAFFILIATE followed by AFFILIATE for the same
+        // ISSI/GSSI. Keep those listeners alive for a tiny grace window, then re-check whether
+        // active network calls still have a real listener.
+        self.expire_brew_affiliation_grace(queue);
+
         // ETSI T310 equivalent for active calls.
         self.check_call_timeout_expiry(queue);
         // ETSI T301/T302 equivalent while waiting for call completion.
