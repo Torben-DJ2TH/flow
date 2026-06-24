@@ -55,6 +55,7 @@ Built in Rust on top of [tetra-bluestation](https://github.com/MidnightBlueLabs/
 | MeshCom extUDP messages with forwarding to SDS, SIP/Snom, Telegram | ✅ |
 | GeoAlarm radius alerts from TETRA LIP and MeshCom positions to TPG2200, SDS, SIP/Snom, Telegram | ✅ |
 | Snom XML display notifications for SDS, DAPNET, Telegram, MeshCom, GeoAlarm | ✅ |
+| Optional Telegram alerts for external Brew ISSI REGISTER events, with ISSI filters | ✅ |
 | SDS and DAPNET log paging, clear, text export | ✅ |
 
 ### Network & Interconnect
@@ -473,12 +474,13 @@ but not `91600`.
 
 ### Telegram alerts
 
-Telegram is used both for station alerts and as a forwarding target for DAPNET
-and MeshCom. Create a bot with BotFather, send it one message, then detect or
-enter the chat ID in the dashboard.
+Telegram is used both for station alerts and as a forwarding target for DAPNET,
+MeshCom, GeoAlarm, and optional Brew subscriber notifications. Create a bot with
+BotFather, send it one message, then detect or enter the chat ID in the
+dashboard.
 
 ```toml
-[telegram]
+[telegram_alerts]
 enabled = true
 bot_token = "123456789:AAExampleBotTokenStringFromBotFather"
 chat_ids = [123456789]
@@ -489,7 +491,19 @@ alert_lip = true
 alert_backhaul = true
 alert_critical_logs = true
 alert_health = true
+
+# Optional: alert when an external ISSI registers through Brew/TetraPack.
+# Only true REGISTER events are alerted; noisy REREGISTER refreshes are ignored.
+alert_brew_register = false
+brew_register_prefix = "Brew REGISTER"
+brew_register_issi_whitelist = []   # empty = all Brew REGISTER ISSIs
+brew_register_issi_blacklist = []   # blacklist wins over whitelist
 ```
+
+The Telegram dashboard page can edit these values live and persists them back to
+`config.toml`. Brew REGISTER alerts are deduplicated per Brew source/ISSI until a
+matching Brew DEREGISTER arrives, so repeated REGISTER packets for the same
+currently-known ISSI do not flood Telegram.
 
 ### DAPNET integration
 
@@ -838,8 +852,9 @@ log, and forwarding controls for SDS, SIP/Snom, and Telegram.
 filters, forwarding controls for TPG2200, SDS, SIP/Snom and Telegram, plus a
 live event table.
 
-**Telegram** — bot token, chat detection, destination chat IDs, and alert
-category toggles.
+**Telegram** — bot token, chat detection, destination chat IDs, alert category
+toggles, and optional Brew ISSI REGISTER alerts with prefix, whitelist, and
+blacklist.
 
 **Health** — station health plus Brew, Asterisk, DAPNET, EchoLink, MeshCom, and
 GeoAlarm integration status.
@@ -865,6 +880,12 @@ probe) · SDS broadcast queue · OTA update button.
 **UL audio routing to Brew** — `TmdCircuitDataInd` was not routed to Brew in `cmce_bs.rs`, causing one-way audio on Brew-interconnected calls.
 
 **SDS ACK for ISSI 9999** — SDS ACK for the local BS control ISSI was being forwarded to Brew, generating spurious traffic. Now absorbed locally.
+
+**Brew REGISTER/DEREGISTER log noise** — external Brew subscriber
+REGISTER/REREGISTER/DEREGISTER updates and the matching CMCE subscriber registry
+updates are now debug-level only. Normal INFO logs stay readable during large
+Brew/TetraPack resyncs; enable debug logging when investigating subscriber
+state.
 
 **Chan_alloc in DConnect for echo service 999** — echo service calls were allocated without a traffic channel, causing audio to fail.
 
