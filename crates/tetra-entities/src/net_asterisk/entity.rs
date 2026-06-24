@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use tetra_config::bluestation::{AsteriskRuntimeStatus, CfgAsterisk, SharedConfig};
 use tetra_core::{Sap, TdmaTime, tetra_entities::TetraEntity};
-use tetra_pdus::cmce::enums::call_timeout::CallTimeout;
+use tetra_pdus::cmce::enums::{call_timeout::CallTimeout, disconnect_cause::DisconnectCause};
 use tetra_saps::{
     SapMsg, SapMsgInner,
     control::call_control::{CallControl, NetworkCircuitCall},
@@ -874,7 +874,7 @@ impl AsteriskEntity {
             reason
         );
         self.send_invite_response(uuid, code, reason, None);
-        self.release_dialog(uuid, false);
+        self.release_dialog(uuid, false, None);
     }
 
     fn handle_inbound_alert(&mut self, uuid: Uuid) {
@@ -1008,12 +1008,13 @@ impl AsteriskEntity {
         }
     }
 
-    fn release_dialog(&mut self, brew_uuid: Uuid, from_cmce: bool) {
-        let Some((cancel, media_ready, inbound)) = self
+    fn release_dialog(&mut self, brew_uuid: Uuid, from_cmce: bool, cause: Option<u8>) {
+        let Some((state, cancel, media_ready, inbound)) = self
             .dialogs
             .get(&brew_uuid)
             .map(|dialog| {
                 (
+                    dialog.state,
                     !matches!(dialog.state, DialogState::Established),
                     dialog.media_ready,
                     dialog.inbound,
@@ -1024,7 +1025,16 @@ impl AsteriskEntity {
         };
         if from_cmce {
             if inbound && cancel {
-                self.send_invite_response(brew_uuid, 480, "Temporarily Unavailable", None);
+                let setup_timed_out = cause == Some(DisconnectCause::ExpiryOfTimer.into_raw() as u8);
+                if state == DialogState::Inviting && setup_timed_out {
+                    tracing::info!(
+                        "AsteriskEntity: inbound setup timed out before alert uuid={} -> SIP 404 Not Found",
+                        brew_uuid
+                    );
+                    self.send_invite_response(brew_uuid, 404, "Not Found", None);
+                } else {
+                    self.send_invite_response(brew_uuid, 480, "Temporarily Unavailable", None);
+                }
             } else {
                 self.send_bye_or_cancel(brew_uuid, cancel);
             }
@@ -1161,14 +1171,14 @@ impl AsteriskEntity {
                     self.answer_request(&msg, addr, 200, "OK");
                     if let Some(uuid) = self.find_dialog_by_call_id(msg.call_id()) {
                         self.send_release_to_cmce(queue, uuid, 16);
-                        self.release_dialog(uuid, false);
+                        self.release_dialog(uuid, false, None);
                     }
                 }
                 "CANCEL" => {
                     self.answer_request(&msg, addr, 200, "OK");
                     if let Some(uuid) = self.find_dialog_by_call_id(msg.call_id()) {
                         self.send_release_to_cmce(queue, uuid, 16);
-                        self.release_dialog(uuid, false);
+                        self.release_dialog(uuid, false, None);
                     }
                 }
                 "ACK" => {}
@@ -1289,7 +1299,7 @@ impl AsteriskEntity {
                 }
                 self.set_error(format!("INVITE uuid={} failed with SIP {}", uuid, code));
                 self.send_release_to_cmce(queue, uuid, 34);
-                self.release_dialog(uuid, false);
+                self.release_dialog(uuid, false, None);
             }
             _ => {}
         }
@@ -1407,8 +1417,8 @@ impl TetraEntityTrait for AsteriskEntity {
             SapMsgInner::CmceCallControl(CallControl::NetworkCircuitMediaReady { brew_uuid, call_id, ts }) => {
                 self.mark_media_ready(brew_uuid, call_id, ts);
             }
-            SapMsgInner::CmceCallControl(CallControl::NetworkCircuitRelease { brew_uuid, .. }) => {
-                self.release_dialog(brew_uuid, true);
+            SapMsgInner::CmceCallControl(CallControl::NetworkCircuitRelease { brew_uuid, cause }) => {
+                self.release_dialog(brew_uuid, true, Some(cause));
             }
             SapMsgInner::CmceCallControl(CallControl::NetworkCircuitDtmf { brew_uuid, data, .. }) => {
                 tracing::debug!("AsteriskEntity: DTMF for uuid={} bytes={} currently ignored", brew_uuid, data.len());

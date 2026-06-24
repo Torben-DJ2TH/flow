@@ -7,6 +7,25 @@ use super::*;
 /// group-call interworking belongs beside CC procedures, while PC remains the
 /// CMCE route discriminator.
 impl CcBsSubentity {
+    fn network_setup_timeout_from_secs(secs: u32) -> CallTimeoutSetupPhase {
+        match secs {
+            0 | 1 => CallTimeoutSetupPhase::T1s,
+            2 => CallTimeoutSetupPhase::T2s,
+            3..=5 => CallTimeoutSetupPhase::T5s,
+            6..=10 => CallTimeoutSetupPhase::T10s,
+            11..=20 => CallTimeoutSetupPhase::T20s,
+            21..=30 => CallTimeoutSetupPhase::T30s,
+            _ => CallTimeoutSetupPhase::T60s,
+        }
+    }
+
+    fn network_setup_timeout(&self, network_entity: TetraEntity) -> CallTimeoutSetupPhase {
+        match network_entity {
+            TetraEntity::Asterisk => Self::network_setup_timeout_from_secs(self.config.config().asterisk.inbound_setup_timeout_secs),
+            _ => CallTimeoutSetupPhase::T60s,
+        }
+    }
+
     /// Handle network-initiated circuit setup request (network bridge -> local called MS).
     pub(in crate::cmce::subentities::cc_bs) fn fsm_on_network_circuit_setup_request(
         &mut self,
@@ -144,6 +163,7 @@ impl CcBsSubentity {
         let ts = circuit_called.ts;
         let usage = circuit_called.usage;
         let call_timeout = CallTimeout::try_from(call.timeout as u64).unwrap_or(CallTimeout::T5m);
+        let setup_timeout = self.network_setup_timeout(network_entity);
         let circuit_mode = CircuitModeType::try_from(call.mode as u64).unwrap_or(CircuitModeType::TchS);
         let external_number = if call.number.trim().is_empty() && call.source_issi != 0 {
             call.source_issi.to_string()
@@ -165,7 +185,7 @@ impl CcBsSubentity {
         };
 
         tracing::info!(
-            "CMCE: accepting {:?} setup request uuid={} call_id={} src={} dst={} ts={} duplex={} number='{}' display_ssi={:?}",
+            "CMCE: accepting {:?} setup request uuid={} call_id={} src={} dst={} ts={} duplex={} setup_timeout={} number='{}' display_ssi={:?}",
             network_entity,
             brew_uuid,
             call_id,
@@ -173,6 +193,7 @@ impl CcBsSubentity {
             call.destination,
             ts,
             simplex_duplex,
+            setup_timeout,
             call.number,
             calling_party_address_ssi
         );
@@ -254,7 +275,7 @@ impl CcBsSubentity {
                 state: IndividualCallState::IncomingSetupPending,
                 formal_state: CcFormalState::Idle.after(CcFormalEvent::SetupRequest),
                 setup_timer_started: Some(self.dltime),
-                setup_timeout: Some(CallTimeoutSetupPhase::T60s),
+                setup_timeout: Some(setup_timeout),
                 active_timer_started: None,
                 call_timeout,
                 called_over_brew: false,

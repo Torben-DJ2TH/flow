@@ -28,6 +28,8 @@ pub struct CfgAsterisk {
     pub password: SecretField,
     pub realm: String,
     pub options_interval_secs: u64,
+    /// Timeout for Asterisk-originated calls while waiting for the called TETRA MS to answer D-SETUP.
+    pub inbound_setup_timeout_secs: u32,
 }
 
 impl Default for CfgAsterisk {
@@ -147,6 +149,8 @@ pub struct CfgAsteriskDto {
     pub realm: String,
     #[serde(default = "default_options_interval_secs")]
     pub options_interval_secs: u64,
+    #[serde(default = "default_inbound_setup_timeout_secs")]
+    pub inbound_setup_timeout_secs: u32,
 
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
@@ -175,6 +179,7 @@ impl Default for CfgAsteriskDto {
             password: String::new(),
             realm: default_realm(),
             options_interval_secs: default_options_interval_secs(),
+            inbound_setup_timeout_secs: default_inbound_setup_timeout_secs(),
             extra: HashMap::new(),
         }
     }
@@ -248,6 +253,10 @@ fn default_options_interval_secs() -> u64 {
     30
 }
 
+fn default_inbound_setup_timeout_secs() -> u32 {
+    20
+}
+
 pub fn apply_asterisk_patch(src: CfgAsteriskDto) -> Result<CfgAsterisk, String> {
     if src.enabled {
         if src.bind_port == 0 {
@@ -306,6 +315,7 @@ pub fn apply_asterisk_patch(src: CfgAsteriskDto) -> Result<CfgAsterisk, String> 
         password: SecretField::from(src.password),
         realm: src.realm,
         options_interval_secs: src.options_interval_secs,
+        inbound_setup_timeout_secs: src.inbound_setup_timeout_secs.clamp(1, 60),
     })
 }
 
