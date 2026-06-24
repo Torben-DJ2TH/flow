@@ -814,6 +814,7 @@ impl DashboardServer {
                     caller_issi,
                     ts,
                     priority,
+                    source,
                 } => {
                     s.calls.insert(
                         *call_id,
@@ -836,7 +837,7 @@ impl DashboardServer {
                     if let Some(e) = s.ms_map.get_mut(caller_issi) {
                         e.selected_group = Some(*gssi);
                     }
-                    s.push_last_heard(*caller_issi, "call_group", *gssi);
+                    s.push_last_heard(*caller_issi, "call_group", *gssi, source, Some(*call_id));
                     // priority 15 = emergency (ETSI clause 14.8). Flag it in the live log. (The
                     // persistent emergency banner + Telegram are driven by the emergency-status
                     // alarm; an emergency-priority CALL is surfaced in the Active Calls table.)
@@ -853,13 +854,16 @@ impl DashboardServer {
                     }
                 }
                 TelemetryEvent::GroupCallEnded { call_id, gssi: _ } => {
-                    s.calls.remove(call_id);
+                    if let Some(call) = s.calls.remove(call_id) {
+                        s.finish_last_heard_call(*call_id, call.started_at.elapsed().as_secs());
+                    }
                     s.push_log("INFO", format!("Group call {} ended", call_id));
                 }
                 TelemetryEvent::GroupCallSpeakerChanged {
                     call_id,
                     gssi,
                     speaker_issi,
+                    source,
                 } => {
                     if let Some(c) = s.calls.get_mut(call_id) {
                         c.speaker_issi = Some(*speaker_issi);
@@ -868,7 +872,7 @@ impl DashboardServer {
                     if let Some(e) = s.ms_map.get_mut(speaker_issi) {
                         e.selected_group = Some(*gssi);
                     }
-                    s.push_last_heard(*speaker_issi, "call_group", *gssi);
+                    s.push_last_heard(*speaker_issi, "call_group", *gssi, source, Some(*call_id));
                 }
                 TelemetryEvent::IndividualCallStarted {
                     call_id,
@@ -877,6 +881,7 @@ impl DashboardServer {
                     simplex,
                     ts,
                     priority,
+                    source,
                 } => {
                     s.calls.insert(
                         *call_id,
@@ -893,7 +898,7 @@ impl DashboardServer {
                             priority: *priority,
                         },
                     );
-                    s.push_last_heard(*calling_issi, "call_individual", *called_issi);
+                    s.push_last_heard(*calling_issi, "call_individual", *called_issi, source, Some(*call_id));
                     // priority 15 = emergency (ETSI clause 14.8). Flag it in the live log. (The
                     // persistent emergency banner + Telegram are driven by the emergency-status
                     // alarm; an emergency-priority CALL is surfaced in the Active Calls table.)
@@ -910,7 +915,9 @@ impl DashboardServer {
                     }
                 }
                 TelemetryEvent::IndividualCallEnded { call_id } => {
-                    s.calls.remove(call_id);
+                    if let Some(call) = s.calls.remove(call_id) {
+                        s.finish_last_heard_call(*call_id, call.started_at.elapsed().as_secs());
+                    }
                     s.push_log("INFO", format!("P2P call {} ended", call_id));
                 }
                 TelemetryEvent::BrewConnected { connected, server_version } => {
@@ -923,8 +930,12 @@ impl DashboardServer {
                         s.brew_version = s.brew_version.max(*server_version);
                     }
                 }
-                TelemetryEvent::SdsActivity { source_issi, dest_issi } => {
-                    s.push_last_heard(*source_issi, "sds", *dest_issi);
+                TelemetryEvent::SdsActivity {
+                    source_issi,
+                    dest_issi,
+                    source,
+                } => {
+                    s.push_last_heard(*source_issi, "sds", *dest_issi, source, None);
                 }
                 TelemetryEvent::SdsLog {
                     direction,
@@ -1169,16 +1180,18 @@ fn event_to_ws_msg(event: &TelemetryEvent) -> Option<String> {
             caller_issi,
             ts,
             priority,
+            source,
         } => {
-            serde_json::json!({"type":"call_started","call_id":call_id,"call_type":"group","gssi":gssi,"caller_issi":caller_issi,"ts":ts,"priority":priority,"last_heard":{"issi":caller_issi,"activity":"call_group","dest":gssi}})
+            serde_json::json!({"type":"call_started","call_id":call_id,"call_type":"group","gssi":gssi,"caller_issi":caller_issi,"ts":ts,"priority":priority,"source":source,"last_heard":{"issi":caller_issi,"activity":"call_group","dest":gssi,"source":source,"call_id":call_id}})
         }
         TelemetryEvent::GroupCallEnded { call_id, gssi: _ } => serde_json::json!({"type":"call_ended","call_id":call_id}),
         TelemetryEvent::GroupCallSpeakerChanged {
             call_id,
             gssi,
             speaker_issi,
+            source,
         } => {
-            serde_json::json!({"type":"speaker_changed","call_id":call_id,"speaker_issi":speaker_issi,"last_heard":{"issi":speaker_issi,"activity":"call_group","dest":gssi}})
+            serde_json::json!({"type":"speaker_changed","call_id":call_id,"speaker_issi":speaker_issi,"source":source,"last_heard":{"issi":speaker_issi,"activity":"call_group","dest":gssi,"source":source,"call_id":call_id}})
         }
         TelemetryEvent::IndividualCallStarted {
             call_id,
@@ -1187,15 +1200,20 @@ fn event_to_ws_msg(event: &TelemetryEvent) -> Option<String> {
             simplex,
             ts,
             priority,
+            source,
         } => {
-            serde_json::json!({"type":"call_started","call_id":call_id,"call_type":"individual","caller_issi":calling_issi,"called_issi":called_issi,"simplex":simplex,"ts":ts,"priority":priority,"last_heard":{"issi":calling_issi,"activity":"call_individual","dest":called_issi}})
+            serde_json::json!({"type":"call_started","call_id":call_id,"call_type":"individual","caller_issi":calling_issi,"called_issi":called_issi,"simplex":simplex,"ts":ts,"priority":priority,"source":source,"last_heard":{"issi":calling_issi,"activity":"call_individual","dest":called_issi,"source":source,"call_id":call_id}})
         }
         TelemetryEvent::IndividualCallEnded { call_id } => serde_json::json!({"type":"call_ended","call_id":call_id}),
         TelemetryEvent::BrewConnected { connected, server_version } => {
             serde_json::json!({"type":"brew_status","connected":connected,"brew_version":server_version})
         }
-        TelemetryEvent::SdsActivity { source_issi, dest_issi } => {
-            serde_json::json!({"type":"last_heard","issi":source_issi,"activity":"sds","dest":dest_issi})
+        TelemetryEvent::SdsActivity {
+            source_issi,
+            dest_issi,
+            source,
+        } => {
+            serde_json::json!({"type":"last_heard","issi":source_issi,"activity":"sds","dest":dest_issi,"source":source})
         }
         TelemetryEvent::SdsLog {
             direction,

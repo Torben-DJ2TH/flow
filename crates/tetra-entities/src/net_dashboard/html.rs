@@ -2671,8 +2671,10 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
               <thead><tr>
                 <th data-i18n="th_time">Time</th>
                 <th data-i18n="th_issi">ISSI</th>
+                <th data-i18n="th_source">Source</th>
                 <th data-i18n="th_activity">Activity</th>
                 <th data-i18n="th_dest">Destination</th>
+                <th data-i18n="th_duration">Duration</th>
               </tr></thead>
               <tbody id="lastheard-tbody"></tbody>
             </table>
@@ -4411,7 +4413,7 @@ const LANGS={
     th_status:'Status',th_last_seen:'Last seen',th_actions:'Actions',
     th_id:'ID',th_type:'Type',th_caller:'Caller',
     th_dest:'Destination',th_speaker:'Speaker',th_duration:'Duration',
-    th_time:'Time',th_activity:'Activity',
+    th_time:'Time',th_source:'Source',th_activity:'Activity',
     last_heard_title:'Last Heard',no_activity:'No activity yet',
     act_call_group:'Group Call',act_call_individual:'P2P Call',act_sds:'SDS',
     online_badge:'ONLINE',kick:'Kick',sds:'SDS',
@@ -4514,7 +4516,7 @@ const LANGS={
     th_status:'Status',th_last_seen:'Văzut',th_actions:'Acțiuni',
     th_id:'ID',th_type:'Tip',th_caller:'Apelant',
     th_dest:'Destinatar',th_speaker:'Vorbitor',th_duration:'Durată',
-    th_time:'Oră',th_activity:'Activitate',
+    th_time:'Oră',th_source:'Sursă',th_activity:'Activitate',
     last_heard_title:'Ultima Activitate',no_activity:'Nicio activitate încă',
     act_call_group:'Apel Grup',act_call_individual:'Apel P2P',act_sds:'SDS',
     online_badge:'ONLINE',kick:'Kick',sds:'SDS',
@@ -4620,7 +4622,7 @@ const LANGS={
     th_status:'Status',th_last_seen:'Zuletzt',th_actions:'Aktionen',
     th_id:'ID',th_type:'Typ',th_caller:'Anrufer',
     th_dest:'Ziel',th_speaker:'Sprecher',th_duration:'Dauer',
-    th_time:'Zeit',th_activity:'Aktivität',
+    th_time:'Zeit',th_source:'Quelle',th_activity:'Aktivität',
     last_heard_title:'Zuletzt Gehört',no_activity:'Noch keine Aktivität',
     act_call_group:'Gruppenruf',act_call_individual:'P2P-Ruf',act_sds:'SDS',
     online_badge:'ONLINE',kick:'Entfernen',sds:'SDS',
@@ -4696,7 +4698,7 @@ const LANGS={
     th_status:'Estado',th_last_seen:'Visto',th_actions:'Acciones',
     th_id:'ID',th_type:'Tipo',th_caller:'Llamante',
     th_dest:'Destino',th_speaker:'Hablante',th_duration:'Duración',
-    th_time:'Hora',th_activity:'Actividad',
+    th_time:'Hora',th_source:'Origen',th_activity:'Actividad',
     last_heard_title:'Última Actividad',no_activity:'Sin actividad aún',
     act_call_group:'Llamada Grupo',act_call_individual:'Llamada P2P',act_sds:'SDS',
     online_badge:'EN LÍNEA',kick:'Expulsar',sds:'SDS',
@@ -4763,7 +4765,7 @@ const LANGS={
     th_status:'Állapot',th_last_seen:'Utoljára látva',th_actions:'Műveletek',
     th_id:'ID',th_type:'Típus',th_caller:'Hívó',
     th_dest:'Cél',th_speaker:'Beszélő',th_duration:'Időtartam',
-    th_time:'Idő',th_activity:'Tevékenység',
+    th_time:'Idő',th_source:'Forrás',th_activity:'Tevékenység',
     last_heard_title:'Utoljára hallott',no_activity:'Még nincs tevékenység',
     act_call_group:'Csoportos hívás',act_call_individual:'P2P hívás',act_sds:'SDS',
     online_badge:'ONLINE',kick:'Kizárás',sds:'SDS',
@@ -4832,7 +4834,7 @@ const LANGS={
     th_status:'状态',th_last_seen:'最后在线',th_actions:'操作',
     th_id:'ID',th_type:'类型',th_caller:'主叫',
     th_dest:'被叫',th_speaker:'讲话者',th_duration:'时长',
-    th_time:'时间',th_activity:'活动',
+    th_time:'时间',th_source:'来源',th_activity:'活动',
     last_heard_title:'最近通话记录',no_activity:'暂无活动记录',
     act_call_group:'组呼',act_call_individual:'点对点',act_sds:'SDS',
     online_badge:'在线',kick:'踢下线',sds:'SDS',
@@ -5573,8 +5575,10 @@ function handleMsg(msg){
       }
       renderCalls();renderLastHeard();break;
     case 'call_ended':
+      {const c=state.calls[msg.call_id];
+       if(c&&c.started_at)updateLastHeardDuration(msg.call_id,Math.max(0,Math.floor((Date.now()-c.started_at)/1000)));}
       tsClearCall(msg.call_id);updateTsBlocks();
-      delete state.calls[msg.call_id];renderCalls();break;
+      delete state.calls[msg.call_id];renderCalls();renderLastHeard();break;
     case 'ts_voice':
       tsVoice(msg.ts);break;
     case 'speaker_changed':
@@ -5590,7 +5594,7 @@ function handleMsg(msg){
       if(state.ms[msg.issi])state.ms[msg.issi].energy_saving_mode=msg.mode;
       renderStations();break;
     case 'last_heard':
-      pushLastHeard({issi:msg.issi,activity:msg.activity,dest:msg.dest,ts:new Date().toTimeString().slice(0,8)});
+      pushLastHeard({issi:msg.issi,activity:msg.activity,dest:msg.dest,source:msg.source,ts:new Date().toTimeString().slice(0,8)});
       renderLastHeard();break;
     case 'log':appendLog(msg);break;
     case 'sds_log':
@@ -5646,8 +5650,20 @@ function lastSeenLabel(secs){
 }
 function pushLastHeard(entry){
   const now=new Date().toTimeString().slice(0,8);
-  state.lastHeard.unshift({ts:entry.ts||now,issi:entry.issi,activity:entry.activity,dest:entry.dest||0});
+  state.lastHeard.unshift({
+    ts:entry.ts||now,
+    issi:entry.issi,
+    activity:entry.activity,
+    dest:entry.dest||0,
+    source:entry.source||'local',
+    call_id:entry.call_id??null,
+    duration_secs:entry.duration_secs??null
+  });
   if(state.lastHeard.length>50)state.lastHeard.length=50;
+}
+function updateLastHeardDuration(callId,durationSecs){
+  if(callId==null||durationSecs==null)return;
+  state.lastHeard.forEach(e=>{if(e.call_id!=null&&Number(e.call_id)===Number(callId)&&e.duration_secs==null)e.duration_secs=durationSecs;});
 }
 function activityBadge(activity){
   if(activity==='call_group')return`<span class="pill pill-info">${t('act_call_group')}</span>`;
@@ -5661,6 +5677,19 @@ function rssiPct(v){if(v==null)return 0;return Math.max(0,Math.min(100,(v+60)/50
 // usable=info, marginal=warn, weak/none=danger/idle.
 function rssiGaugeClass(v){if(v==null)return'is-idle';if(v>-20)return'';if(v>-30)return'is-info';if(v>-40)return'is-warn';return'is-danger';}
 function escHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function sourceBadge(source){
+  const v=String(source||'local').toLowerCase();
+  const cls={local:'pill-ok',brew:'pill-info',brew2:'pill-info',asterisk:'pill-warn',echolink:'pill-info'}[v]||'pill-idle';
+  return`<span class="pill ${cls}">${escHtml(v)}</span>`;
+}
+function lastHeardDuration(entry){
+  let secs=entry.duration_secs;
+  if((secs==null||Number.isNaN(Number(secs)))&&entry.call_id!=null&&state.calls[entry.call_id]?.started_at){
+    secs=Math.max(0,Math.floor((Date.now()-state.calls[entry.call_id].started_at)/1000));
+  }
+  if(secs==null||Number.isNaN(Number(secs)))return'<span class="muted">—</span>';
+  return`<span class="num accent">${formatDur(Math.max(0,Math.floor(Number(secs))))}</span>`;
+}
 function renderAll(){renderStations();renderCalls();renderLastHeard();updateTsBlocks();}
 
 // ── TS Visualizer ─────────────────────────────────────────────────────────
@@ -5888,14 +5917,14 @@ function renderCalls(){
 function renderLastHeard(){
   const tb=document.getElementById('lastheard-tbody');
   if(!tb)return;
-  if(!state.lastHeard.length){tb.innerHTML=`<tr><td colspan="4"><div class="empty-state"><span class="empty-ico">${svgIcon('lastheard')}</span><div class="empty-msg">${t('no_activity')}</div></div></td></tr>`;return;}
+  if(!state.lastHeard.length){tb.innerHTML=`<tr><td colspan="6"><div class="empty-state"><span class="empty-ico">${svgIcon('lastheard')}</span><div class="empty-msg">${t('no_activity')}</div></div></td></tr>`;return;}
   tb.innerHTML=state.lastHeard.map(e=>{
     const destStr=e.dest?`<code>${e.dest}</code>`:'<span class="muted">—</span>';
     const isOnline=!!state.ms[e.issi];
     const issiHtml=`${idCell(e.issi)}${isOnline?` <span class="pill pill-ok">${t('online_badge')}</span>`:''}`;
     return`<tr>
       <td><span class="num">${e.ts}</span></td>
-      <td>${issiHtml}</td><td>${activityBadge(e.activity)}</td><td>${destStr}</td>
+      <td>${issiHtml}</td><td>${sourceBadge(e.source)}</td><td>${activityBadge(e.activity)}</td><td>${destStr}</td><td>${lastHeardDuration(e)}</td>
     </tr>`;
   }).join('');
 }

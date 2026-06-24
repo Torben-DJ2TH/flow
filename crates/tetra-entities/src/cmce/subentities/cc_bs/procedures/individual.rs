@@ -90,6 +90,11 @@ impl CcBsSubentity {
             simplex: call.is_simplex(),
             ts: call.calling_ts,
             priority: call.priority,
+            source: if call.calling_over_brew {
+                crate::net_telemetry::telemetry_source_for_entity(call.network_entity()).to_string()
+            } else {
+                "local".to_string()
+            },
         });
 
         self.individual_calls.insert(call_id, call);

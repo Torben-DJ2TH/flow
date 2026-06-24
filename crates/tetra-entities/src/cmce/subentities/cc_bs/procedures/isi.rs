@@ -961,6 +961,7 @@ impl CcBsSubentity {
             caller_issi: source_issi,
             ts,
             priority,
+            source: crate::net_telemetry::telemetry_source_for_entity(network_entity).to_string(),
         });
 
         queue.push_back(SapMsg {

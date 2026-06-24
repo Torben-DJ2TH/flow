@@ -53,10 +53,13 @@ pub struct LogEntry {
 /// Last Heard entry — one entry per call start or SDS activity
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct LastHeardEntry {
-    pub ts: String,       // HH:MM:SS timestamp
-    pub issi: u32,        // source ISSI
-    pub activity: String, // "call_group", "call_individual", "sds"
-    pub dest: u32,        // destination GSSI or ISSI (0 if unknown)
+    pub ts: String,                 // HH:MM:SS timestamp
+    pub issi: u32,                  // source ISSI
+    pub activity: String,           // "call_group", "call_individual", "sds"
+    pub dest: u32,                  // destination GSSI or ISSI (0 if unknown)
+    pub source: String,             // "local", "brew", "brew2", "asterisk", "echolink"
+    pub call_id: Option<u16>,       // present for call rows, absent for one-shot activity
+    pub duration_secs: Option<u64>, // filled once a call ends; None while active / for SDS
 }
 
 /// SDS Log entry — one SDS message the BS sent or received locally. Persisted to disk
@@ -334,17 +337,28 @@ impl DashboardStateInner {
         }
     }
 
-    pub fn push_last_heard(&mut self, issi: u32, activity: &str, dest: u32) {
+    pub fn push_last_heard(&mut self, issi: u32, activity: &str, dest: u32, source: &str, call_id: Option<u16>) {
         let entry = LastHeardEntry {
             ts: chrono::Local::now().format("%H:%M:%S").to_string(),
             issi,
             activity: activity.to_string(),
             dest,
+            source: source.to_string(),
+            call_id,
+            duration_secs: None,
         };
         if self.last_heard.len() >= LAST_HEARD_MAX {
             self.last_heard.pop_back();
         }
         self.last_heard.push_front(entry);
+    }
+
+    pub fn finish_last_heard_call(&mut self, call_id: u16, duration_secs: u64) {
+        for entry in &mut self.last_heard {
+            if entry.call_id == Some(call_id) {
+                entry.duration_secs = Some(duration_secs);
+            }
+        }
     }
 
     pub fn push_log(&mut self, level: &str, msg: String) {

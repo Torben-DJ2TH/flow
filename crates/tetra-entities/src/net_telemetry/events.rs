@@ -7,6 +7,17 @@
 
 use bitcode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
+use tetra_core::tetra_entities::TetraEntity;
+
+pub fn telemetry_source_for_entity(entity: TetraEntity) -> &'static str {
+    match entity {
+        TetraEntity::Brew => "brew",
+        TetraEntity::Brew2 => "brew2",
+        TetraEntity::Asterisk => "asterisk",
+        TetraEntity::Echolink => "echolink",
+        _ => "local",
+    }
+}
 
 /// TelemetryEvent enum sent by a TetraEntity through the TelemetrySink
 /// then, serializable by any codec for transmission over the network,
@@ -39,11 +50,17 @@ pub enum TelemetryEvent {
         caller_issi: u32,
         ts: u8,
         priority: u8,
+        source: String,
     },
     /// Group call ended
     GroupCallEnded { call_id: u16, gssi: u32 },
     /// Speaker changed on active group call
-    GroupCallSpeakerChanged { call_id: u16, gssi: u32, speaker_issi: u32 },
+    GroupCallSpeakerChanged {
+        call_id: u16,
+        gssi: u32,
+        speaker_issi: u32,
+        source: String,
+    },
     /// Individual (P2P) call started. `priority` is the ETSI call priority (0..=15) from the
     /// originating U-SETUP; 15 denotes an emergency call (appended last for bitcode wire-stability).
     IndividualCallStarted {
@@ -53,6 +70,7 @@ pub enum TelemetryEvent {
         simplex: bool,
         ts: u8,
         priority: u8,
+        source: String,
     },
     /// Individual call ended
     IndividualCallEnded { call_id: u16 },
@@ -61,7 +79,7 @@ pub enum TelemetryEvent {
     /// Brew (TetraPack) backhaul connection status changed
     BrewConnected { connected: bool, server_version: u8 },
     /// SDS message activity (local delivery or group)
-    SdsActivity { source_issi: u32, dest_issi: u32 },
+    SdsActivity { source_issi: u32, dest_issi: u32, source: String },
     /// One SDS message handled by the BS, for the dashboard SDS Log tab. `direction`:
     /// "rx" = uplink received from a local MS over the air, "net" = arrived from the
     /// network (Brew/SwMI) for local delivery, "tx" = injected by the dashboard operator.

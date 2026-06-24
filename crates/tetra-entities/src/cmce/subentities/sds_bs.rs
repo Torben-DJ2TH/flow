@@ -409,6 +409,7 @@ impl SdsBsSubentity {
             self.emit(TelemetryEvent::SdsActivity {
                 source_issi: source_ssi,
                 dest_issi: dest_ssi,
+                source: "local".to_string(),
             });
             return;
         }
@@ -429,6 +430,7 @@ impl SdsBsSubentity {
             self.emit(TelemetryEvent::SdsActivity {
                 source_issi: source_ssi,
                 dest_issi: dest_ssi,
+                source: "local".to_string(),
             });
         } else if is_local_group {
             tracing::info!("SDS: group delivery: {} -> GSSI {}", source_ssi, dest_ssi);
@@ -436,6 +438,7 @@ impl SdsBsSubentity {
             self.emit(TelemetryEvent::SdsActivity {
                 source_issi: source_ssi,
                 dest_issi: dest_ssi,
+                source: "local".to_string(),
             });
         } else if let Some(brew_entity) = net_brew::route_entity_for_local_issi(&self.config, source_ssi)
             && net_brew::feature_sds_enabled_for_entity(&self.config, brew_entity)
@@ -458,6 +461,7 @@ impl SdsBsSubentity {
 
     /// Handle incoming SDS data from Brew entity (network-originated SDS)
     pub fn rx_sds_from_brew(&mut self, queue: &mut MessageQueue, message: SapMsg) {
+        let source = crate::net_telemetry::telemetry_source_for_entity(message.src);
         let SapMsgInner::CmceSdsData(sds) = message.msg else {
             tracing::error!("SDS: rx_sds_from_brew expected CmceSdsData, got unexpected message type");
             return;
@@ -485,9 +489,19 @@ impl SdsBsSubentity {
         if is_local_issi {
             // Send D-SDS-DATA downlink to the local MS on the MCCH.
             tracing::info!("SDS: local delivery from Brew: {} -> {}", sds.source_issi, sds.dest_issi);
+            self.emit(TelemetryEvent::SdsActivity {
+                source_issi: sds.source_issi,
+                dest_issi: sds.dest_issi,
+                source: source.to_string(),
+            });
             self.send_d_sds_data(queue, sds.source_issi, sds.dest_issi, SsiType::Issi, sds.user_defined_data);
         } else if is_local_group {
             tracing::info!("SDS: group delivery from Brew: {} -> GSSI {}", sds.source_issi, sds.dest_issi);
+            self.emit(TelemetryEvent::SdsActivity {
+                source_issi: sds.source_issi,
+                dest_issi: sds.dest_issi,
+                source: source.to_string(),
+            });
             self.send_d_sds_data(queue, sds.source_issi, sds.dest_issi, SsiType::Gssi, sds.user_defined_data);
         } else {
             tracing::warn!(
@@ -599,16 +613,10 @@ impl SdsBsSubentity {
         // an on-air requester that may legitimately be absent from the static registry, and those
         // must keep going out over RF — so they are intentionally excluded here.
         const DASHBOARD_ISSI: u32 = 9999;
-        let is_local_issi =
-            !dest_is_group && self.config.state_read().subscribers.is_registered(dest_ssi);
-        let is_local_group =
-            dest_is_group && self.config.state_read().subscribers.has_group_members(dest_ssi);
+        let is_local_issi = !dest_is_group && self.config.state_read().subscribers.is_registered(dest_ssi);
+        let is_local_group = dest_is_group && self.config.state_read().subscribers.has_group_members(dest_ssi);
 
-        if source_ssi == DASHBOARD_ISSI
-            && !is_local_issi
-            && !is_local_group
-            && net_brew::feature_sds_enabled(&self.config)
-        {
+        if source_ssi == DASHBOARD_ISSI && !is_local_issi && !is_local_group && net_brew::feature_sds_enabled(&self.config) {
             tracing::info!("SDS: forwarding dashboard SDS to Brew: {} -> {}", source_ssi, dest_ssi);
             queue.push_back(SapMsg {
                 sap: Sap::Control,

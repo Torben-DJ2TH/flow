@@ -289,6 +289,7 @@ impl CcBsSubentity {
             caller_issi: calling_party.ssi,
             ts: circuit.ts,
             priority: pdu.call_priority,
+            source: "local".to_string(),
         });
 
         self.notify_floor_granted(
