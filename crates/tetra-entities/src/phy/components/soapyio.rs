@@ -359,28 +359,38 @@ impl SoapyIo {
     /// Read back the currently-active TX gain per stage, in dB.
     /// Returns the same gain-element names the radio uses (e.g. "PAD","IAMP" on LimeSDR).
     pub fn read_tx_gains(&self) -> Vec<(String, f32)> {
-        if !self.tx_enabled() { return Vec::new(); }
-        self.dev.list_gains(soapysdr::Direction::Tx, self.tx_ch)
+        if !self.tx_enabled() {
+            return Vec::new();
+        }
+        self.dev
+            .list_gains(soapysdr::Direction::Tx, self.tx_ch)
             .unwrap_or_default()
             .into_iter()
             .filter_map(|name| {
                 let s = name.to_string();
-                self.dev.gain_element(soapysdr::Direction::Tx, self.tx_ch, s.clone())
-                    .ok().map(|g| (s, g as f32))
+                self.dev
+                    .gain_element(soapysdr::Direction::Tx, self.tx_ch, s.clone())
+                    .ok()
+                    .map(|g| (s, g as f32))
             })
             .collect()
     }
 
     /// Read back the currently-active RX gain per stage, in dB.
     pub fn read_rx_gains(&self) -> Vec<(String, f32)> {
-        if !self.rx_enabled() { return Vec::new(); }
-        self.dev.list_gains(soapysdr::Direction::Rx, self.rx_ch)
+        if !self.rx_enabled() {
+            return Vec::new();
+        }
+        self.dev
+            .list_gains(soapysdr::Direction::Rx, self.rx_ch)
             .unwrap_or_default()
             .into_iter()
             .filter_map(|name| {
                 let s = name.to_string();
-                self.dev.gain_element(soapysdr::Direction::Rx, self.rx_ch, s.clone())
-                    .ok().map(|g| (s, g as f32))
+                self.dev
+                    .gain_element(soapysdr::Direction::Rx, self.rx_ch, s.clone())
+                    .ok()
+                    .map(|g| (s, g as f32))
             })
             .collect()
     }

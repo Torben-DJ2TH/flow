@@ -15,10 +15,7 @@ fn string_set_toml(values: &std::collections::BTreeSet<String>) -> String {
 }
 
 /// Rewrite (or insert) the `[meshcom]` section in the TOML file. A `.meshcom.bak` backup is made.
-pub fn write_meshcom_to_toml(
-    config_path: &str,
-    ov: &MeshcomRuntimeOverride,
-) -> std::io::Result<()> {
+pub fn write_meshcom_to_toml(config_path: &str, ov: &MeshcomRuntimeOverride) -> std::io::Result<()> {
     let original = std::fs::read_to_string(config_path)?;
     let section = format!(
         "[meshcom]\n\

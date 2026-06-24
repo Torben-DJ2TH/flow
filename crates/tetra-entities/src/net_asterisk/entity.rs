@@ -103,10 +103,7 @@ impl SipMessage {
         if !self.start_line.starts_with("SIP/2.0 ") {
             return None;
         }
-        self.start_line
-            .split_whitespace()
-            .nth(1)
-            .and_then(|code| code.parse().ok())
+        self.start_line.split_whitespace().nth(1).and_then(|code| code.parse().ok())
     }
 
     fn method(&self) -> Option<&str> {
@@ -221,11 +218,7 @@ impl AsteriskEntity {
             remote: self.remote_display(),
             rtp_port_range: self.rtp_range(),
             codec: self.asterisk_config.codec.clone(),
-            active_dialogs: self
-                .dialogs
-                .values()
-                .filter(|d| d.state != DialogState::Released)
-                .count(),
+            active_dialogs: self.dialogs.values().filter(|d| d.state != DialogState::Released).count(),
             last_rx: self.last_rx.clone(),
             last_tx: self.last_tx.clone(),
             last_error: self.last_error.clone(),
@@ -387,10 +380,7 @@ impl AsteriskEntity {
 
     fn build_invite(&mut self, uuid: Uuid) -> Option<String> {
         let snapshot = self.dialogs.get(&uuid).map(SipDialogSnapshot::from_dialog)?;
-        let (rtp_port, auth) = self
-            .dialogs
-            .get(&uuid)
-            .map(|dialog| (dialog.rtp.local_port, dialog.auth.clone()))?;
+        let (rtp_port, auth) = self.dialogs.get(&uuid).map(|dialog| (dialog.rtp.local_port, dialog.auth.clone()))?;
         let request_uri = self.request_uri(&snapshot.number);
         let branch = self.next_branch();
         let body = self.build_sdp(rtp_port);
@@ -500,14 +490,7 @@ impl AsteriskEntity {
         to
     }
 
-    fn build_response(
-        &self,
-        ctx: &SipRequestContext,
-        code: u16,
-        reason: &str,
-        to_tag: Option<&str>,
-        body: Option<(&str, &str)>,
-    ) -> String {
+    fn build_response(&self, ctx: &SipRequestContext, code: u16, reason: &str, to_tag: Option<&str>, body: Option<(&str, &str)>) -> String {
         let to = Self::tagged_to(&ctx.to, to_tag);
         let (content_type, body_text) = body.unwrap_or(("", ""));
         let content_type_line = if content_type.is_empty() {
@@ -601,11 +584,7 @@ impl AsteriskEntity {
         } else {
             format!("{:x}", md5::compute(format!("{}:{}:{}", ha1, challenge.nonce, ha2)))
         };
-        let header_name = if challenge.proxy {
-            "Proxy-Authorization"
-        } else {
-            "Authorization"
-        };
+        let header_name = if challenge.proxy { "Proxy-Authorization" } else { "Authorization" };
         let mut line = format!(
             "{}: Digest username=\"{}\", realm=\"{}\", nonce=\"{}\", uri=\"{}\", response=\"{}\"",
             header_name, username, realm, challenge.nonce, uri, response
@@ -752,7 +731,10 @@ impl AsteriskEntity {
             return;
         };
         let Some(destination) = self.inbound_destination_issi(msg) else {
-            tracing::info!("AsteriskEntity: rejecting inbound INVITE without TETRA destination: {}", msg.start_line);
+            tracing::info!(
+                "AsteriskEntity: rejecting inbound INVITE without TETRA destination: {}",
+                msg.start_line
+            );
             let response = self.build_response(&ctx, 404, "Not Found", Some("flowstation"), None);
             self.send_sip_to(response, addr, "404 Not Found");
             return;
@@ -840,10 +822,7 @@ impl AsteriskEntity {
             sap: Sap::Control,
             src: TetraEntity::Asterisk,
             dest: TetraEntity::Cmce,
-            msg: SapMsgInner::CmceCallControl(CallControl::NetworkCircuitSetupRequest {
-                brew_uuid: uuid,
-                call,
-            }),
+            msg: SapMsgInner::CmceCallControl(CallControl::NetworkCircuitSetupRequest { brew_uuid: uuid, call }),
         });
     }
 
@@ -890,11 +869,7 @@ impl AsteriskEntity {
     }
 
     fn handle_inbound_connect_request(&mut self, queue: &mut MessageQueue, uuid: Uuid, call: NetworkCircuitCall) {
-        let Some((inbound, rtp_port)) = self
-            .dialogs
-            .get(&uuid)
-            .map(|dialog| (dialog.inbound, dialog.rtp.local_port))
-        else {
+        let Some((inbound, rtp_port)) = self.dialogs.get(&uuid).map(|dialog| (dialog.inbound, dialog.rtp.local_port)) else {
             return;
         };
         if !inbound {
@@ -1009,18 +984,14 @@ impl AsteriskEntity {
     }
 
     fn release_dialog(&mut self, brew_uuid: Uuid, from_cmce: bool, cause: Option<u8>) {
-        let Some((state, cancel, media_ready, inbound)) = self
-            .dialogs
-            .get(&brew_uuid)
-            .map(|dialog| {
-                (
-                    dialog.state,
-                    !matches!(dialog.state, DialogState::Established),
-                    dialog.media_ready,
-                    dialog.inbound,
-                )
-            })
-        else {
+        let Some((state, cancel, media_ready, inbound)) = self.dialogs.get(&brew_uuid).map(|dialog| {
+            (
+                dialog.state,
+                !matches!(dialog.state, DialogState::Established),
+                dialog.media_ready,
+                dialog.inbound,
+            )
+        }) else {
             return;
         };
         if from_cmce {

@@ -61,8 +61,8 @@ struct DapnetWorker {
     telemetry_sink: Option<TelemetrySink>,
     seen: HashSet<String>,
     seen_order: VecDeque<String>,
-    next_callout_incident: u16,
-    last_callout_incident_base: Option<u16>,
+    next_callout_id: u16,
+    last_callout_id_base: Option<u16>,
     last_enabled: Option<bool>,
 }
 
@@ -73,7 +73,7 @@ impl DapnetWorker {
         telegram_sink: Option<TelegramAlertSink>,
         telemetry_sink: Option<TelemetrySink>,
     ) -> Self {
-        let next_callout_incident = cfg.effective_dapnet().callout_incident_base.clamp(1, 256);
+        let next_callout_id = cfg.effective_dapnet().callout_incident_base.min(255);
         Self {
             cfg,
             cmce_cmd_tx,
@@ -81,19 +81,13 @@ impl DapnetWorker {
             telemetry_sink,
             seen: HashSet::new(),
             seen_order: VecDeque::new(),
-            next_callout_incident,
-            last_callout_incident_base: None,
+            next_callout_id,
+            last_callout_id_base: None,
             last_enabled: None,
         }
     }
 
-    fn refresh_status(
-        &self,
-        dapnet: &CfgDapnet,
-        rwth_core_status: impl Into<String>,
-        last_rx: Option<String>,
-        last_error: Option<String>,
-    ) {
+    fn refresh_status(&self, dapnet: &CfgDapnet, rwth_core_status: impl Into<String>, last_rx: Option<String>, last_error: Option<String>) {
         let mut state = self.cfg.state_write();
         let previous_last_rx = state.dapnet_status.last_rx.clone();
         state.dapnet_status = DapnetRuntimeStatus {
@@ -137,13 +131,13 @@ impl DapnetWorker {
                 if !(dapnet.forward_sds || dapnet.forward_callout || dapnet.forward_telegram) {
                     tracing::warn!("DAPNET: enabled but no forwarding target is enabled");
                 }
-                self.last_callout_incident_base = None;
+                self.last_callout_id_base = None;
                 self.last_enabled = Some(true);
             }
-            let incident_base = dapnet.callout_incident_base.clamp(1, 256);
-            if self.last_callout_incident_base != Some(incident_base) {
-                self.next_callout_incident = incident_base;
-                self.last_callout_incident_base = Some(incident_base);
+            let callout_id_base = dapnet.callout_incident_base.min(255);
+            if self.last_callout_id_base != Some(callout_id_base) {
+                self.next_callout_id = callout_id_base;
+                self.last_callout_id_base = Some(callout_id_base);
             }
 
             if dapnet.rwth_core_enabled {
@@ -207,10 +201,7 @@ impl DapnetWorker {
                         Err(err) => return Err(err),
                     }
                 }
-                Err(err)
-                    if err.kind() == std::io::ErrorKind::WouldBlock
-                        || err.kind() == std::io::ErrorKind::TimedOut =>
-                {
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock || err.kind() == std::io::ErrorKind::TimedOut => {
                     continue;
                 }
                 Err(err) => return Err(format!("read failed: {}", err)),
@@ -227,13 +218,7 @@ impl DapnetWorker {
         write_wire(stream, &login)
     }
 
-    fn handle_rwth_line(
-        &mut self,
-        dapnet: &CfgDapnet,
-        stream: &mut TcpStream,
-        line: &str,
-        logged_in: &mut bool,
-    ) -> Result<(), String> {
+    fn handle_rwth_line(&mut self, dapnet: &CfgDapnet, stream: &mut TcpStream, line: &str, logged_in: &mut bool) -> Result<(), String> {
         if line.starts_with('+') {
             return Ok(());
         }
@@ -271,12 +256,7 @@ impl DapnetWorker {
         write_wire(stream, "-\r\n")
     }
 
-    fn handle_rwth_message(
-        &mut self,
-        dapnet: &CfgDapnet,
-        stream: &mut TcpStream,
-        line: &str,
-    ) -> Result<(), String> {
+    fn handle_rwth_message(&mut self, dapnet: &CfgDapnet, stream: &mut TcpStream, line: &str) -> Result<(), String> {
         let msg_id = match rwth_line_id(line) {
             Some(id) => id,
             None => {
@@ -437,7 +417,14 @@ impl DapnetWorker {
         let Some(tx) = self.cmce_cmd_tx.clone() else {
             return Err("CMCE control sender unavailable".to_string());
         };
-        let incident = self.next_incident();
+        let callout_id = self.next_callout_id();
+        let priority = dapnet
+            .callout_issi_priorities
+            .get(&dapnet.callout_dest_issi)
+            .or_else(|| dapnet.callout_tpg_ric_priorities.get(&dapnet.callout_tpg_ric))
+            .copied()
+            .unwrap_or(dapnet.callout_priority)
+            .min(15);
         let callout_text = prefixed_text(&dapnet.callout_text_prefix, &msg.text);
         let (callout_text, truncated) = truncate_chars(&callout_text, CALLOUT_TEXT_MAX_CHARS);
         if truncated {
@@ -447,14 +434,16 @@ impl DapnetWorker {
                 CALLOUT_TEXT_MAX_CHARS
             );
         }
-        let payload = build_tpg2200_callout_payload(incident, &callout_text);
+        let payload = build_tpg2200_callout_payload(dapnet.callout_tpg_ric, callout_id, priority, &callout_text);
         if payload.len() > (u16::MAX as usize / 8) {
             return Err(format!("payload too large ({} bytes)", payload.len()));
         }
         tracing::debug!(
-            "DAPNET: TPG2200 Call-Out id={} incident={} dest={} payload=[{}]",
+            "DAPNET: TPG2200 Call-Out id={} tpg_ric={:08X} callout_id={} priority={} dest={} payload=[{}]",
             msg.id,
-            incident,
+            dapnet.callout_tpg_ric,
+            callout_id,
+            priority,
             dapnet.callout_dest_issi,
             format_hex_bytes(&payload)
         );
@@ -477,10 +466,10 @@ impl DapnetWorker {
         Ok(())
     }
 
-    fn next_incident(&mut self) -> u16 {
-        let incident = self.next_callout_incident.clamp(1, 256);
-        self.next_callout_incident = if incident >= 256 { 1 } else { incident + 1 };
-        incident
+    fn next_callout_id(&mut self) -> u16 {
+        let callout_id = self.next_callout_id.min(255);
+        self.next_callout_id = if callout_id >= 255 { 0 } else { callout_id + 1 };
+        callout_id
     }
 }
 
@@ -504,7 +493,11 @@ fn dapnet_version(version: &str) -> String {
 
 fn non_empty_or(value: &str, fallback: &str) -> String {
     let trimmed = value.trim();
-    if trimmed.is_empty() { fallback.to_string() } else { trimmed.to_string() }
+    if trimmed.is_empty() {
+        fallback.to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 fn rwth_line_id(line: &str) -> Option<u8> {
@@ -518,38 +511,25 @@ fn rwth_ack_line(msg_id: u8, ok: bool) -> String {
     format!("#{ack_id:02x} {status}\r\n")
 }
 
-fn resolve_sds_destination(
-    dapnet: &CfgDapnet,
-    msg: &DapnetMessage,
-) -> Result<(u32, bool, String), String> {
+fn resolve_sds_destination(dapnet: &CfgDapnet, msg: &DapnetMessage) -> Result<(u32, bool, String), String> {
     if let Some(ric) = msg.ric {
         if let Some(gssi) = dapnet.ric_gssi_routes.get(&ric) {
             return Ok((
                 *gssi,
                 true,
-                format!(
-                    "ric-group:{}",
-                    tetra_config::bluestation::format_ric_route_key(ric)
-                ),
+                format!("ric-group:{}", tetra_config::bluestation::format_ric_route_key(ric)),
             ));
         }
         if let Some(issi) = dapnet.ric_issi_routes.get(&ric) {
             return Ok((
                 *issi,
                 false,
-                format!(
-                    "ric:{}",
-                    tetra_config::bluestation::format_ric_route_key(ric)
-                ),
+                format!("ric:{}", tetra_config::bluestation::format_ric_route_key(ric)),
             ));
         }
     }
     if dapnet.sds_dest_issi != 0 {
-        return Ok((
-            dapnet.sds_dest_issi,
-            dapnet.sds_dest_is_group,
-            "default".to_string(),
-        ));
+        return Ok((dapnet.sds_dest_issi, dapnet.sds_dest_is_group, "default".to_string()));
     }
     if let Some(ric) = msg.ric {
         Err(format!(
@@ -573,16 +553,12 @@ fn ric_allowed(allowed_rics: &std::collections::BTreeSet<u32>, msg: &DapnetMessa
 
 fn parse_rwth_message(line: &str) -> Result<DapnetMessage, String> {
     let msg_id = rwth_line_id(line).ok_or_else(|| "invalid message id".to_string())?;
-    let body = line
-        .get(4..)
-        .ok_or_else(|| "message line too short".to_string())?;
+    let body = line.get(4..).ok_or_else(|| "message line too short".to_string())?;
     let parts: Vec<&str> = body.splitn(5, ':').collect();
     if parts.len() != 5 {
         return Err("expected five colon-separated fields".to_string());
     }
-    let msg_type = parts[0]
-        .parse::<u8>()
-        .map_err(|_| format!("invalid message type '{}'", parts[0]))?;
+    let msg_type = parts[0].parse::<u8>().map_err(|_| format!("invalid message type '{}'", parts[0]))?;
     let speed = parts[1].parse::<u8>().ok();
     let ric = u32::from_str_radix(parts[2], 16).ok();
     let function = parts[3].parse::<u8>().ok();
@@ -592,11 +568,7 @@ fn parse_rwth_message(line: &str) -> Result<DapnetMessage, String> {
     }
     let recipient = match (ric, function) {
         (Some(ric), Some(function)) => {
-            format!(
-                "RIC {} / func {}",
-                tetra_config::bluestation::format_ric_route_key(ric),
-                function
-            )
+            format!("RIC {} / func {}", tetra_config::bluestation::format_ric_route_key(ric), function)
         }
         (Some(ric), None) => {
             format!("RIC {}", tetra_config::bluestation::format_ric_route_key(ric))
@@ -643,13 +615,7 @@ fn decode_dapnet_text(text: &str) -> String {
 
 fn rot1_decode(text: &str) -> String {
     text.chars()
-        .map(|c| {
-            if ('!'..='~').contains(&c) {
-                ((c as u8) - 1) as char
-            } else {
-                c
-            }
-        })
+        .map(|c| if ('!'..='~').contains(&c) { ((c as u8) - 1) as char } else { c })
         .collect()
 }
 
@@ -671,14 +637,10 @@ fn strip_skyper_rubric_prefix(text: &str) -> Option<&str> {
     if first == ':' && second == ' ' {
         return Some(&text[third_idx..]);
     }
-    if first.is_ascii_punctuation()
-        && (second.is_ascii_punctuation() || second.is_ascii_whitespace() || second.is_ascii_digit())
-    {
+    if first.is_ascii_punctuation() && (second.is_ascii_punctuation() || second.is_ascii_whitespace() || second.is_ascii_digit()) {
         return Some(&text[third_idx..]);
     }
-    if matches!(first, 'Q' | 'q' | 'Y' | 'y' | 'N' | 'n')
-        && (second.is_ascii_punctuation() || second.is_ascii_whitespace())
-    {
+    if matches!(first, 'Q' | 'q' | 'Y' | 'y' | 'N' | 'n') && (second.is_ascii_punctuation() || second.is_ascii_whitespace()) {
         return Some(&text[third_idx..]);
     }
     None
@@ -711,10 +673,7 @@ fn should_decode_rot1(raw: &str, decoded: &str) -> bool {
     // DAPNET/Skyper rubrics are ROT-1 encrypted: spaces appear as '!', ':' as ';',
     // and '.' as '/'. Plain DAPNET messages from the core already contain normal spaces
     // and must stay untouched.
-    encoded_spaces >= 2
-        && encoded_spaces > raw_spaces
-        && decoded_spaces >= encoded_spaces
-        && encoded_punctuation > 0
+    encoded_spaces >= 2 && encoded_spaces > raw_spaces && decoded_spaces >= encoded_spaces && encoded_punctuation > 0
 }
 
 fn extract_callsign(text: &str) -> Option<String> {
@@ -725,9 +684,7 @@ fn extract_callsign(text: &str) -> Option<String> {
         }
         let has_alpha = cleaned.chars().any(|c| c.is_ascii_alphabetic());
         let has_digit = cleaned.chars().any(|c| c.is_ascii_digit());
-        let valid = cleaned
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '/');
+        let valid = cleaned.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '/');
         if has_alpha && has_digit && valid {
             return Some(cleaned.to_ascii_uppercase());
         }
@@ -771,9 +728,8 @@ fn sanitize_log_line(line: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        dapnet_version, decode_dapnet_text, extract_callsign, format_plain_message,
-        parse_rwth_message, prefixed_text, resolve_sds_destination, ric_allowed, rwth_ack_line,
-        truncate_chars,
+        dapnet_version, decode_dapnet_text, extract_callsign, format_plain_message, parse_rwth_message, prefixed_text,
+        resolve_sds_destination, ric_allowed, rwth_ack_line, truncate_chars,
     };
     use tetra_config::bluestation::CfgDapnet;
 
@@ -797,23 +753,12 @@ mod tests {
 
     #[test]
     fn dapnet_text_decodes_skyper_rot1_but_keeps_plain_text() {
-        let darc_70mhz =
-            ";#EBSD;!Cvoeftsbut.Esvdltbdif!efgjojfsu!jo!Gvopuf!Sfdiutsbinfo!g~s!81.NI{.Cfusjfc";
-        let nordsee =
-            "\\&Opsetff;!33/17/37!27;41!Ifmhpmboe!Cjoofoibgfo!679/1dn!NOX;vocflboou";
+        let darc_70mhz = ";#EBSD;!Cvoeftsbut.Esvdltbdif!efgjojfsu!jo!Gvopuf!Sfdiutsbinfo!g~s!81.NI{.Cfusjfc";
+        let nordsee = "\\&Opsetff;!33/17/37!27;41!Ifmhpmboe!Cjoofoibgfo!679/1dn!NOX;vocflboou";
 
-        assert_eq!(
-            decode_dapnet_text("Tfu!pg!JTT!bu!19;67!VUD/"),
-            "Set of ISS at 08:56 UTC."
-        );
-        assert_eq!(
-            decode_dapnet_text("R#Tfu!pg!JTT!bu!19;67!VUD/"),
-            "Set of ISS at 08:56 UTC."
-        );
-        assert_eq!(
-            decode_dapnet_text(";!EBSD;!SUUZ.Uifnfobcfoe"),
-            "DARC: RTTY-Themenabend"
-        );
+        assert_eq!(decode_dapnet_text("Tfu!pg!JTT!bu!19;67!VUD/"), "Set of ISS at 08:56 UTC.");
+        assert_eq!(decode_dapnet_text("R#Tfu!pg!JTT!bu!19;67!VUD/"), "Set of ISS at 08:56 UTC.");
+        assert_eq!(decode_dapnet_text(";!EBSD;!SUUZ.Uifnfobcfoe"), "DARC: RTTY-Themenabend");
         assert_eq!(
             decode_dapnet_text(darc_70mhz),
             "DARC: Bundesrats-Drucksache definiert in Funote Rechtsrahmen für 70-MHz-Betrieb"

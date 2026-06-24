@@ -242,8 +242,7 @@ impl MmBs {
         }
         // Never key a radio that isn't permitted on this network — same scoping as init_recovery:
         // the access-control whitelist plus the optional recovery allowlist.
-        let permitted = cfg.security.is_issi_allowed(issi)
-            && (rec.issi_allowlist.is_empty() || rec.issi_allowlist.contains(&issi));
+        let permitted = cfg.security.is_issi_allowed(issi) && (rec.issi_allowlist.is_empty() || rec.issi_allowlist.contains(&issi));
         if !permitted {
             return;
         }
@@ -259,8 +258,7 @@ impl MmBs {
         }
         // Prune lapsed entries before growing the map past its safety cap.
         if self.reactive_recovery_cooldown.len() >= REACTIVE_RECOVERY_COOLDOWN_CAP {
-            self.reactive_recovery_cooldown
-                .retain(|_, t| now.duration_since(*t) < cooldown);
+            self.reactive_recovery_cooldown.retain(|_, t| now.duration_since(*t) < cooldown);
         }
         self.reactive_recovery_cooldown.insert(issi, now);
 

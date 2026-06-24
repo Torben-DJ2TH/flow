@@ -19,11 +19,7 @@ fn string_array_toml(values: &[String]) -> String {
 }
 
 fn u32_array_toml(values: &[u32]) -> String {
-    values
-        .iter()
-        .map(|v| v.to_string())
-        .collect::<Vec<_>>()
-        .join(", ")
+    values.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", ")
 }
 
 fn routes_toml(routes: &std::collections::BTreeMap<String, String>) -> String {
@@ -35,10 +31,7 @@ fn routes_toml(routes: &std::collections::BTreeMap<String, String>) -> String {
 }
 
 /// Rewrite (or insert) the `[echolink]` section in the TOML file. A `.echolink.bak` backup is made.
-pub fn write_echolink_to_toml(
-    config_path: &str,
-    ov: &EcholinkRuntimeOverride,
-) -> std::io::Result<()> {
+pub fn write_echolink_to_toml(config_path: &str, ov: &EcholinkRuntimeOverride) -> std::io::Result<()> {
     let original = std::fs::read_to_string(config_path)?;
     let section = format!(
         "[echolink]\n\

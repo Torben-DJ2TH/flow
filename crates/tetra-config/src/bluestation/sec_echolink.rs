@@ -143,10 +143,7 @@ fn default_status_text() -> String {
 }
 
 fn default_directory_servers() -> Vec<String> {
-    vec![
-        "servers.echolink.org".to_string(),
-        "backup.echolink.org".to_string(),
-    ]
+    vec!["servers.echolink.org".to_string(), "backup.echolink.org".to_string()]
 }
 
 fn default_directory_port() -> u16 {
@@ -251,13 +248,7 @@ fn normalize_callsign(callsign: &str) -> String {
 fn normalize_string_list(values: Vec<String>, callsigns: bool) -> Vec<String> {
     values
         .into_iter()
-        .map(|s| {
-            if callsigns {
-                normalize_callsign(&s)
-            } else {
-                s.trim().to_string()
-            }
-        })
+        .map(|s| if callsigns { normalize_callsign(&s) } else { s.trim().to_string() })
         .filter(|s| !s.is_empty())
         .collect()
 }

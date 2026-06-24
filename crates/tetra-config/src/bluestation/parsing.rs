@@ -487,7 +487,11 @@ callout_allowed_rics = ["0004520"]
 telegram_allowed_rics = ["0000200", "0x1C40"]
 callout_source_issi = 9999
 callout_dest_issi = 1234567
-callout_incident_base = 2
+callout_tpg_ric = 593168
+callout_id_base = 33
+callout_priority = 15
+callout_issi_priorities = { "1234567" = 4 }
+callout_tpg_ric_priorities = { "0x00090D10" = 15 }
 callout_text_prefix = "DAPNET"
 telegram_prefix = "DAPNET"
 rwth_core_enabled = true
@@ -551,7 +555,11 @@ enabled = true
 token = "example-token"
 source_issi = 9999
 dest_issi = 1234567
-incident_base = 1
+ric = 593168
+callout_id_base = 17
+priority = 15
+issi_priorities = { "1234567" = 12 }
+ric_priorities = { "0x00090D10" = 15 }
 default_text = "ALARM"
 max_text_chars = 80
 
@@ -614,7 +622,16 @@ sds_queue_critical = 128
         assert_eq!(cfg.asterisk.service_numbers, vec!["600".to_string(), "601".to_string()]);
         assert!(cfg.dapnet.enabled);
         assert!(cfg.dapnet.rwth_core_enabled);
-        assert_eq!(cfg.dapnet.callout_incident_base, 2);
+        assert_eq!(cfg.tpg2200_action.incident_base, 17);
+        assert_eq!(cfg.tpg2200_action.priority, 15);
+        assert_eq!(cfg.tpg2200_action.ric, 593168);
+        assert_eq!(cfg.tpg2200_action.issi_priorities.get(&1234567), Some(&12));
+        assert_eq!(cfg.tpg2200_action.ric_priorities.get(&0x0009_0D10), Some(&15));
+        assert_eq!(cfg.dapnet.callout_incident_base, 33);
+        assert_eq!(cfg.dapnet.callout_tpg_ric, 593168);
+        assert_eq!(cfg.dapnet.callout_priority, 15);
+        assert_eq!(cfg.dapnet.callout_issi_priorities.get(&1234567), Some(&4));
+        assert_eq!(cfg.dapnet.callout_tpg_ric_priorities.get(&0x0009_0D10), Some(&15));
         assert_eq!(cfg.dapnet.ric_issi_routes.get(&632585), Some(&2632585));
         assert_eq!(cfg.dapnet.ric_issi_routes.get(&632586), Some(&2632586));
         assert_eq!(cfg.dapnet.ric_gssi_routes.get(&4520), Some(&80));

@@ -373,9 +373,8 @@ impl TxDsp {
             modulators.push(ModulatorChannel::new(fft_planner, fcfb_params, *dl_freq, modulator::Mode::Dl));
         }
 
-        let monitor = telemetry.map(|sink| {
-            TxSignalMonitor::new(fft_planner, sink, sdr_sample_rate as RealSample, sdr.tx_center_frequency().unwrap())
-        });
+        let monitor = telemetry
+            .map(|sink| TxSignalMonitor::new(fft_planner, sink, sdr_sample_rate as RealSample, sdr.tx_center_frequency().unwrap()));
 
         Self {
             fcfb,
@@ -662,7 +661,7 @@ impl TxSignalMonitor {
 
     fn observe(&mut self, samples: &[ComplexSample], _tx_slots: &[TxSlotBits], _block_count: fcfb::BlockCount) {
         let now = std::time::Instant::now();
-        let need_visual  = now >= self.next_visual_emit;
+        let need_visual = now >= self.next_visual_emit;
         let need_quality = now >= self.next_quality_emit;
         if (!need_visual && !need_quality) || samples.len() < Self::FFT_LEN {
             return;
@@ -687,15 +686,15 @@ impl TxSignalMonitor {
             peak2 = peak2.max(p);
             sum2 += p;
             if need_quality {
-                sum_i  += sample.re;
-                sum_q  += sample.im;
+                sum_i += sample.re;
+                sum_q += sample.im;
                 sum_i2 += sample.re * sample.re;
                 sum_q2 += sample.im * sample.im;
                 sum_iq += sample.re * sample.im;
             }
         }
         let rms = (sum2 / n).sqrt();
-        let rms_dbfs  = 20.0 * rms.max(1.0e-12).log10();
+        let rms_dbfs = 20.0 * rms.max(1.0e-12).log10();
         let peak_dbfs = 20.0 * peak2.sqrt().max(1.0e-12).log10();
 
         // ── FFT (needed for spectrum AND for carrier-leak/OBW) ────────────
@@ -758,13 +757,17 @@ impl TxSignalMonitor {
             let var_q = (sum_q2 / n) - dc_offset_q * dc_offset_q;
             let iq_amplitude_imbalance_db = if var_i > 1.0e-12 && var_q > 1.0e-12 {
                 10.0 * (var_i / var_q).log10()
-            } else { 0.0 };
+            } else {
+                0.0
+            };
 
             // IQ phase imbalance via E[I·Q] normalized by sqrt(Var(I)·Var(Q)).
             let cov_iq = (sum_iq / n) - dc_offset_i * dc_offset_q;
             let phase_sin = if var_i > 1.0e-12 && var_q > 1.0e-12 {
                 (cov_iq / (var_i * var_q).sqrt()).clamp(-1.0, 1.0)
-            } else { 0.0 };
+            } else {
+                0.0
+            };
             let iq_phase_imbalance_deg = phase_sin.asin().to_degrees();
 
             // Carrier leakage: DC-bin power vs total.
@@ -824,7 +827,10 @@ impl TxSignalMonitor {
                     // and accumulate squared error.
                     let angle = derotated.im.atan2(derotated.re).rem_euclid(std::f32::consts::TAU);
                     let ideal_angle = (angle / std::f32::consts::FRAC_PI_4).round() * std::f32::consts::FRAC_PI_4;
-                    let ideal = ComplexSample { re: ideal_angle.cos(), im: ideal_angle.sin() };
+                    let ideal = ComplexSample {
+                        re: ideal_angle.cos(),
+                        im: ideal_angle.sin(),
+                    };
                     let err = derotated - ideal;
                     err_sum += err.norm_sqr();
                     err_count += 1;
@@ -875,9 +881,13 @@ impl TxSignalMonitor {
 /// FFT order — bin 0 = DC, bins 1..N/2 = positive freqs, bins N/2..N = negative.
 fn occupied_bandwidth(mag2_unshifted: &[RealSample], sample_rate: RealSample, fraction: RealSample) -> RealSample {
     let n = mag2_unshifted.len();
-    if n < 4 { return 0.0; }
+    if n < 4 {
+        return 0.0;
+    }
     let total: RealSample = mag2_unshifted.iter().sum::<RealSample>();
-    if total <= 1.0e-12 { return 0.0; }
+    if total <= 1.0e-12 {
+        return 0.0;
+    }
     let target = total * fraction;
 
     // Accumulate DC bin first, then symmetric pairs (k, N-k) representing +/- k.
@@ -1058,7 +1068,9 @@ impl SdrHealthMonitor {
 
     fn tick(&mut self, sdr: &soapyio::SoapyIo) {
         let now = std::time::Instant::now();
-        if now < self.next_emit { return; }
+        if now < self.next_emit {
+            return;
+        }
         self.next_emit = now + self.interval;
 
         // Only the temperature is read live — it's a single sensor read and the value

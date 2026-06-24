@@ -3,12 +3,10 @@ use std::ptr::NonNull;
 
 pub(crate) const ECHOLINK_GSM_FRAME_BYTES: usize = 33;
 pub(crate) const ECHOLINK_GSM_FRAMES_PER_PACKET: usize = 4;
-pub(crate) const ECHOLINK_GSM_PACKET_BYTES: usize =
-    ECHOLINK_GSM_FRAME_BYTES * ECHOLINK_GSM_FRAMES_PER_PACKET;
+pub(crate) const ECHOLINK_GSM_PACKET_BYTES: usize = ECHOLINK_GSM_FRAME_BYTES * ECHOLINK_GSM_FRAMES_PER_PACKET;
 
 const PCM_SAMPLES_PER_GSM_FRAME: usize = 160;
-const PCM_SAMPLES_PER_ECHOLINK_PACKET: usize =
-    PCM_SAMPLES_PER_GSM_FRAME * ECHOLINK_GSM_FRAMES_PER_PACKET;
+const PCM_SAMPLES_PER_ECHOLINK_PACKET: usize = PCM_SAMPLES_PER_GSM_FRAME * ECHOLINK_GSM_FRAMES_PER_PACKET;
 
 const TETRA_PCM_SAMPLES_PER_FRAME: usize = 240;
 const TETRA_PCM_SAMPLES_PER_BLOCK: usize = TETRA_PCM_SAMPLES_PER_FRAME * 2;
@@ -141,13 +139,7 @@ impl EcholinkAudioTranscoder {
         for frame_idx in 0..complete_frames {
             let offset = frame_idx * ECHOLINK_GSM_FRAME_BYTES;
             let mut pcm = [0i16; PCM_SAMPLES_PER_GSM_FRAME];
-            let rc = unsafe {
-                gsm_decode(
-                    self.gsm.ptr.as_ptr(),
-                    payload[offset..].as_ptr(),
-                    pcm.as_mut_ptr(),
-                )
-            };
+            let rc = unsafe { gsm_decode(self.gsm.ptr.as_ptr(), payload[offset..].as_ptr(), pcm.as_mut_ptr()) };
             if rc == 0 {
                 self.gsm_to_tetra_pcm.extend_from_slice(&pcm);
             }
@@ -158,24 +150,14 @@ impl EcholinkAudioTranscoder {
             let mut pcm_a = [0i16; TETRA_PCM_SAMPLES_PER_FRAME];
             let mut pcm_b = [0i16; TETRA_PCM_SAMPLES_PER_FRAME];
             pcm_a.copy_from_slice(&self.gsm_to_tetra_pcm[..TETRA_PCM_SAMPLES_PER_FRAME]);
-            pcm_b.copy_from_slice(
-                &self.gsm_to_tetra_pcm[TETRA_PCM_SAMPLES_PER_FRAME..TETRA_PCM_SAMPLES_PER_BLOCK],
-            );
+            pcm_b.copy_from_slice(&self.gsm_to_tetra_pcm[TETRA_PCM_SAMPLES_PER_FRAME..TETRA_PCM_SAMPLES_PER_BLOCK]);
             self.gsm_to_tetra_pcm.drain(..TETRA_PCM_SAMPLES_PER_BLOCK);
 
             let mut coded_a = [0u8; TETRA_CODED_BYTES_PER_FRAME];
             let mut coded_b = [0u8; TETRA_CODED_BYTES_PER_FRAME];
             unsafe {
-                tetra_encode(
-                    self.tetra_encoder.ptr.as_ptr(),
-                    pcm_a.as_ptr(),
-                    coded_a.as_mut_ptr(),
-                );
-                tetra_encode(
-                    self.tetra_encoder.ptr.as_ptr(),
-                    pcm_b.as_ptr(),
-                    coded_b.as_mut_ptr(),
-                );
+                tetra_encode(self.tetra_encoder.ptr.as_ptr(), pcm_a.as_ptr(), coded_a.as_mut_ptr());
+                tetra_encode(self.tetra_encoder.ptr.as_ptr(), pcm_b.as_ptr(), coded_b.as_mut_ptr());
             }
             out.push(join_codec_frames_to_tmd_block(&coded_a, &coded_b));
         }
@@ -183,9 +165,7 @@ impl EcholinkAudioTranscoder {
     }
 }
 
-fn split_tmd_block_to_codec_frames(
-    data: &[u8],
-) -> Option<[[u8; TETRA_CODED_BYTES_PER_FRAME]; 2]> {
+fn split_tmd_block_to_codec_frames(data: &[u8]) -> Option<[[u8; TETRA_CODED_BYTES_PER_FRAME]; 2]> {
     let packed = if data.len() == TETRA_TMD_PACKED_BYTES + 1 {
         Some(&data[1..])
     } else if data.len() == TETRA_TMD_PACKED_BYTES {
@@ -220,17 +200,10 @@ fn split_tmd_block_to_codec_frames(
     Some(frames)
 }
 
-fn join_codec_frames_to_tmd_block(
-    frame_a: &[u8; TETRA_CODED_BYTES_PER_FRAME],
-    frame_b: &[u8; TETRA_CODED_BYTES_PER_FRAME],
-) -> Vec<u8> {
+fn join_codec_frames_to_tmd_block(frame_a: &[u8; TETRA_CODED_BYTES_PER_FRAME], frame_b: &[u8; TETRA_CODED_BYTES_PER_FRAME]) -> Vec<u8> {
     let mut out = vec![0u8; TETRA_TMD_PACKED_BYTES];
     for bit_idx in 0..TETRA_TMD_BITS_PER_BLOCK {
-        let frame = if bit_idx < TETRA_CODED_BITS_PER_FRAME {
-            frame_a
-        } else {
-            frame_b
-        };
+        let frame = if bit_idx < TETRA_CODED_BITS_PER_FRAME { frame_a } else { frame_b };
         let frame_bit = bit_idx % TETRA_CODED_BITS_PER_FRAME;
         set_packed_bit(&mut out, bit_idx, get_packed_bit(frame, frame_bit));
     }

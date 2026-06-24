@@ -105,7 +105,12 @@ fn test_bl_ack_with_piggyback_cmce_payload_is_forwarded() {
     let sink_msgs = test.dump_sinks();
 
     assert_eq!(sink_msgs.len(), 1);
-    let SapMsgInner::TlaTlDataIndBl(TlaTlDataIndBl { link_id, tl_sdu: Some(mut sdu), .. }) = sink_msgs[0].msg.clone() else {
+    let SapMsgInner::TlaTlDataIndBl(TlaTlDataIndBl {
+        link_id,
+        tl_sdu: Some(mut sdu),
+        ..
+    }) = sink_msgs[0].msg.clone()
+    else {
         panic!("expected TlaTlDataIndBl with piggyback payload");
     };
     assert_eq!(link_id, 0);

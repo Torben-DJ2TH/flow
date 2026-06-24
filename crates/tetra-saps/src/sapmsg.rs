@@ -83,11 +83,18 @@ pub enum SapMsgInner {
     /// CMCE -> MM: dashboard-originated DGNA (Dynamic Group Number Assignment). The dashboard's
     /// control channel terminates at CMCE, but the group attach/detach machinery lives in MM, so
     /// CMCE forwards the request here. `attach` = true assigns the GSSI, false deassigns it.
-    MmDgnaRequest { issi: u32, gssi: u32, attach: bool },
+    MmDgnaRequest {
+        issi: u32,
+        gssi: u32,
+        attach: bool,
+    },
 
     /// Sent by UMAC to MM when a UL burst is received from a known MS.
     /// MM stores the RSSI value per MS for logging and future handover decisions.
-    MsRssiUpdate { issi: u32, rssi_dbfs: f32 },
+    MsRssiUpdate {
+        issi: u32,
+        rssi_dbfs: f32,
+    },
 
     /// Sent by BrewEntity to MM when the Brew backhaul reconnects.
     /// MM responds by sending D-LOCATION-UPDATE-COMMAND to all locally registered MS,
@@ -128,7 +135,9 @@ impl Display for SapMsgInner {
 
             // Control/Brew
             SapMsgInner::MmSubscriberUpdate(_) => write!(f, "MmSubscriberUpdate"),
-            SapMsgInner::MmDgnaRequest { issi, gssi, attach } => write!(f, "MmDgnaRequest(issi={}, gssi={}, attach={})", issi, gssi, attach),
+            SapMsgInner::MmDgnaRequest { issi, gssi, attach } => {
+                write!(f, "MmDgnaRequest(issi={}, gssi={}, attach={})", issi, gssi, attach)
+            }
             SapMsgInner::MsRssiUpdate { issi, rssi_dbfs } => write!(f, "MsRssiUpdate(issi={}, rssi={:.1}dBFS)", issi, rssi_dbfs),
 
             // TLB-SAP

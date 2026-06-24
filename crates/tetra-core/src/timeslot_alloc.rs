@@ -21,13 +21,11 @@ pub enum TimeslotAllocErr {
     },
 }
 
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct TimeslotAllocator {
     // Index 0 = TS2, 1 = TS3, 2 = TS4
     owners: [Option<TimeslotOwner>; 3],
 }
-
 
 impl TimeslotAllocator {
     fn idx(ts: u8) -> Result<usize, TimeslotAllocErr> {

@@ -853,7 +853,11 @@ impl CcBsSubentity {
 
     fn fsm_on_u_info_modify(&mut self, queue: &mut MessageQueue, sender: TetraAddress, call: &IndividualCall, call_id: u16, modify: u64) {
         if call.called_over_brew || call.calling_over_brew {
-            unimplemented_log!("U-INFO modify over network bridge not supported call_id={} modify=0x{:03x}", call_id, modify);
+            unimplemented_log!(
+                "U-INFO modify over network bridge not supported call_id={} modify=0x{:03x}",
+                call_id,
+                modify
+            );
             return;
         }
 

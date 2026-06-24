@@ -74,7 +74,10 @@ impl CircuitMgr {
             Direction::Ul => {
                 let dl_is_both = if let Some(dl) = &self.dl[ts as usize - 1] {
                     if self.ul_only[ts as usize - 1].is_some() {
-                        tracing::warn!("CMCE: circuit_mgr ts={} has both dl and ul_only set simultaneously (invariant violation)", ts);
+                        tracing::warn!(
+                            "CMCE: circuit_mgr ts={} has both dl and ul_only set simultaneously (invariant violation)",
+                            ts
+                        );
                     }
                     dl.direction == Direction::Both
                 } else {
@@ -99,7 +102,10 @@ impl CircuitMgr {
         };
         let ul_usage = if dl_is_both {
             if self.ul_only[ts as usize - 1].is_some() {
-                tracing::warn!("CMCE: circuit_mgr ts={} get_usage has both Dl+Ul circuit and ul_only set simultaneously (invariant violation)", ts);
+                tracing::warn!(
+                    "CMCE: circuit_mgr ts={} get_usage has both Dl+Ul circuit and ul_only set simultaneously (invariant violation)",
+                    ts
+                );
             }
             dl_usage
         } else if let Some(ul) = &self.ul_only[ts as usize - 1] {
@@ -348,7 +354,9 @@ impl CircuitMgr {
                     // Already closed by normal release path racing with the expiry timer — safe to ignore.
                     tracing::debug!(
                         "circuit_mgr: expiry close skipped for call_id={} ts={} dir={:?} (already closed)",
-                        call_id, ts, dir
+                        call_id,
+                        ts,
+                        dir
                     );
                 }
             }

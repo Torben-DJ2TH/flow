@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::bluestation::SecretField;
 
@@ -6,14 +7,20 @@ use crate::bluestation::SecretField;
 ///
 /// Intended for desk phones such as Snom: a function key calls
 /// `/api/action/tpg2200?token=...`, FlowStation sends a configured Type-4 SDS to the configured
-/// TPG2200 ISSI, and the incident number advances in memory after each successful trigger.
+/// TPG2200 ISSI, and the raw Call-Out ID byte advances in memory after each successful trigger.
 #[derive(Debug, Clone)]
 pub struct CfgTpg2200Action {
     pub enabled: bool,
     pub token: SecretField,
     pub source_issi: u32,
     pub dest_issi: u32,
+    pub ric: u32,
+    /// Raw TPG2200 Call-Out ID byte to start from. The historic field name stays
+    /// for compatibility with older code paths and config files.
     pub incident_base: u16,
+    pub priority: u8,
+    pub issi_priorities: BTreeMap<u32, u8>,
+    pub ric_priorities: BTreeMap<u32, u8>,
     pub default_text: String,
     pub max_text_chars: usize,
 }
@@ -25,7 +32,11 @@ impl Default for CfgTpg2200Action {
             token: SecretField::from(String::new()),
             source_issi: 9999,
             dest_issi: 0,
-            incident_base: 1,
+            ric: default_tpg2200_ric(),
+            incident_base: default_callout_id_base(),
+            priority: default_priority(),
+            issi_priorities: BTreeMap::new(),
+            ric_priorities: BTreeMap::new(),
             default_text: "ALARM".to_string(),
             max_text_chars: 80,
         }
@@ -42,8 +53,18 @@ pub struct CfgTpg2200ActionDto {
     pub source_issi: u32,
     #[serde(default)]
     pub dest_issi: u32,
-    #[serde(default = "default_incident_base")]
-    pub incident_base: u16,
+    #[serde(default = "default_tpg2200_ric")]
+    pub ric: u32,
+    #[serde(default)]
+    pub callout_id_base: Option<u16>,
+    #[serde(default)]
+    pub incident_base: Option<u16>,
+    #[serde(default = "default_priority")]
+    pub priority: u8,
+    #[serde(default)]
+    pub issi_priorities: HashMap<String, u8>,
+    #[serde(default)]
+    pub ric_priorities: HashMap<String, u8>,
     #[serde(default = "default_text")]
     pub default_text: String,
     #[serde(default = "default_max_text_chars")]
@@ -60,7 +81,12 @@ impl Default for CfgTpg2200ActionDto {
             token: String::new(),
             source_issi: default_source_issi(),
             dest_issi: 0,
-            incident_base: default_incident_base(),
+            ric: default_tpg2200_ric(),
+            callout_id_base: None,
+            incident_base: None,
+            priority: default_priority(),
+            issi_priorities: HashMap::new(),
+            ric_priorities: HashMap::new(),
             default_text: default_text(),
             max_text_chars: default_max_text_chars(),
             extra: std::collections::HashMap::new(),
@@ -72,8 +98,31 @@ fn default_source_issi() -> u32 {
     9999
 }
 
-fn default_incident_base() -> u16 {
-    1
+fn default_callout_id_base() -> u16 {
+    0x11
+}
+
+fn default_tpg2200_ric() -> u32 {
+    0x0009_0D10
+}
+
+fn default_priority() -> u8 {
+    15
+}
+
+fn legacy_incident_selector(incident: u16) -> u16 {
+    let incident = incident.clamp(1, 256);
+    let zero_based = incident - 1;
+    let major = ((zero_based + 1) & 0x0F) as u16;
+    let minor = (((zero_based / 16) + 1) & 0x0F) as u16;
+    (major << 4) | minor
+}
+
+fn select_callout_id_base(dto: &CfgTpg2200ActionDto) -> u16 {
+    dto.callout_id_base
+        .map(|id| id.min(255))
+        .or_else(|| dto.incident_base.map(legacy_incident_selector))
+        .unwrap_or_else(default_callout_id_base)
 }
 
 fn default_text() -> String {
@@ -85,6 +134,7 @@ fn default_max_text_chars() -> usize {
 }
 
 pub fn apply_tpg2200_action_patch(dto: CfgTpg2200ActionDto) -> Result<CfgTpg2200Action, String> {
+    let callout_id_base = select_callout_id_base(&dto);
     if dto.enabled {
         if dto.token.trim().is_empty() {
             return Err("tpg2200_action: token cannot be empty when enabled".to_string());
@@ -97,18 +147,63 @@ pub fn apply_tpg2200_action_patch(dto: CfgTpg2200ActionDto) -> Result<CfgTpg2200
         }
     }
     if dto.token.chars().any(|c| c.is_whitespace() || c.is_control()) {
-        return Err(
-            "tpg2200_action: token must not contain spaces or control characters".to_string(),
-        );
+        return Err("tpg2200_action: token must not contain spaces or control characters".to_string());
     }
+    let issi_priorities = normalize_issi_priorities(dto.issi_priorities)?;
+    let ric_priorities = normalize_ric_priorities(dto.ric_priorities)?;
 
     Ok(CfgTpg2200Action {
         enabled: dto.enabled,
         token: SecretField::from(dto.token),
         source_issi: dto.source_issi,
         dest_issi: dto.dest_issi,
-        incident_base: dto.incident_base.clamp(1, 256),
+        ric: dto.ric,
+        incident_base: callout_id_base,
+        priority: dto.priority.min(15),
+        issi_priorities,
+        ric_priorities,
         default_text: dto.default_text.trim().to_string(),
         max_text_chars: dto.max_text_chars.clamp(1, 240),
     })
+}
+
+fn normalize_issi_priorities(values: HashMap<String, u8>) -> Result<BTreeMap<u32, u8>, String> {
+    let mut out = BTreeMap::new();
+    for (raw_issi, priority) in values {
+        let issi = raw_issi
+            .trim()
+            .parse::<u32>()
+            .map_err(|_| format!("tpg2200_action: invalid ISSI priority key '{raw_issi}'"))?;
+        if issi == 0 || issi > 16_777_215 {
+            return Err(format!("tpg2200_action: ISSI priority key {raw_issi} must be 1..=16777215"));
+        }
+        if priority > 15 {
+            return Err(format!("tpg2200_action: priority for ISSI {issi} must be 0..=15"));
+        }
+        out.insert(issi, priority);
+    }
+    Ok(out)
+}
+
+fn normalize_ric_priorities(values: HashMap<String, u8>) -> Result<BTreeMap<u32, u8>, String> {
+    let mut out = BTreeMap::new();
+    for (raw_ric, priority) in values {
+        let ric = parse_tpg_ric_key(&raw_ric)?;
+        if priority > 15 {
+            return Err(format!("tpg2200_action: priority for TPG RIC {raw_ric} must be 0..=15"));
+        }
+        out.insert(ric, priority);
+    }
+    Ok(out)
+}
+
+fn parse_tpg_ric_key(raw: &str) -> Result<u32, String> {
+    let key = raw.trim();
+    if key.is_empty() {
+        return Err("empty TPG RIC key".to_string());
+    }
+    if let Some(hex) = key.strip_prefix("0x").or_else(|| key.strip_prefix("0X")) {
+        return u32::from_str_radix(hex, 16).map_err(|_| format!("invalid hex TPG RIC key '{raw}'"));
+    }
+    key.parse::<u32>().map_err(|_| format!("invalid decimal TPG RIC key '{raw}'"))
 }

@@ -1,4 +1,6 @@
-use tetra_core::{BitBuffer, Direction, LinkId, PhyBlockNum, PhysicalChannel, SsiType, TdmaTime, TetraAddress, Todo, TxReporter, unimplemented_log};
+use tetra_core::{
+    BitBuffer, Direction, LinkId, PhyBlockNum, PhysicalChannel, SsiType, TdmaTime, TetraAddress, Todo, TxReporter, unimplemented_log,
+};
 use tetra_saps::{
     control::call_control::{Circuit, CircuitDlMediaSource},
     tmv::{TmvUnitdataReq, TmvUnitdataReqSlot, enums::logical_chans::LogicalChannel},
@@ -530,7 +532,13 @@ impl BsChannelScheduler {
     /// `usage_marker` is set when the grant covers >1 slot — the MS uses it to identify the reservation
     /// when continuing the burst on the second slot (per ETSI §21.4.3.2). Single-slot grants pass None.
     pub fn dl_enqueue_grant(&mut self, ts: u8, addr: TetraAddress, grant: BasicSlotgrant, usage_marker: Option<u8>) {
-        tracing::debug!("dl_enqueue_grant: ts {} enqueueing PDU {:?} for addr {} marker {:?}", ts, grant, addr, usage_marker);
+        tracing::debug!(
+            "dl_enqueue_grant: ts {} enqueueing PDU {:?} for addr {} marker {:?}",
+            ts,
+            grant,
+            addr,
+            usage_marker
+        );
         let elem = DlSchedElem::Grant(addr, grant, usage_marker);
         self.dltx_queues[ts as usize - 1].push(elem);
     }
@@ -680,7 +688,11 @@ impl BsChannelScheduler {
     /// Use this to deliberately separate two MCCH messages that would overflow the slot
     /// if sent together (e.g. DConnect MCCH + DConnectAck MCCH = 223 bits > 216-bit slot).
     pub fn dl_enqueue_tma_next_frame(&mut self, pdu: MacResource, sdu: BitBuffer, tx_reporter: Option<TxReporter>) {
-        tracing::debug!("dl_enqueue_tma_next_frame: deferring PDU {:?} SDU {} to next frame", pdu, sdu.dump_bin());
+        tracing::debug!(
+            "dl_enqueue_tma_next_frame: deferring PDU {:?} SDU {} to next frame",
+            pdu,
+            sdu.dump_bin()
+        );
         let elem = DlSchedElem::Resource(pdu, sdu, tx_reporter);
         self.dltx_next_slot_queue.push(elem);
     }
@@ -896,7 +908,7 @@ impl BsChannelScheduler {
             let addr = match &elem {
                 DlSchedElem::Grant(addr, _, _) => addr,
                 DlSchedElem::RandomAccessAck(addr) => addr,
-                _ => unreachable!("BUG: unhandled match variant -- should never be reached")
+                _ => unreachable!("BUG: unhandled match variant -- should never be reached"),
             };
             let mac_resource = self.dl_get_scheduled_resource_for_ssi(ts, addr);
             match mac_resource {
@@ -927,7 +939,7 @@ impl BsChannelScheduler {
                             );
                             pdu.random_access_flag = true;
                         }
-                        _ => unreachable!("BUG: unhandled match variant -- should never be reached")
+                        _ => unreachable!("BUG: unhandled match variant -- should never be reached"),
                     }
                 }
                 None => {
@@ -952,14 +964,14 @@ impl BsChannelScheduler {
                             );
                             Self::dl_make_minimal_resource(addr, None, true)
                         }
-                        _ => unreachable!("BUG: unhandled match variant -- should never be reached")
+                        _ => unreachable!("BUG: unhandled match variant -- should never be reached"),
                     };
 
                     // Push new resource into the queue. These do not need a tx_reporter
                     let dlsched_res = DlSchedElem::Resource(pdu, BitBuffer::new(0), None);
                     self.dltx_queues[ts.t as usize - 1].push(dlsched_res);
                 }
-                _ => unreachable!("BUG: unhandled match variant -- should never be reached")
+                _ => unreachable!("BUG: unhandled match variant -- should never be reached"),
             }
         }
     }
@@ -1524,7 +1536,7 @@ impl BsChannelScheduler {
                             scrambling_code: self.scrambling_code,
                         }
                     }
-                    _ => unreachable!("BUG: unhandled match variant -- should never be reached") // never happens
+                    _ => unreachable!("BUG: unhandled match variant -- should never be reached"), // never happens
                 }
             }
             (1..=17, 2..=4) | (18, _) => {
@@ -1538,7 +1550,7 @@ impl BsChannelScheduler {
                     scrambling_code: scrambler::SCRAMB_INIT,
                 }
             }
-            _ => unreachable!("BUG: unhandled match variant -- should never be reached") // never happens
+            _ => unreachable!("BUG: unhandled match variant -- should never be reached"), // never happens
         }
     }
 
@@ -1822,8 +1834,9 @@ mod tests {
         sched.dump_ul_schedule(true);
         let resreq2 = ReservationRequirement::Req3Slots;
         let Some((grant2, _marker)) = sched.ul_process_cap_req(1, addr, &resreq2) else {
-                tracing::error!("BUG: unexpected message or state -- routing error"); return;
-            };
+            tracing::error!("BUG: unexpected message or state -- routing error");
+            return;
+        };
         tracing::info!("grant2: {:?}", grant2);
         sched.dump_ul_schedule(true);
 

@@ -107,10 +107,7 @@ impl<D: RxTxDev> PhyBs<D> {
                 // mismatch (DSP glitch, misconfiguration) would otherwise panic on the
                 // slice index below — drop and log instead so the cell survives.
                 if burst.bits.len() != NUB_BITS {
-                    tracing::warn!(
-                        "PHY: NUB burst wrong length ({} != {}), dropping",
-                        burst.bits.len(), NUB_BITS
-                    );
+                    tracing::warn!("PHY: NUB burst wrong length ({} != {}), dropping", burst.bits.len(), NUB_BITS);
                     return;
                 }
 
@@ -119,30 +116,48 @@ impl<D: RxTxDev> PhyBs<D> {
                 blk.copy_bits_from_bitarr(&burst.bits[NUB_BLK2_OFFSET..NUB_BLK2_OFFSET + NUB_BLK_BITS]);
                 blk.seek(0);
 
-                Self::send_rxblock_to_lmac(queue, train_seq, BurstType::NUB, PhyBlockType::NUB, PhyBlockNum::Both, blk, burst.rssi_dbfs);
+                Self::send_rxblock_to_lmac(
+                    queue,
+                    train_seq,
+                    BurstType::NUB,
+                    PhyBlockType::NUB,
+                    PhyBlockNum::Both,
+                    blk,
+                    burst.rssi_dbfs,
+                );
             }
 
             TrainingSequence::NormalTrainSeq2 => {
                 if burst.bits.len() != NUB_BITS {
-                    tracing::warn!(
-                        "PHY: NUB burst wrong length ({} != {}), dropping",
-                        burst.bits.len(), NUB_BITS
-                    );
+                    tracing::warn!("PHY: NUB burst wrong length ({} != {}), dropping", burst.bits.len(), NUB_BITS);
                     return;
                 }
 
                 let blk1 = BitBuffer::from_bitarr(&burst.bits[NUB_BLK1_OFFSET..NUB_BLK1_OFFSET + NUB_BLK_BITS]);
                 let blk2 = BitBuffer::from_bitarr(&burst.bits[NUB_BLK2_OFFSET..NUB_BLK2_OFFSET + NUB_BLK_BITS]);
 
-                Self::send_rxblock_to_lmac(queue, train_seq, BurstType::NUB, PhyBlockType::NUB, PhyBlockNum::Block1, blk1, burst.rssi_dbfs);
-                Self::send_rxblock_to_lmac(queue, train_seq, BurstType::NUB, PhyBlockType::NUB, PhyBlockNum::Block2, blk2, burst.rssi_dbfs);
+                Self::send_rxblock_to_lmac(
+                    queue,
+                    train_seq,
+                    BurstType::NUB,
+                    PhyBlockType::NUB,
+                    PhyBlockNum::Block1,
+                    blk1,
+                    burst.rssi_dbfs,
+                );
+                Self::send_rxblock_to_lmac(
+                    queue,
+                    train_seq,
+                    BurstType::NUB,
+                    PhyBlockType::NUB,
+                    PhyBlockNum::Block2,
+                    blk2,
+                    burst.rssi_dbfs,
+                );
             }
             TrainingSequence::ExtendedTrainSeq => {
                 if burst.bits.len() != CUB_BITS {
-                    tracing::warn!(
-                        "PHY: CUB burst wrong length ({} != {}), dropping",
-                        burst.bits.len(), CUB_BITS
-                    );
+                    tracing::warn!("PHY: CUB burst wrong length ({} != {}), dropping", burst.bits.len(), CUB_BITS);
                     return;
                 }
 
@@ -151,7 +166,15 @@ impl<D: RxTxDev> PhyBs<D> {
                 blk.copy_bits_from_bitarr(&burst.bits[CUB_BLK2_OFFSET..CUB_BLK2_OFFSET + CUB_BLK_BITS]);
                 blk.seek(0);
 
-                Self::send_rxblock_to_lmac(queue, train_seq, BurstType::CUB, PhyBlockType::SSN1, PhyBlockNum::Block1, blk, burst.rssi_dbfs);
+                Self::send_rxblock_to_lmac(
+                    queue,
+                    train_seq,
+                    BurstType::CUB,
+                    PhyBlockType::SSN1,
+                    PhyBlockNum::Block1,
+                    blk,
+                    burst.rssi_dbfs,
+                );
             }
 
             // SyncTrainSeq, NormalTrainSeq3 and NotFound are not handled here (sync bursts
@@ -171,7 +194,10 @@ impl<D: RxTxDev> PhyBs<D> {
 
         self.tick += 1;
 
-        let SapMsgInner::TpUnitdataReq(prim) = message.msg else { tracing::error!("BUG: unexpected message or state -- routing error"); return; };
+        let SapMsgInner::TpUnitdataReq(prim) = message.msg else {
+            tracing::error!("BUG: unexpected message or state -- routing error");
+            return;
+        };
 
         // Generate block (from file or from LMAC data)
         let mut dl_burst = [0u8; TIMESLOT_TYPE4_BITS];
@@ -224,7 +250,7 @@ impl<D: RxTxDev> PhyBs<D> {
 
                     slotter::build_ndb(prim.train_type, &blk1, &bbk, &blk2)
                 }
-                _ => unreachable!("BUG: unhandled match variant -- should never be reached")
+                _ => unreachable!("BUG: unhandled match variant -- should never be reached"),
             };
         }
 
@@ -324,7 +350,8 @@ impl<D: RxTxDev + Send + 'static> TetraEntityTrait for PhyBs<D> {
                 self.rx_tpc_prim(queue, message);
             }
             _ => {
-                tracing::error!("BUG: unexpected message or state -- routing error"); return;
+                tracing::error!("BUG: unexpected message or state -- routing error");
+                return;
             }
         }
     }

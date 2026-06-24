@@ -1,7 +1,7 @@
 mod common;
 
-use tetra_core::Direction;
 use tetra_config::bluestation::StackMode;
+use tetra_core::Direction;
 use tetra_core::tetra_entities::TetraEntity;
 use tetra_core::{BitBuffer, Layer2Service, PhyBlockNum, Sap, SsiType, TdmaTime, TetraAddress, debug};
 use tetra_pdus::umac::pdus::mac_access::MacAccess;
@@ -14,8 +14,8 @@ use tetra_saps::lcmc::enums::ul_dl_assignment::UlDlAssignment;
 use tetra_saps::lcmc::fields::chan_alloc_req::CmceChanAllocReq;
 use tetra_saps::lmm::LmmMleUnitdataReq;
 use tetra_saps::sapmsg::{SapMsg, SapMsgInner};
-use tetra_saps::tmd::TmdCircuitDataReq;
 use tetra_saps::tma::{TmaUnitdataInd, TmaUnitdataReq};
+use tetra_saps::tmd::TmdCircuitDataReq;
 use tetra_saps::tmv::{TmvUnitdataInd, enums::logical_chans::LogicalChannel};
 
 use crate::common::ComponentTest;
@@ -166,10 +166,7 @@ fn test_ul_mac_u_signal_uses_floor_owner_and_timeslot_link() {
     test.dump_sinks();
 
     let mut pdu = BitBuffer::new_autoexpand(16);
-    MacUSignal {
-        second_half_stolen: false,
-    }
-    .to_bitbuf(&mut pdu);
+    MacUSignal { second_half_stolen: false }.to_bitbuf(&mut pdu);
     pdu.write_bits(0b1010_1010, 8);
     pdu.seek(0);
 
@@ -378,7 +375,10 @@ fn test_facch_stealing_does_not_set_random_access_flag_without_pending_ra() {
     test.populate_entities(components, sinks);
 
     let ts = 2u8;
-    let dest = TetraAddress { ssi: 2200699, ssi_type: SsiType::Issi };
+    let dest = TetraAddress {
+        ssi: 2200699,
+        ssi_type: SsiType::Issi,
+    };
 
     test.submit_message(open_shared_voice_circuit(ts));
     test.run_stack(Some(1));
@@ -457,7 +457,10 @@ fn test_traffic_mac_access_does_not_mark_next_facch_as_random_access() {
     test.populate_entities(components, sinks);
 
     let ts = 2u8;
-    let dest = TetraAddress { ssi: 2200699, ssi_type: SsiType::Issi };
+    let dest = TetraAddress {
+        ssi: 2200699,
+        ssi_type: SsiType::Issi,
+    };
 
     test.submit_message(open_shared_voice_circuit(ts));
     test.run_stack(Some(1));
@@ -574,7 +577,10 @@ fn test_stealing_large_sdu_fragments_without_panic() {
     test.populate_entities(components, sinks);
 
     let ts = 2u8;
-    let dest = TetraAddress { ssi: 2260575, ssi_type: SsiType::Issi };
+    let dest = TetraAddress {
+        ssi: 2260575,
+        ssi_type: SsiType::Issi,
+    };
 
     // Open a DL+UL traffic circuit on ts 2 so the stealing path has an active circuit to steal
     // a half-slot from (otherwise it falls back to the MCCH and the bug isn't exercised).

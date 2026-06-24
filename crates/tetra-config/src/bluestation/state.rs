@@ -222,7 +222,11 @@ pub struct DapnetRuntimeOverride {
     pub telegram_allowed_rics: std::collections::BTreeSet<u32>,
     pub callout_source_issi: u32,
     pub callout_dest_issi: u32,
+    pub callout_tpg_ric: u32,
     pub callout_incident_base: u16,
+    pub callout_priority: u8,
+    pub callout_issi_priorities: std::collections::BTreeMap<u32, u8>,
+    pub callout_tpg_ric_priorities: std::collections::BTreeMap<u32, u8>,
     pub callout_text_prefix: String,
     pub telegram_prefix: String,
     pub rwth_core_enabled: bool,
@@ -325,7 +329,11 @@ pub struct GeoalarmRuntimeOverride {
     pub sds_dest_is_group: bool,
     pub tpg2200_source_issi: u32,
     pub tpg2200_dest_issi: u32,
+    pub tpg2200_ric: u32,
     pub tpg2200_incident_base: u16,
+    pub tpg2200_priority: u8,
+    pub tpg2200_issi_priorities: std::collections::BTreeMap<u32, u8>,
+    pub tpg2200_ric_priorities: std::collections::BTreeMap<u32, u8>,
     pub tpg2200_text_prefix: String,
     pub tpg2200_max_text_chars: usize,
     pub sip_title_prefix: String,
@@ -636,7 +644,7 @@ pub struct StackState {
     /// Runtime override for Snom XML NOTIFY settings. See SnomNotifyRuntimeOverride.
     pub snom_notify_override: Option<SnomNotifyRuntimeOverride>,
     /// Next TPG2200 ActionURL incident number. Initialised lazily from `[tpg2200_action]`.
-    pub tpg2200_action_next_incident: Option<u16>,
+    pub tpg2200_action_next_callout_id: Option<u16>,
     /// Runtime Asterisk SIP/RTP bridge status for `/api/asterisk/status` and the dashboard tab.
     pub asterisk_status: AsteriskRuntimeStatus,
     /// Runtime DAPNET receiver/forwarding status for `/api/dapnet` and the Health tab.
@@ -785,7 +793,7 @@ impl Default for StackState {
             meshcom_override: None,
             geoalarm_override: None,
             snom_notify_override: None,
-            tpg2200_action_next_incident: None,
+            tpg2200_action_next_callout_id: None,
             asterisk_status: AsteriskRuntimeStatus::default(),
             dapnet_status: DapnetRuntimeStatus::default(),
             echolink_status: EcholinkRuntimeStatus::default(),

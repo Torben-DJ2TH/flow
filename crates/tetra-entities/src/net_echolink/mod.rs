@@ -8,8 +8,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use tetra_config::bluestation::{
-    CfgEcholink, EcholinkDirectoryStationStatus, EcholinkRuntimeStatus, SharedConfig,
-    normalize_echolink_target,
+    CfgEcholink, EcholinkDirectoryStationStatus, EcholinkRuntimeStatus, SharedConfig, normalize_echolink_target,
 };
 use tetra_core::{Sap, TdmaTime, tetra_entities::TetraEntity};
 use tetra_pdus::cmce::enums::call_timeout::CallTimeout;
@@ -22,9 +21,7 @@ use uuid::Uuid;
 
 use crate::{MessageQueue, TetraEntityTrait};
 
-use self::audio::{
-    ECHOLINK_GSM_FRAME_BYTES, ECHOLINK_GSM_PACKET_BYTES, EcholinkAudioTranscoder,
-};
+use self::audio::{ECHOLINK_GSM_FRAME_BYTES, ECHOLINK_GSM_PACKET_BYTES, EcholinkAudioTranscoder};
 
 const RTP_VERSION_ECHOLINK: u8 = 3;
 const RTCP_RR: u8 = 201;
@@ -56,7 +53,10 @@ enum EcholinkDirectoryEvent {
         callsign: String,
         stations: Vec<DirectoryStation>,
     },
-    Error { generation: u64, message: String },
+    Error {
+        generation: u64,
+        message: String,
+    },
 }
 
 pub type EcholinkCmdSender = crossbeam_channel::Sender<EcholinkCommand>;
@@ -156,17 +156,13 @@ impl EcholinkEntity {
 
     fn refresh_status(&mut self) {
         let cfg = self.effective();
-        let connected = self
-            .dialogs
-            .iter()
-            .find(|d| d.state != QsoState::Released)
-            .map(|d| {
-                if d.remote_call.is_empty() {
-                    d.target.clone()
-                } else {
-                    d.remote_call.clone()
-                }
-            });
+        let connected = self.dialogs.iter().find(|d| d.state != QsoState::Released).map(|d| {
+            if d.remote_call.is_empty() {
+                d.target.clone()
+            } else {
+                d.remote_call.clone()
+            }
+        });
         let qso_status = if self.dialogs.iter().any(|d| d.state == QsoState::Connected) {
             "connected"
         } else if self.dialogs.iter().any(|d| d.state == QsoState::Connecting) {
@@ -221,8 +217,7 @@ impl EcholinkEntity {
             self.audio_bind = None;
         }
         if self.audio_socket.is_none() {
-            let socket = UdpSocket::bind(&audio_bind)
-                .map_err(|e| format!("audio UDP bind {} failed: {}", audio_bind, e))?;
+            let socket = UdpSocket::bind(&audio_bind).map_err(|e| format!("audio UDP bind {} failed: {}", audio_bind, e))?;
             socket
                 .set_nonblocking(true)
                 .map_err(|e| format!("audio UDP nonblocking failed: {}", e))?;
@@ -235,8 +230,7 @@ impl EcholinkEntity {
             self.control_bind = None;
         }
         if self.control_socket.is_none() {
-            let socket = UdpSocket::bind(&control_bind)
-                .map_err(|e| format!("control UDP bind {} failed: {}", control_bind, e))?;
+            let socket = UdpSocket::bind(&control_bind).map_err(|e| format!("control UDP bind {} failed: {}", control_bind, e))?;
             socket
                 .set_nonblocking(true)
                 .map_err(|e| format!("control UDP nonblocking failed: {}", e))?;
@@ -306,13 +300,7 @@ impl EcholinkEntity {
         }
     }
 
-    fn start_outbound_call(
-        &mut self,
-        queue: &mut MessageQueue,
-        cfg: &CfgEcholink,
-        brew_uuid: Uuid,
-        call: NetworkCircuitCall,
-    ) {
+    fn start_outbound_call(&mut self, queue: &mut MessageQueue, cfg: &CfgEcholink, brew_uuid: Uuid, call: NetworkCircuitCall) {
         if !cfg.outbound_enabled {
             self.reject_setup(queue, brew_uuid, 34);
             return;
@@ -463,10 +451,7 @@ impl EcholinkEntity {
                     sap: Sap::Control,
                     src: TetraEntity::Echolink,
                     dest: TetraEntity::Cmce,
-                    msg: SapMsgInner::CmceCallControl(CallControl::NetworkCircuitConnectRequest {
-                        brew_uuid: uuid,
-                        call,
-                    }),
+                    msg: SapMsgInner::CmceCallControl(CallControl::NetworkCircuitConnectRequest { brew_uuid: uuid, call }),
                 });
             }
             ConnectAction::StartTetraLeg(uuid, call) => {
@@ -474,10 +459,7 @@ impl EcholinkEntity {
                     sap: Sap::Control,
                     src: TetraEntity::Echolink,
                     dest: TetraEntity::Cmce,
-                    msg: SapMsgInner::CmceCallControl(CallControl::NetworkCircuitSetupRequest {
-                        brew_uuid: uuid,
-                        call,
-                    }),
+                    msg: SapMsgInner::CmceCallControl(CallControl::NetworkCircuitSetupRequest { brew_uuid: uuid, call }),
                 });
             }
             ConnectAction::Release(reason) => {
@@ -489,12 +471,7 @@ impl EcholinkEntity {
     }
 
     fn mark_media_ready(&mut self, brew_uuid: Uuid, call_id: u16, ts: u8) {
-        if let Some((idx, dialog)) = self
-            .dialogs
-            .iter_mut()
-            .enumerate()
-            .find(|(_, d)| d.uuid == Some(brew_uuid))
-        {
+        if let Some((idx, dialog)) = self.dialogs.iter_mut().enumerate().find(|(_, d)| d.uuid == Some(brew_uuid)) {
             dialog.media_ready = Some((call_id, ts));
             self.dialog_by_ts.insert(ts, idx);
             tracing::info!("EchoLink: media ready uuid={} call_id={} ts={}", brew_uuid, call_id, ts);
@@ -507,13 +484,7 @@ impl EcholinkEntity {
         }
     }
 
-    fn release_dialog_idx(
-        &mut self,
-        queue: &mut MessageQueue,
-        idx: usize,
-        from_cmce: bool,
-        send_bye: bool,
-    ) {
+    fn release_dialog_idx(&mut self, queue: &mut MessageQueue, idx: usize, from_cmce: bool, send_bye: bool) {
         if idx >= self.dialogs.len() {
             return;
         }
@@ -571,7 +542,11 @@ impl EcholinkEntity {
                 .map(|payloads| (remote_audio, seq, payloads))
         };
         let Some((remote_audio, start_seq, payloads)) = decoded else {
-            self.set_error(format!("dropping unsupported TETRA audio block ts={} len={}", prim.ts, prim.data.len()));
+            self.set_error(format!(
+                "dropping unsupported TETRA audio block ts={} len={}",
+                prim.ts,
+                prim.data.len()
+            ));
             return;
         };
         let mut seq = start_seq;
@@ -677,13 +652,7 @@ impl EcholinkEntity {
         }
     }
 
-    fn handle_control_packet(
-        &mut self,
-        queue: &mut MessageQueue,
-        cfg: &CfgEcholink,
-        packet: &[u8],
-        addr: SocketAddr,
-    ) {
+    fn handle_control_packet(&mut self, queue: &mut MessageQueue, cfg: &CfgEcholink, packet: &[u8], addr: SocketAddr) {
         if is_rtcp_bye(packet) {
             if let Some(idx) = self.find_dialog_by_ip(addr.ip()) {
                 self.last_rx = Some(format!("BYE from {}", addr));
@@ -695,12 +664,7 @@ impl EcholinkEntity {
         }
 
         if let Some(remote_name) = parse_rtcp_sdes_name(packet) {
-            let remote_call = remote_name
-                .split_whitespace()
-                .next()
-                .unwrap_or("")
-                .trim()
-                .to_ascii_uppercase();
+            let remote_call = remote_name.split_whitespace().next().unwrap_or("").trim().to_ascii_uppercase();
             if remote_call.is_empty() {
                 return;
             }
@@ -734,13 +698,7 @@ impl EcholinkEntity {
         }
     }
 
-    fn start_inbound_call(
-        &mut self,
-        queue: &mut MessageQueue,
-        cfg: &CfgEcholink,
-        remote_call: String,
-        remote_control: SocketAddr,
-    ) {
+    fn start_inbound_call(&mut self, queue: &mut MessageQueue, cfg: &CfgEcholink, remote_call: String, remote_control: SocketAddr) {
         let Some(audio) = EcholinkAudioTranscoder::new() else {
             self.set_error("EchoLink codec allocation failed for inbound QSO");
             self.send_bye_to(remote_control);
@@ -787,10 +745,7 @@ impl EcholinkEntity {
             sap: Sap::Control,
             src: TetraEntity::Echolink,
             dest: TetraEntity::Cmce,
-            msg: SapMsgInner::CmceCallControl(CallControl::NetworkCircuitSetupRequest {
-                brew_uuid: uuid,
-                call,
-            }),
+            msg: SapMsgInner::CmceCallControl(CallControl::NetworkCircuitSetupRequest { brew_uuid: uuid, call }),
         });
         tracing::info!(
             "EchoLink: inbound QSO {} from {} -> {} {}",
@@ -844,9 +799,7 @@ impl EcholinkEntity {
         let now = Instant::now();
         let mut idxs = Vec::new();
         for (idx, dialog) in self.dialogs.iter().enumerate() {
-            if dialog.state != QsoState::Released
-                && now.duration_since(dialog.last_sdes) >= KEEPALIVE_INTERVAL
-            {
+            if dialog.state != QsoState::Released && now.duration_since(dialog.last_sdes) >= KEEPALIVE_INTERVAL {
                 idxs.push(idx);
             }
         }
@@ -859,9 +812,7 @@ impl EcholinkEntity {
         let now = Instant::now();
         let mut idx = 0;
         while idx < self.dialogs.len() {
-            if self.dialogs[idx].state == QsoState::Connecting
-                && now.duration_since(self.dialogs[idx].started) >= CONNECT_TIMEOUT
-            {
+            if self.dialogs[idx].state == QsoState::Connecting && now.duration_since(self.dialogs[idx].started) >= CONNECT_TIMEOUT {
                 let target = self.dialogs[idx].target.clone();
                 self.set_error(format!("connect to {target} timed out"));
                 self.release_dialog_idx(queue, idx, false, true);
@@ -872,9 +823,7 @@ impl EcholinkEntity {
     }
 
     fn find_dialog_by_ip(&self, ip: IpAddr) -> Option<usize> {
-        self.dialogs
-            .iter()
-            .position(|d| d.state != QsoState::Released && d.remote_ip == ip)
+        self.dialogs.iter().position(|d| d.state != QsoState::Released && d.remote_ip == ip)
     }
 
     fn resolve_target(&mut self, _cfg: &CfgEcholink, target: &str) -> Result<IpAddr, String> {
@@ -917,56 +866,48 @@ impl EcholinkEntity {
             cfg.directory_port
         );
 
-        let spawn = thread::Builder::new()
-            .name("flow-echolink-directory".to_string())
-            .spawn(move || {
-                loop {
-                    let cfg = config.effective_echolink();
-                    if !cfg.enabled {
-                        break;
-                    }
-
-                    let wait = match directory_make_online_request(&cfg) {
-                        Ok(()) => {
-                            match directory_get_calls_request(&cfg) {
-                                Ok(stations) => {
-                                    let _ = event_tx.send(EcholinkDirectoryEvent::Online {
-                                        generation,
-                                        callsign: cfg.callsign.clone(),
-                                        stations,
-                                    });
-                                }
-                                Err(err) => {
-                                    let _ = event_tx.send(EcholinkDirectoryEvent::Online {
-                                        generation,
-                                        callsign: cfg.callsign.clone(),
-                                        stations: Vec::new(),
-                                    });
-                                    let _ = event_tx.send(EcholinkDirectoryEvent::Error {
-                                        generation,
-                                        message: format!("directory list after ONLINE failed: {}", err),
-                                    });
-                                }
-                            }
-                            DIRECTORY_REFRESH_INTERVAL
-                        }
-                        Err(err) => {
-                            let _ = event_tx.send(EcholinkDirectoryEvent::Error {
-                                generation,
-                                message: err,
-                            });
-                            Duration::from_secs(cfg.reconnect_interval_secs.max(1))
-                        }
-                    };
-
-                    if !matches!(
-                        stop_rx.recv_timeout(wait),
-                        Err(crossbeam_channel::RecvTimeoutError::Timeout)
-                    ) {
-                        break;
-                    }
+        let spawn = thread::Builder::new().name("flow-echolink-directory".to_string()).spawn(move || {
+            loop {
+                let cfg = config.effective_echolink();
+                if !cfg.enabled {
+                    break;
                 }
-            });
+
+                let wait = match directory_make_online_request(&cfg) {
+                    Ok(()) => {
+                        match directory_get_calls_request(&cfg) {
+                            Ok(stations) => {
+                                let _ = event_tx.send(EcholinkDirectoryEvent::Online {
+                                    generation,
+                                    callsign: cfg.callsign.clone(),
+                                    stations,
+                                });
+                            }
+                            Err(err) => {
+                                let _ = event_tx.send(EcholinkDirectoryEvent::Online {
+                                    generation,
+                                    callsign: cfg.callsign.clone(),
+                                    stations: Vec::new(),
+                                });
+                                let _ = event_tx.send(EcholinkDirectoryEvent::Error {
+                                    generation,
+                                    message: format!("directory list after ONLINE failed: {}", err),
+                                });
+                            }
+                        }
+                        DIRECTORY_REFRESH_INTERVAL
+                    }
+                    Err(err) => {
+                        let _ = event_tx.send(EcholinkDirectoryEvent::Error { generation, message: err });
+                        Duration::from_secs(cfg.reconnect_interval_secs.max(1))
+                    }
+                };
+
+                if !matches!(stop_rx.recv_timeout(wait), Err(crossbeam_channel::RecvTimeoutError::Timeout)) {
+                    break;
+                }
+            }
+        });
 
         if let Err(err) = spawn {
             self.directory_stop_tx = None;
@@ -987,9 +928,7 @@ impl EcholinkEntity {
 
     fn ensure_directory_worker(&mut self, cfg: &CfgEcholink) {
         let key = directory_config_key(cfg);
-        if self.directory_stop_tx.is_none()
-            || self.directory_config_key.as_deref() != Some(key.as_str())
-        {
+        if self.directory_stop_tx.is_none() || self.directory_config_key.as_deref() != Some(key.as_str()) {
             self.start_directory_worker();
         }
     }
@@ -1007,20 +946,10 @@ impl EcholinkEntity {
                     self.directory_stations_dirty = true;
                     self.last_directory_status = format!("online; {} stations", station_count);
                     self.last_error = None;
-                    self.last_tx = Some(format!(
-                        "directory ONLINE refreshed for {} ({} stations)",
-                        callsign, station_count
-                    ));
-                    tracing::info!(
-                        "EchoLink: directory ONLINE refreshed for {} ({} stations)",
-                        callsign,
-                        station_count
-                    );
+                    self.last_tx = Some(format!("directory ONLINE refreshed for {} ({} stations)", callsign, station_count));
+                    tracing::info!("EchoLink: directory ONLINE refreshed for {} ({} stations)", callsign, station_count);
                 }
-                EcholinkDirectoryEvent::Error {
-                    generation,
-                    message,
-                } if generation == self.directory_generation => {
+                EcholinkDirectoryEvent::Error { generation, message } if generation == self.directory_generation => {
                     self.last_directory_status = "directory error".to_string();
                     self.set_error(message);
                 }
@@ -1151,9 +1080,7 @@ fn station_matches_target(station: &str, target: &str) -> bool {
     if station.eq_ignore_ascii_case(target) {
         return true;
     }
-    station
-        .trim_matches('*')
-        .eq_ignore_ascii_case(target.trim_matches('*'))
+    station.trim_matches('*').eq_ignore_ascii_case(target.trim_matches('*'))
 }
 
 fn route_label(cfg: &CfgEcholink) -> Option<String> {
@@ -1209,9 +1136,7 @@ fn directory_make_online_request(cfg: &CfgEcholink) -> Result<(), String> {
         .write_all(&cmd)
         .map_err(|e| format!("directory ONLINE write failed: {}", e))?;
     let mut buf = [0u8; 256];
-    let len = stream
-        .read(&mut buf)
-        .map_err(|e| format!("directory ONLINE read failed: {}", e))?;
+    let len = stream.read(&mut buf).map_err(|e| format!("directory ONLINE read failed: {}", e))?;
     let reply = String::from_utf8_lossy(&buf[..len]).to_string();
     if reply.starts_with("OK") {
         Ok(())
@@ -1222,9 +1147,7 @@ fn directory_make_online_request(cfg: &CfgEcholink) -> Result<(), String> {
 
 fn directory_get_calls_request(cfg: &CfgEcholink) -> Result<Vec<DirectoryStation>, String> {
     let mut stream = directory_connect(cfg)?;
-    stream
-        .write_all(b"s")
-        .map_err(|e| format!("directory list write failed: {}", e))?;
+    stream.write_all(b"s").map_err(|e| format!("directory list write failed: {}", e))?;
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
     loop {
@@ -1236,12 +1159,7 @@ fn directory_get_calls_request(cfg: &CfgEcholink) -> Result<Vec<DirectoryStation
                     break;
                 }
             }
-            Err(err)
-                if matches!(
-                    err.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) && !buf.is_empty() =>
-            {
+            Err(err) if matches!(err.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) && !buf.is_empty() => {
                 break;
             }
             Err(err) => return Err(format!("directory list read failed: {}", err)),
@@ -1257,12 +1175,9 @@ fn directory_connect(cfg: &CfgEcholink) -> Result<TcpStream, String> {
         if server.is_empty() {
             continue;
         }
-        let addrs = (server, cfg.directory_port).to_socket_addrs().map_err(|e| {
-            format!(
-                "directory DNS {}:{} failed: {}",
-                server, cfg.directory_port, e
-            )
-        })?;
+        let addrs = (server, cfg.directory_port)
+            .to_socket_addrs()
+            .map_err(|e| format!("directory DNS {}:{} failed: {}", server, cfg.directory_port, e))?;
         for addr in addrs {
             match TcpStream::connect_timeout(&addr, DIRECTORY_TIMEOUT) {
                 Ok(stream) => {
@@ -1418,24 +1333,18 @@ fn parse_directory_list(text: &str) -> Result<Vec<DirectoryStation>, String> {
     if start.trim() != "@@@" {
         return Err("directory response did not start with @@@".to_string());
     }
-    let count = lines
-        .next()
-        .and_then(|s| s.trim().parse::<usize>().ok())
-        .unwrap_or(0);
+    let count = lines.next().and_then(|s| s.trim().parse::<usize>().ok()).unwrap_or(0);
     let mut stations = Vec::new();
     for _ in 0..count {
-        let Some(callsign) = lines.next() else { break; };
+        let Some(callsign) = lines.next() else {
+            break;
+        };
         if callsign.trim() == "+++" {
             break;
         }
         let _data = lines.next().unwrap_or_default();
-        let id = lines
-            .next()
-            .and_then(|s| s.trim().parse::<u32>().ok())
-            .unwrap_or(0);
-        let ip = lines
-            .next()
-            .and_then(|s| s.trim().parse::<IpAddr>().ok());
+        let id = lines.next().and_then(|s| s.trim().parse::<u32>().ok()).unwrap_or(0);
+        let ip = lines.next().and_then(|s| s.trim().parse::<IpAddr>().ok());
         if let Some(ip) = ip {
             let callsign = callsign.trim().to_ascii_uppercase();
             if !callsign.is_empty() && callsign != "." && callsign != " " {
