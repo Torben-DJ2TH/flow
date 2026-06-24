@@ -858,6 +858,7 @@ voice_service = true
 # outbound_prefix = "91"
 # strip_outbound_prefix = true
 # inbound_prefix = "T"
+# inbound_setup_timeout_secs = 20 # SIP -> TETRA no-alert timeout; returns 404 before ringing
 # register = true
 # codec = "PCMU"
 # service_numbers = ["600", "601"]

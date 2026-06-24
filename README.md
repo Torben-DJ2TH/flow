@@ -406,6 +406,7 @@ enabled = true
 outbound_prefix = "91"          # TETRA -> SIP: 91385 calls SIP user 385
 strip_outbound_prefix = true
 inbound_prefix = "T"            # SIP -> TETRA: Dial PJSIP/T2632585@flowstation
+inbound_setup_timeout_secs = 20 # no TETRA alert before this -> SIP 404 Not Found
 register = true
 codec = "PCMU"                  # currently the only supported SIP codec
 service_numbers = ["385", "600", "601"]
@@ -471,6 +472,14 @@ specific prefix wildcards are also allowed inside `service_numbers`, for example
 `["38*"]` routes `9138...` to Asterisk after stripping `91`. Exact entries still
 work as before, so `service_numbers = ["385"]` permits `91385` and direct `385`,
 but not `91600`.
+
+For Asterisk-originated calls, FlowStation answers the initial SIP `INVITE` with
+`100 Trying`, sends TETRA `D-SETUP` to the target ISSI, and only sends SIP
+`180 Ringing` after the radio answers with TETRA alerting. If the ISSI is still
+listed in the local registry but does not answer the RF setup, FlowStation waits
+for `inbound_setup_timeout_secs` and then returns SIP `404 Not Found` before any
+ringing was sent. The value is clamped to 1-60 seconds and mapped to the nearest
+supported TETRA setup timer.
 
 ### Telegram alerts
 
