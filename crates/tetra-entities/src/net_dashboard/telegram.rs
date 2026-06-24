@@ -48,17 +48,22 @@ pub fn json_escape(s: &str) -> String {
 /// else. The whole section is regenerated from the override values; an existing block (from its
 /// header until the next section header or EOF) is replaced. A `.telegram.bak` backup is made.
 /// Mirrors [`crate::net_dashboard::wx_service::write_wx_to_toml`].
-pub fn write_telegram_to_toml(
-    config_path: &str,
-    ov: &TelegramRuntimeOverride,
-) -> std::io::Result<()> {
+pub fn write_telegram_to_toml(config_path: &str, ov: &TelegramRuntimeOverride) -> std::io::Result<()> {
     let original = std::fs::read_to_string(config_path)?;
 
     let token_escaped = ov.bot_token.replace('\\', "\\\\").replace('"', "\\\"");
-    let chat_ids = ov
-        .chat_ids
+    let chat_ids = ov.chat_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(", ");
+    let brew_register_prefix = ov.brew_register_prefix.replace('\\', "\\\\").replace('"', "\\\"");
+    let brew_register_issi_whitelist = ov
+        .brew_register_issi_whitelist
         .iter()
-        .map(|id| id.to_string())
+        .map(|issi| issi.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let brew_register_issi_blacklist = ov
+        .brew_register_issi_blacklist
+        .iter()
+        .map(|issi| issi.to_string())
         .collect::<Vec<_>>()
         .join(", ");
     let section = format!(
@@ -71,7 +76,11 @@ pub fn write_telegram_to_toml(
          alert_t351 = {}\n\
          alert_lip = {}\n\
          alert_backhaul = {}\n\
-         alert_critical_logs = {}",
+         alert_critical_logs = {}\n\
+         alert_brew_register = {}\n\
+         brew_register_prefix = \"{}\"\n\
+         brew_register_issi_whitelist = [{}]\n\
+         brew_register_issi_blacklist = [{}]",
         ov.enabled,
         token_escaped,
         chat_ids,
@@ -81,6 +90,10 @@ pub fn write_telegram_to_toml(
         ov.alert_lip,
         ov.alert_backhaul,
         ov.alert_critical_logs,
+        ov.alert_brew_register,
+        brew_register_prefix,
+        brew_register_issi_whitelist,
+        brew_register_issi_blacklist,
     );
 
     let lines: Vec<&str> = original.lines().collect();
@@ -141,6 +154,10 @@ mod tests {
             alert_lip: true,
             alert_backhaul: false,
             alert_critical_logs: true,
+            alert_brew_register: true,
+            brew_register_prefix: "Brew REGISTER".to_string(),
+            brew_register_issi_whitelist: [2632585].into_iter().collect(),
+            brew_register_issi_blacklist: [9999].into_iter().collect(),
         }
     }
 
@@ -175,6 +192,9 @@ mod tests {
         assert!(out.contains("bot_token = \"123456:ABC-DEF\""));
         assert!(out.contains("chat_ids = [987654321, -1001234567890]"));
         assert!(out.contains("alert_disconnect = false"));
+        assert!(out.contains("alert_brew_register = true"));
+        assert!(out.contains("brew_register_issi_whitelist = [2632585]"));
+        assert!(out.contains("brew_register_issi_blacklist = [9999]"));
         // Other sections preserved, old value gone.
         assert!(out.contains("[cell]"));
         assert!(out.contains("[security]"));
@@ -204,8 +224,7 @@ mod tests {
         let path = dir.join("fs_tg_test_roundtrip.toml");
         std::fs::write(&path, cfg).unwrap();
         write_telegram_to_toml(path.to_str().unwrap(), &ov()).unwrap();
-        let parsed = tetra_config::bluestation::parsing::from_file(path.to_str().unwrap())
-            .expect("written telegram section must parse");
+        let parsed = tetra_config::bluestation::parsing::from_file(path.to_str().unwrap()).expect("written telegram section must parse");
         let tg = parsed.telegram.expect("telegram present");
         assert!(tg.enabled);
         assert_eq!(tg.chat_ids, vec![987654321, -1001234567890]);

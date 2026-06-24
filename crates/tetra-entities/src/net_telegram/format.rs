@@ -138,6 +138,21 @@ pub fn backhaul(station: &StationInfo, connected: bool, server_version: u8) -> S
     }
 }
 
+/// An external ISSI registered through a Brew/TetraPack backhaul.
+pub fn brew_register(station: &StationInfo, prefix: &str, source: &str, issi: u32) -> String {
+    let prefix = truncate_chars(prefix.trim(), 32);
+    let source = truncate_chars(source.trim(), 160);
+    frame(
+        "🟢",
+        if prefix.is_empty() { "Brew REGISTER" } else { &prefix },
+        &[
+            format!("ISSI: <code>{issi}</code>"),
+            format!("Source: <code>{}</code>", escape_html(&source)),
+        ],
+        station,
+    )
+}
+
 /// One or more WARN/ERROR log lines, coalesced into a single message. `extra` is how many lines
 /// were dropped beyond the ones shown.
 pub fn critical_logs(station: &StationInfo, lines: &[(String, String)], extra: usize) -> String {
@@ -221,7 +236,9 @@ mod tests {
     use super::*;
 
     fn station() -> StationInfo {
-        StationInfo { label: "FlowStation · MCC 901 / MNC 9999 · LA 1 · CC 3".to_string() }
+        StationInfo {
+            label: "FlowStation · MCC 901 / MNC 9999 · LA 1 · CC 3".to_string(),
+        }
     }
 
     #[test]
@@ -243,10 +260,7 @@ mod tests {
 
     #[test]
     fn critical_logs_picks_error_title_and_counts_extra() {
-        let lines = vec![
-            ("WARN".to_string(), "w1".to_string()),
-            ("ERROR".to_string(), "e1".to_string()),
-        ];
+        let lines = vec![("WARN".to_string(), "w1".to_string()), ("ERROR".to_string(), "e1".to_string())];
         let m = critical_logs(&station(), &lines, 3);
         assert!(m.contains("<b>Station error</b>"));
         assert!(m.contains("and 3 more"));

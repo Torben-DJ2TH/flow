@@ -1107,6 +1107,7 @@ impl DashboardServer {
                         hw_id: hw_id.clone(),
                     });
                 }
+                TelemetryEvent::BrewSubscriberRegistered { .. } | TelemetryEvent::BrewSubscriberDeregistered { .. } => {}
             }
         }
         if let Some(json) = msg {
@@ -1267,7 +1268,10 @@ fn event_to_ws_msg(event: &TelemetryEvent) -> Option<String> {
         }),
         // Emergency add/remove are broadcast explicitly (transition-gated) from handle_telemetry,
         // so the generic path stays silent — otherwise every periodic re-send would re-broadcast.
-        TelemetryEvent::EmergencyAlarm { .. } | TelemetryEvent::EmergencyCancel { .. } => return None,
+        TelemetryEvent::EmergencyAlarm { .. }
+        | TelemetryEvent::EmergencyCancel { .. }
+        | TelemetryEvent::BrewSubscriberRegistered { .. }
+        | TelemetryEvent::BrewSubscriberDeregistered { .. } => return None,
         TelemetryEvent::DapnetLog {
             direction,
             id,
@@ -3462,20 +3466,23 @@ fn serve_telegram_get(stream: TcpStream, shared_config: &Option<tetra_config::bl
     };
     let masked = crate::net_dashboard::telegram::mask_token(tg.bot_token.as_ref());
     let token_set = !tg.bot_token.as_ref().trim().is_empty();
-    let chat_ids = tg.chat_ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
-    let body = format!(
-        "{{\"enabled\":{},\"bot_token_masked\":\"{}\",\"token_set\":{},\"chat_ids\":[{}],\"alert_connect\":{},\"alert_disconnect\":{},\"alert_t351\":{},\"alert_lip\":{},\"alert_backhaul\":{},\"alert_critical_logs\":{}}}",
-        tg.enabled,
-        crate::net_dashboard::telegram::json_escape(&masked),
-        token_set,
-        chat_ids,
-        tg.alert_connect,
-        tg.alert_disconnect,
-        tg.alert_t351,
-        tg.alert_lip,
-        tg.alert_backhaul,
-        tg.alert_critical_logs,
-    );
+    let body = serde_json::json!({
+        "enabled": tg.enabled,
+        "bot_token_masked": masked,
+        "token_set": token_set,
+        "chat_ids": tg.chat_ids.clone(),
+        "alert_connect": tg.alert_connect,
+        "alert_disconnect": tg.alert_disconnect,
+        "alert_t351": tg.alert_t351,
+        "alert_lip": tg.alert_lip,
+        "alert_backhaul": tg.alert_backhaul,
+        "alert_critical_logs": tg.alert_critical_logs,
+        "alert_brew_register": tg.alert_brew_register,
+        "brew_register_prefix": tg.brew_register_prefix.clone(),
+        "brew_register_issi_whitelist": issi_set_as_json(&tg.brew_register_issi_whitelist),
+        "brew_register_issi_blacklist": issi_set_as_json(&tg.brew_register_issi_blacklist),
+    })
+    .to_string();
     http_json_response(stream, 200, &body);
 }
 
@@ -3508,6 +3515,30 @@ fn serve_telegram_post(stream: TcpStream, shared_config: &Option<tetra_config::b
         Some(arr) => arr.iter().filter_map(|v| v.as_i64()).collect::<Vec<i64>>(),
         None => cur.chat_ids.clone(),
     };
+    let mut brew_register_prefix = dapnet_as_string(&json, "brew_register_prefix", &cur.brew_register_prefix);
+    if brew_register_prefix.trim().is_empty() {
+        brew_register_prefix = "Brew REGISTER".to_string();
+    }
+    if !dapnet_text_acceptable(&brew_register_prefix) {
+        http_response(stream, 400, "Invalid Brew REGISTER prefix: control characters are not allowed");
+        return;
+    }
+    let brew_register_issi_whitelist =
+        match snom_issi_set_from_json(&json, "brew_register_issi_whitelist", &cur.brew_register_issi_whitelist) {
+            Ok(v) => v,
+            Err(e) => {
+                http_response(stream, 400, &e);
+                return;
+            }
+        };
+    let brew_register_issi_blacklist =
+        match snom_issi_set_from_json(&json, "brew_register_issi_blacklist", &cur.brew_register_issi_blacklist) {
+            Ok(v) => v,
+            Err(e) => {
+                http_response(stream, 400, &e);
+                return;
+            }
+        };
 
     let ov = TelegramRuntimeOverride {
         enabled: as_bool("enabled", cur.enabled),
@@ -3519,6 +3550,10 @@ fn serve_telegram_post(stream: TcpStream, shared_config: &Option<tetra_config::b
         alert_lip: as_bool("alert_lip", cur.alert_lip),
         alert_backhaul: as_bool("alert_backhaul", cur.alert_backhaul),
         alert_critical_logs: as_bool("alert_critical_logs", cur.alert_critical_logs),
+        alert_brew_register: as_bool("alert_brew_register", cur.alert_brew_register),
+        brew_register_prefix,
+        brew_register_issi_whitelist,
+        brew_register_issi_blacklist,
     };
 
     {

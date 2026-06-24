@@ -209,6 +209,12 @@ pub enum TelemetryEvent {
         fw_sub: Option<String>,
         hw_id: Option<String>,
     },
+    /// External ISSI registered through a Brew/TetraPack backhaul. Appended last for bitcode
+    /// wire-stability. Used for optional Telegram alerts without relying on noisy log lines.
+    BrewSubscriberRegistered { issi: u32, source: String },
+    /// External ISSI deregistered through a Brew/TetraPack backhaul. Appended last for bitcode
+    /// wire-stability so consumers can re-arm one-shot REGISTER alerts after a real departure.
+    BrewSubscriberDeregistered { issi: u32, source: String },
 }
 
 /// A single host-system sensor reading. Kept flat for easy JSON serialisation

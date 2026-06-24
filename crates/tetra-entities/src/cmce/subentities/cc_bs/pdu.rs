@@ -453,7 +453,7 @@ impl CcBsSubentity {
             BrewSubscriberAction::Register => {
                 let known = self.subscriber_groups.contains_key(&issi);
                 self.subscriber_groups.entry(issi).or_insert_with(HashSet::new);
-                tracing::info!("CMCE: subscriber register issi={} known={}", issi, known);
+                tracing::debug!("CMCE: subscriber register issi={} known={}", issi, known);
             }
             BrewSubscriberAction::Deregister => {
                 if let Some(existing) = self.subscriber_groups.remove(&issi) {
@@ -464,7 +464,7 @@ impl CcBsSubentity {
                     }
                 }
                 self.recent_deaffiliations.retain(|(grace_issi, _), _| *grace_issi != issi);
-                tracing::info!("CMCE: subscriber deregister issi={}", issi);
+                tracing::debug!("CMCE: subscriber deregister issi={}", issi);
             }
             BrewSubscriberAction::Affiliate => {
                 let mut new_groups = Vec::new();

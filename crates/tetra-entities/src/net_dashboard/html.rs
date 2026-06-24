@@ -3868,6 +3868,12 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
           <label class="sw-row"><span class="sw-text" data-i18n="tg_cat_t351">Radio dropped (no T351 response)</span><span class="sw"><input type="checkbox" id="tg-t351"><i></i></span></label>
           <label class="sw-row"><span class="sw-text" data-i18n="tg_cat_lip">LIP/APRS position beacon</span><span class="sw"><input type="checkbox" id="tg-lip"><i></i></span></label>
           <label class="sw-row"><span class="sw-text" data-i18n="tg_cat_backhaul">Brew backhaul up/down</span><span class="sw"><input type="checkbox" id="tg-backhaul"><i></i></span></label>
+          <label class="sw-row"><span class="sw-text" data-i18n="tg_cat_brew_register">Brew ISSI REGISTER</span><span class="sw"><input type="checkbox" id="tg-brew-register"><i></i></span></label>
+          <div class="form-grid" style="grid-template-columns:repeat(3,minmax(180px,1fr));gap:12px;margin:0 0 10px 0">
+            <label class="h-field"><span class="h-field-label" data-i18n="tg_brew_register_prefix">Brew REGISTER prefix</span><input type="text" id="tg-brew-register-prefix" class="form-input" placeholder="Brew REGISTER"></label>
+            <label class="h-field"><span class="h-field-label" data-i18n="tg_brew_register_white">Brew REGISTER ISSI whitelist</span><textarea id="tg-brew-register-white" class="form-input" rows="3" placeholder="empty = all Brew REGISTER ISSIs"></textarea></label>
+            <label class="h-field"><span class="h-field-label" data-i18n="tg_brew_register_black">Brew REGISTER ISSI blacklist</span><textarea id="tg-brew-register-black" class="form-input" rows="3" placeholder="never alert these ISSIs"></textarea></label>
+          </div>
           <label class="sw-row"><span class="sw-text" data-i18n="tg_cat_logs">Critical log (warnings/errors)</span><span class="sw"><input type="checkbox" id="tg-logs"><i></i></span></label>
         </div>
       </div>
@@ -4455,7 +4461,9 @@ const LANGS={
     tg_categories_title:'Alert categories',
     tg_cat_connect:'Radio connected',tg_cat_disconnect:'Radio disconnected',
     tg_cat_t351:'Radio dropped (no T351 response)',tg_cat_lip:'LIP/APRS position beacon',
-    tg_cat_backhaul:'Brew backhaul up/down',tg_cat_logs:'Critical log (warnings/errors)',
+    tg_cat_backhaul:'Brew backhaul up/down',tg_cat_brew_register:'Brew ISSI REGISTER',
+    tg_brew_register_prefix:'Brew REGISTER prefix',tg_brew_register_white:'Brew REGISTER ISSI whitelist',tg_brew_register_black:'Brew REGISTER ISSI blacklist',
+    tg_cat_logs:'Critical log (warnings/errors)',
   },
   ro:{
     bts_ip:'IP BTS',offline:'DECONECTAT',online:'CONECTAT',
@@ -4555,7 +4563,9 @@ const LANGS={
     tg_categories_title:'Categorii de alerte',
     tg_cat_connect:'Radio conectat',tg_cat_disconnect:'Radio deconectat',
     tg_cat_t351:'Radio căzut (fără răspuns T351)',tg_cat_lip:'Baliză poziție LIP/APRS',
-    tg_cat_backhaul:'Backhaul Brew up/down',tg_cat_logs:'Log critic (avertismente/erori)',
+    tg_cat_backhaul:'Backhaul Brew up/down',tg_cat_brew_register:'REGISTER ISSI prin Brew',
+    tg_brew_register_prefix:'Prefix REGISTER Brew',tg_brew_register_white:'Whitelist ISSI REGISTER Brew',tg_brew_register_black:'Blacklist ISSI REGISTER Brew',
+    tg_cat_logs:'Log critic (avertismente/erori)',
   },
   de:{
     bts_ip:'BTS-IP',offline:'OFFLINE',online:'ONLINE',
@@ -4638,6 +4648,10 @@ const LANGS={
     sys_activate_confirm:'Zum Profil "{name}" wechseln und neu starten?\nAktuelle Konfig wird gesichert.',
     sys_title:'System',sys_sec_status:'Status',sys_sec_host:'Host',sys_sec_radio:'Funk-Hardware',sys_sec_sensors:'Sensoren',sys_sec_profiles:'Profile',sys_sec_sds:'SDS-Rundsendung',sys_refresh:'Aktualisieren',sys_probe:'Prüfen',sys_temp_hot:'HEISS',sys_temp_warm:'Warm',sys_temp_ok:'OK',
     sys_bts:'BTS-Verbindung',
+    tg_cat_brew_register:'Brew ISSI REGISTER',
+    tg_brew_register_prefix:'Brew REGISTER-Prefix',
+    tg_brew_register_white:'Brew REGISTER ISSI-Whitelist',
+    tg_brew_register_black:'Brew REGISTER ISSI-Blacklist',
   },
   es:{
     bts_ip:'IP BTS',offline:'SIN CONEXIÓN',online:'EN LÍNEA',
@@ -7057,6 +7071,10 @@ async function loadTelegram(){
     document.getElementById('tg-t351').checked=!!d.alert_t351;
     document.getElementById('tg-lip').checked=!!d.alert_lip;
     document.getElementById('tg-backhaul').checked=!!d.alert_backhaul;
+    document.getElementById('tg-brew-register').checked=!!d.alert_brew_register;
+    document.getElementById('tg-brew-register-prefix').value=d.brew_register_prefix||'Brew REGISTER';
+    document.getElementById('tg-brew-register-white').value=geoIssiListText(d.brew_register_issi_whitelist);
+    document.getElementById('tg-brew-register-black').value=geoIssiListText(d.brew_register_issi_blacklist);
     document.getElementById('tg-logs').checked=!!d.alert_critical_logs;
     document.getElementById('tg-verify-status').textContent='';
     document.getElementById('tg-detected').innerHTML='';
@@ -7108,6 +7126,10 @@ async function detectTelegramChats(){
   }catch{box.innerHTML='<span style="color:var(--danger);font-size:13px">'+t('conn_error')+'</span>';}
 }
 async function saveTelegram(){
+  const brewWhite=geoIssiListBody('tg-brew-register-white','Brew REGISTER whitelist');
+  if(brewWhite===null)return;
+  const brewBlack=geoIssiListBody('tg-brew-register-black','Brew REGISTER blacklist');
+  if(brewBlack===null)return;
   const body={
     enabled:document.getElementById('tg-enabled').checked,
     chat_ids:tgChats,
@@ -7116,6 +7138,10 @@ async function saveTelegram(){
     alert_t351:document.getElementById('tg-t351').checked,
     alert_lip:document.getElementById('tg-lip').checked,
     alert_backhaul:document.getElementById('tg-backhaul').checked,
+    alert_brew_register:document.getElementById('tg-brew-register').checked,
+    brew_register_prefix:(document.getElementById('tg-brew-register-prefix').value||'Brew REGISTER').trim()||'Brew REGISTER',
+    brew_register_issi_whitelist:brewWhite,
+    brew_register_issi_blacklist:brewBlack,
     alert_critical_logs:document.getElementById('tg-logs').checked
   };
   const tok=tgTokenField();if(tok)body.bot_token=tok;

@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::collections::{BTreeSet, HashMap};
 
 use crate::bluestation::SecretField;
 
@@ -36,6 +37,14 @@ pub struct CfgTelegram {
     pub alert_critical_logs: bool,
     /// Alert when the overall station-health level changes (Ok/Degraded/Critical transitions).
     pub alert_health: bool,
+    /// Alert when an external ISSI registers via Brew/TetraPack.
+    pub alert_brew_register: bool,
+    /// Telegram title/prefix for Brew-originated ISSI REGISTER alerts.
+    pub brew_register_prefix: String,
+    /// Optional allow-list for Brew REGISTER Telegram alerts; empty means all ISSIs.
+    pub brew_register_issi_whitelist: BTreeSet<u32>,
+    /// Deny-list for Brew REGISTER Telegram alerts; wins over the allow-list.
+    pub brew_register_issi_blacklist: BTreeSet<u32>,
 }
 
 impl Default for CfgTelegram {
@@ -51,6 +60,10 @@ impl Default for CfgTelegram {
             alert_backhaul: true,
             alert_critical_logs: true,
             alert_health: true,
+            alert_brew_register: false,
+            brew_register_prefix: "Brew REGISTER".to_string(),
+            brew_register_issi_whitelist: BTreeSet::new(),
+            brew_register_issi_blacklist: BTreeSet::new(),
         }
     }
 }
@@ -86,16 +99,33 @@ pub struct CfgTelegramDto {
     pub alert_critical_logs: bool,
     #[serde(default = "default_true")]
     pub alert_health: bool,
+    #[serde(default)]
+    pub alert_brew_register: bool,
+    #[serde(default = "default_brew_register_prefix")]
+    pub brew_register_prefix: String,
+    #[serde(default)]
+    pub brew_register_issi_whitelist: Vec<u32>,
+    #[serde(default)]
+    pub brew_register_issi_blacklist: Vec<u32>,
 
     #[serde(flatten)]
-    pub extra: std::collections::HashMap<String, toml::Value>,
+    pub extra: HashMap<String, toml::Value>,
 }
 
 fn default_true() -> bool {
     true
 }
 
+fn default_brew_register_prefix() -> String {
+    "Brew REGISTER".to_string()
+}
+
 pub fn apply_telegram_patch(dto: CfgTelegramDto) -> CfgTelegram {
+    let mut brew_register_prefix = dto.brew_register_prefix.trim().to_string();
+    if brew_register_prefix.is_empty() {
+        brew_register_prefix = default_brew_register_prefix();
+    }
+
     CfgTelegram {
         enabled: dto.enabled,
         bot_token: SecretField::from(dto.bot_token),
@@ -107,5 +137,9 @@ pub fn apply_telegram_patch(dto: CfgTelegramDto) -> CfgTelegram {
         alert_backhaul: dto.alert_backhaul,
         alert_critical_logs: dto.alert_critical_logs,
         alert_health: dto.alert_health,
+        alert_brew_register: dto.alert_brew_register,
+        brew_register_prefix,
+        brew_register_issi_whitelist: dto.brew_register_issi_whitelist.into_iter().collect(),
+        brew_register_issi_blacklist: dto.brew_register_issi_blacklist.into_iter().collect(),
     }
 }

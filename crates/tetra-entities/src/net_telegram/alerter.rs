@@ -59,6 +59,8 @@ pub struct TelegramAlerter {
     /// Last observed backhaul state; `None` until the first observation (which is not alerted,
     /// to avoid a "connected" alert on every restart — only genuine up/down changes alert).
     last_brew: Option<bool>,
+    /// External Brew REGISTER alerts already sent during the current registration lifetime.
+    known_brew_issis: HashSet<(String, u32)>,
 
     /// Buffered critical-log lines awaiting a coalesced flush.
     log_buffer: Vec<(String, String)>,
@@ -91,6 +93,7 @@ impl TelegramAlerter {
             pending_disconnect: HashMap::new(),
             last_lip_alert: HashMap::new(),
             last_brew: None,
+            known_brew_issis: HashSet::new(),
             log_buffer: Vec::new(),
             log_dropped: 0,
             log_window_start: None,
@@ -164,14 +167,27 @@ impl TelegramAlerter {
                     self.send_all(&tg, &html);
                 }
             }
+            TelemetryEvent::BrewSubscriberRegistered { issi, source } => {
+                let key = (source.clone(), issi);
+                let is_new = self.known_brew_issis.insert(key);
+                if is_new && tg.alert_brew_register && tg.is_deliverable() && brew_register_allowed(&tg, issi) {
+                    let html = format::brew_register(&self.station, &tg.brew_register_prefix, &source, issi);
+                    self.send_all(&tg, &html);
+                }
+            }
+            TelemetryEvent::BrewSubscriberDeregistered { issi, source } => {
+                self.known_brew_issis.remove(&(source, issi));
+            }
             // LIP/APRS position beacons: SDS protocol id 10, received over the air from a radio.
-            TelemetryEvent::SdsLog { direction, source_issi, dest_issi, protocol_id, text, .. }
-                if protocol_id == LIP_PROTOCOL_ID && direction == "rx" =>
-            {
-                let debounced = self
-                    .last_lip_alert
-                    .get(&source_issi)
-                    .is_some_and(|t| t.elapsed() < LIP_DEBOUNCE);
+            TelemetryEvent::SdsLog {
+                direction,
+                source_issi,
+                dest_issi,
+                protocol_id,
+                text,
+                ..
+            } if protocol_id == LIP_PROTOCOL_ID && direction == "rx" => {
+                let debounced = self.last_lip_alert.get(&source_issi).is_some_and(|t| t.elapsed() < LIP_DEBOUNCE);
                 if !debounced {
                     self.last_lip_alert.insert(source_issi, Instant::now());
                     if tg.alert_lip && tg.is_deliverable() {
@@ -242,10 +258,7 @@ impl TelegramAlerter {
         for issi in due {
             self.pending_disconnect.remove(&issi);
             self.known_issis.remove(&issi);
-            let suppressed = self
-                .recent_t351
-                .get(&issi)
-                .is_some_and(|t| t.elapsed() < T351_WINDOW);
+            let suppressed = self.recent_t351.get(&issi).is_some_and(|t| t.elapsed() < T351_WINDOW);
             if !suppressed && tg.alert_disconnect && tg.is_deliverable() {
                 let html = format::disconnect(&self.station, issi);
                 self.send_all(&tg, &html);
@@ -291,6 +304,13 @@ impl TelegramAlerter {
             }
         }
     }
+}
+
+fn brew_register_allowed(tg: &CfgTelegram, issi: u32) -> bool {
+    if tg.brew_register_issi_blacklist.contains(&issi) {
+        return false;
+    }
+    tg.brew_register_issi_whitelist.is_empty() || tg.brew_register_issi_whitelist.contains(&issi)
 }
 
 #[cfg(test)]
@@ -383,7 +403,10 @@ location_area = 1
     fn backhaul_first_observation_is_not_an_event() {
         let mut a = alerter();
         // First observation only records state (no spurious "connected" alert on every restart).
-        a.handle_event(TelemetryEvent::BrewConnected { connected: true, server_version: 1 });
+        a.handle_event(TelemetryEvent::BrewConnected {
+            connected: true,
+            server_version: 1,
+        });
         assert_eq!(a.last_brew, Some(true));
     }
 

@@ -375,6 +375,10 @@ impl SharedConfig {
                 // Health alerts aren't part of the dashboard live-edit override yet — take the
                 // base config value so the field is always populated.
                 alert_health: base.alert_health,
+                alert_brew_register: o.alert_brew_register,
+                brew_register_prefix: o.brew_register_prefix.clone(),
+                brew_register_issi_whitelist: o.brew_register_issi_whitelist.clone(),
+                brew_register_issi_blacklist: o.brew_register_issi_blacklist.clone(),
             }
         } else {
             base

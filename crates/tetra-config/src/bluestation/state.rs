@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use tetra_core::TimeslotAllocator;
 use tetra_core::tetra_entities::TetraEntity;
 
@@ -192,6 +192,10 @@ pub struct TelegramRuntimeOverride {
     pub alert_lip: bool,
     pub alert_backhaul: bool,
     pub alert_critical_logs: bool,
+    pub alert_brew_register: bool,
+    pub brew_register_prefix: String,
+    pub brew_register_issi_whitelist: BTreeSet<u32>,
+    pub brew_register_issi_blacklist: BTreeSet<u32>,
 }
 
 /// Runtime override for DAPNET receive/send/forwarding settings, edited from the dashboard.

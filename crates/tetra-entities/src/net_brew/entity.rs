@@ -333,7 +333,8 @@ impl BrewEntity {
                     // causing BS to reject U-SETUP with "no listeners".
                     match msg_type {
                         t if t == self.brew_config.subscriber_type_register => {
-                            tracing::info!("[{}] BrewEntity: external subscriber issi={} → REGISTER", self.log_label(), issi);
+                            tracing::debug!("[{}] BrewEntity: external subscriber issi={} -> REGISTER", self.log_label(), issi);
+                            self.emit_external_subscriber_registered(issi);
                             queue.push_back(SapMsg {
                                 sap: tetra_core::Sap::Control,
                                 src: self.entity,
@@ -346,7 +347,7 @@ impl BrewEntity {
                             });
                         }
                         t if t == self.brew_config.subscriber_type_reregister => {
-                            tracing::info!("[{}] BrewEntity: external subscriber issi={} → REREGISTER", self.log_label(), issi);
+                            tracing::debug!("[{}] BrewEntity: external subscriber issi={} -> REREGISTER", self.log_label(), issi);
                             queue.push_back(SapMsg {
                                 sap: tetra_core::Sap::Control,
                                 src: self.entity,
@@ -399,7 +400,8 @@ impl BrewEntity {
                             }
                         }
                         t if t == self.brew_config.subscriber_type_deregister => {
-                            tracing::info!("[{}] BrewEntity: external subscriber issi={} → DEREGISTER", self.log_label(), issi);
+                            tracing::debug!("[{}] BrewEntity: external subscriber issi={} -> DEREGISTER", self.log_label(), issi);
+                            self.emit_external_subscriber_deregistered(issi);
                             queue.push_back(SapMsg {
                                 sap: tetra_core::Sap::Control,
                                 src: self.entity,
@@ -639,7 +641,7 @@ impl BrewEntity {
             BrewSubscriberAction::Register => {
                 self.subscriber_groups.entry(issi).or_insert_with(HashSet::new);
                 if routable && self.connected {
-                    tracing::info!("[{}] BrewEntity: subscriber register issi={} → REGISTER", log_label, issi);
+                    tracing::debug!("[{}] BrewEntity: subscriber register issi={} -> REGISTER", log_label, issi);
                     let _ = self.command_sender.send(BrewCommand::RegisterSubscriber { issi });
                 } else if !routable {
                     tracing::debug!(
@@ -663,8 +665,8 @@ impl BrewEntity {
                     .map(|g| g.into_iter().collect())
                     .unwrap_or_default();
                 if routable && self.connected {
-                    tracing::info!(
-                        "[{}] BrewEntity: subscriber deregister issi={} → DEAFFILIATE + DEREGISTER",
+                    tracing::debug!(
+                        "[{}] BrewEntity: subscriber deregister issi={} -> DEAFFILIATE + DEREGISTER",
                         log_label,
                         issi
                     );
@@ -838,6 +840,24 @@ impl BrewEntity {
             let _ = sink.send(TelemetryEvent::BrewConnected {
                 connected: true,
                 server_version: version,
+            });
+        }
+    }
+
+    fn emit_external_subscriber_registered(&self, issi: u32) {
+        if let Some(ref sink) = self.telemetry_sink {
+            let _ = sink.send(TelemetryEvent::BrewSubscriberRegistered {
+                issi,
+                source: self.log_label().to_string(),
+            });
+        }
+    }
+
+    fn emit_external_subscriber_deregistered(&self, issi: u32) {
+        if let Some(ref sink) = self.telemetry_sink {
+            let _ = sink.send(TelemetryEvent::BrewSubscriberDeregistered {
+                issi,
+                source: self.log_label().to_string(),
             });
         }
     }
