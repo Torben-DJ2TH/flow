@@ -3370,27 +3370,27 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
                 <span class="sw"><input type="checkbox" id="mesh-forward-sds"><i></i></span>
               </label>
               <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px">
-                <input type="number" id="mesh-sds-source" class="form-input" min="1" max="16777215" placeholder="Source ISSI">
-                <input type="number" id="mesh-sds-dest" class="form-input" min="0" max="16777215" placeholder="Destination ISSI/GSSI">
+                <label class="h-field"><span class="h-field-label">SDS source ISSI</span><input type="number" id="mesh-sds-source" class="form-input" min="1" max="16777215" placeholder="9999"></label>
+                <label class="h-field"><span class="h-field-label">SDS destination ISSI/GSSI</span><input type="number" id="mesh-sds-dest" class="form-input" min="0" max="16777215" placeholder="0"></label>
               </div>
               <label style="display:flex;align-items:center;gap:10px;margin-top:10px"><span class="sw"><input type="checkbox" id="mesh-sds-group"><i></i></span><span style="color:var(--muted);font-size:12px">Destination is group/GSSI</span></label>
-              <textarea id="mesh-sds-sources" class="form-input" rows="3" placeholder="Allowed MeshCom sources, empty = all" style="margin-top:10px"></textarea>
+              <label class="h-field" style="margin-top:10px"><span class="h-field-label">SDS source filter</span><textarea id="mesh-sds-sources" class="form-input" rows="3" placeholder="Allowed MeshCom sources, empty = all"></textarea></label>
             </div>
             <div>
               <label class="sw-row">
                 <span class="sw-text">Forward MeshCom → SIP/Snom</span>
                 <span class="sw"><input type="checkbox" id="mesh-forward-sip"><i></i></span>
               </label>
-              <input type="text" id="mesh-sip-prefix" class="form-input" placeholder="Snom title prefix" style="margin-top:10px">
-              <textarea id="mesh-sip-sources" class="form-input" rows="3" placeholder="Allowed MeshCom sources, empty = all" style="margin-top:10px"></textarea>
+              <label class="h-field" style="margin-top:10px"><span class="h-field-label">Snom title prefix</span><input type="text" id="mesh-sip-prefix" class="form-input" placeholder="MeshCom"></label>
+              <label class="h-field" style="margin-top:10px"><span class="h-field-label">SIP/Snom source filter</span><textarea id="mesh-sip-sources" class="form-input" rows="3" placeholder="Allowed MeshCom sources, empty = all"></textarea></label>
             </div>
             <div>
               <label class="sw-row">
                 <span class="sw-text">Forward MeshCom → Telegram</span>
                 <span class="sw"><input type="checkbox" id="mesh-forward-telegram"><i></i></span>
               </label>
-              <input type="text" id="mesh-telegram-prefix" class="form-input" placeholder="Telegram prefix" style="margin-top:10px">
-              <textarea id="mesh-telegram-sources" class="form-input" rows="3" placeholder="Allowed MeshCom sources, empty = all" style="margin-top:10px"></textarea>
+              <label class="h-field" style="margin-top:10px"><span class="h-field-label">Telegram prefix</span><input type="text" id="mesh-telegram-prefix" class="form-input" placeholder="MeshCom"></label>
+              <label class="h-field" style="margin-top:10px"><span class="h-field-label">Telegram source filter</span><textarea id="mesh-telegram-sources" class="form-input" rows="3" placeholder="Allowed MeshCom sources, empty = all"></textarea></label>
             </div>
           </div>
           <div class="help-text" style="margin-top:10px">Source filters match MeshCom packet src values case-insensitively. Empty filters forward every MeshCom text message.</div>
