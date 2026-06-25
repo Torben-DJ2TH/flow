@@ -874,6 +874,26 @@ tr.row-emergency td:first-child{box-shadow:inset 3px 0 0 var(--danger);}
   padding:4px 8px;border-radius:6px;font-family:var(--mono);font-size:11px;
 }
 .autoscroll-label{display:flex;align-items:center;gap:5px;font-family:var(--mono);font-size:11px;color:var(--text2);cursor:pointer;}
+.mesh-msg-filters,.dapnet-log-filters{
+  display:grid;
+  grid-template-columns:auto minmax(180px,1fr) minmax(220px,1.3fr) auto;
+  align-items:end;
+  gap:10px;
+  padding:12px 16px;
+  border-bottom:1px solid var(--border);
+}
+.mesh-msg-filter-buttons{display:flex;align-items:center;gap:6px;}
+.mesh-msg-filter-field{display:flex;flex-direction:column;gap:5px;min-width:0;}
+.mesh-msg-filter-label{
+  font-family:var(--mono);font-size:10px;font-weight:600;
+  letter-spacing:0.08em;text-transform:uppercase;color:var(--text3);
+}
+.mesh-msg-filter-status{font-family:var(--mono);font-size:11px;color:var(--text3);white-space:nowrap;}
+.mesh-msg-filter-status.is-error{color:var(--danger);}
+@media(max-width:900px){
+  .mesh-msg-filters,.dapnet-log-filters{grid-template-columns:1fr;}
+  .mesh-msg-filter-status{white-space:normal;}
+}
 
 /* ── RF live monitor ─────────────────────────────────────────────────────── */
 .rf-metrics{
@@ -3013,6 +3033,21 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
           </div>
         </div>
         <div class="card-body">
+          <div class="dapnet-log-filters">
+            <label class="mesh-msg-filter-field">
+              <span class="mesh-msg-filter-label">Callsign regex</span>
+              <input type="search" id="dapnetlog-callsign-filter" class="form-input" placeholder="DJ2TH|DB0.*" oninput="dapnetLogFilterChanged()" spellcheck="false">
+            </label>
+            <label class="mesh-msg-filter-field">
+              <span class="mesh-msg-filter-label">Recipient regex</span>
+              <input type="search" id="dapnetlog-recipient-filter" class="form-input" placeholder="0632585|0000200" oninput="dapnetLogFilterChanged()" spellcheck="false">
+            </label>
+            <label class="mesh-msg-filter-field">
+              <span class="mesh-msg-filter-label">Message regex</span>
+              <input type="search" id="dapnetlog-message-filter" class="form-input" placeholder="alarm|probe|^test" oninput="dapnetLogFilterChanged()" spellcheck="false">
+            </label>
+            <span class="mesh-msg-filter-status" id="dapnetlog-filter-status">—</span>
+          </div>
           <div class="table-wrap">
             <table>
               <thead><tr>
@@ -3475,6 +3510,24 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
           </div>
         </div>
         <div class="card-body">
+          <div class="mesh-msg-filters">
+            <div class="mesh-msg-filter-field">
+              <span class="mesh-msg-filter-label">Transport</span>
+              <div class="mesh-msg-filter-buttons">
+                <button class="btn btn-sm btn-primary" id="mesh-msg-filter-udp" onclick="toggleMeshMsgTransport('udp')">udp</button>
+                <button class="btn btn-sm btn-primary" id="mesh-msg-filter-lora" onclick="toggleMeshMsgTransport('lora')">lora</button>
+              </div>
+            </div>
+            <label class="mesh-msg-filter-field">
+              <span class="mesh-msg-filter-label">Source filter</span>
+              <input type="search" id="mesh-msg-source-filter" class="form-input" placeholder="DJ2TH, OE1ABC-12" oninput="meshMsgFilterChanged()">
+            </label>
+            <label class="mesh-msg-filter-field">
+              <span class="mesh-msg-filter-label">Message regex</span>
+              <input type="search" id="mesh-msg-regex-filter" class="form-input" placeholder="alarm|test|^CQ" oninput="meshMsgFilterChanged()" spellcheck="false">
+            </label>
+            <span class="mesh-msg-filter-status" id="mesh-msg-filter-status">—</span>
+          </div>
           <div class="table-wrap">
             <table>
               <thead><tr>
@@ -5965,6 +6018,7 @@ function _p2(n){return String(n).padStart(2,'0');}
 function nowStamp(){const d=new Date();return `${d.getFullYear()}-${_p2(d.getMonth()+1)}-${_p2(d.getDate())} ${_p2(d.getHours())}:${_p2(d.getMinutes())}:${_p2(d.getSeconds())}`;}
 const LOG_PAGE_SIZE=50;
 let sdsLogPageIndex=0,dapnetLogPageIndex=0,echolinkDirectoryPageIndex=0,meshNodePageIndex=0,meshMsgPageIndex=0,geoalarmPageIndex=0;
+let meshMsgShowUdp=true,meshMsgShowLora=true;
 function setLogPager(id,page,total){
   const el=document.getElementById(id);if(!el)return;
   if(!total){el.textContent='Page 0 / 0 · 0';return;}
@@ -6153,15 +6207,42 @@ function dapPaths(paths){
   if(!p.length)return '<span class="sds-empty">—</span>';
   return p.map(x=>`<span class="badge badge-blue" style="font-size:10px">${escHtml(x)}</span>`).join(' ');
 }
+function dapnetLogRegex(id,label){
+  const raw=(document.getElementById(id)?.value||'').trim();
+  if(!raw)return null;
+  try{return new RegExp(raw,'i');}
+  catch(e){return {error:`${label}: ${e.message||'invalid regex'}`};}
+}
+function dapnetLogFiltered(){
+  const status=document.getElementById('dapnetlog-filter-status');
+  const filters=[
+    {label:'Callsign',re:dapnetLogRegex('dapnetlog-callsign-filter','Callsign'),value:e=>e.callsign||''},
+    {label:'Recipient',re:dapnetLogRegex('dapnetlog-recipient-filter','Recipient'),value:e=>e.recipient||''},
+    {label:'Message',re:dapnetLogRegex('dapnetlog-message-filter','Message'),value:e=>e.text||''},
+  ];
+  const broken=filters.find(f=>f.re&&f.re.error);
+  if(broken){
+    if(status){status.textContent=`Regex error: ${broken.re.error}`;status.classList.add('is-error');}
+    return [];
+  }
+  const rows=(state.dapnetLog||[]).filter(e=>filters.every(f=>!f.re||f.re.test(String(f.value(e)))));
+  if(status){
+    const total=(state.dapnetLog||[]).length;
+    status.textContent=`${rows.length} / ${total}`;
+    status.classList.remove('is-error');
+  }
+  return rows;
+}
+function dapnetLogFilterChanged(){dapnetLogPageIndex=0;renderDapnetLog();}
 function dapnetRow(e){
   return `<tr><td class="sds-time">${escHtml(e.ts||'')}</td><td>${dirBadge(e.direction)}</td><td>${escHtml(e.callsign||'')}</td><td>${escHtml(e.recipient||'')}</td><td>${dapPaths(e.paths)}</td><td class="sds-msg">${escHtml(e.text||'')}</td></tr>`;
 }
 function renderDapnetLog(){
   const tb=document.getElementById('dapnetlog-tbody');if(!tb)return;
-  const rows=state.dapnetLog||[];
+  const rows=dapnetLogFiltered();
   dapnetLogPageIndex=clampLogPage(dapnetLogPageIndex,rows.length);
   setLogPager('dapnetlog-page',dapnetLogPageIndex,rows.length);
-  if(!rows.length){tb.innerHTML=`<tr><td colspan="6" class="sds-empty" style="text-align:center;padding:24px">No DAPNET messages yet</td></tr>`;return;}
+  if(!rows.length){tb.innerHTML=`<tr><td colspan="6" class="sds-empty" style="text-align:center;padding:24px">No matching DAPNET messages</td></tr>`;return;}
   const start=dapnetLogPageIndex*LOG_PAGE_SIZE;
   tb.innerHTML=rows.slice(start,start+LOG_PAGE_SIZE).map(dapnetRow).join('');
 }
@@ -6175,7 +6256,7 @@ async function clearDapnetLog(){
   try{const r=await fetch('/api/dapnet-log',{method:'DELETE'});if(!r.ok)return;state.dapnetLog=[];dapnetLogPageIndex=0;renderDapnetLog();}catch{}
 }
 function exportDapnetLog(){
-  const rows=state.dapnetLog||[];
+  const rows=dapnetLogFiltered();
   if(!rows.length)return;
   const lines=['TIME\tDIR\tCALLSIGN\tRECIPIENT\tPATHS\tMESSAGE'];
   for(const e of rows){
@@ -6610,12 +6691,66 @@ function meshMsgRow(m){
     <td class="sds-time">${posRf}</td>
   </tr>`;
 }
+function meshMsgTransport(m){
+  return String(m.src_type||m.msg_type||'').trim().toLowerCase();
+}
+function meshMsgIsUdp(m){return meshMsgTransport(m)==='udp';}
+function meshMsgIsLora(m){return meshMsgTransport(m)==='lora';}
+function meshMsgSourceMatches(m,raw){
+  const q=String(raw||'').trim().toUpperCase();
+  if(!q)return true;
+  const hay=String(m.src||'').toUpperCase();
+  const parts=q.split(/[\s,]+/).filter(Boolean);
+  return !parts.length||parts.some(part=>hay.includes(part));
+}
+function meshMsgRegex(){
+  const raw=(document.getElementById('mesh-msg-regex-filter')?.value||'').trim();
+  if(!raw)return null;
+  try{return new RegExp(raw,'i');}
+  catch(e){return {error:e.message||'invalid regex'};}
+}
+function updateMeshMsgFilterButtons(){
+  const udp=document.getElementById('mesh-msg-filter-udp');
+  const lora=document.getElementById('mesh-msg-filter-lora');
+  if(udp){udp.classList.toggle('btn-primary',meshMsgShowUdp);udp.classList.toggle('btn-danger',!meshMsgShowUdp);}
+  if(lora){lora.classList.toggle('btn-primary',meshMsgShowLora);lora.classList.toggle('btn-danger',!meshMsgShowLora);}
+}
+function meshMsgFiltered(){
+  const sourceRaw=document.getElementById('mesh-msg-source-filter')?.value||'';
+  const regex=meshMsgRegex();
+  const status=document.getElementById('mesh-msg-filter-status');
+  if(regex&&regex.error){
+    updateMeshMsgFilterButtons();
+    if(status){status.textContent=`Regex error: ${regex.error}`;status.classList.add('is-error');}
+    return [];
+  }
+  const rows=(state.meshcomMessages||[]).filter(m=>{
+    if(!meshMsgShowUdp&&meshMsgIsUdp(m))return false;
+    if(!meshMsgShowLora&&meshMsgIsLora(m))return false;
+    if(!meshMsgSourceMatches(m,sourceRaw))return false;
+    if(regex&&!regex.test(String(m.msg||'')))return false;
+    return true;
+  });
+  if(status){
+    const total=(state.meshcomMessages||[]).length;
+    status.textContent=`${rows.length} / ${total}`;
+    status.classList.remove('is-error');
+  }
+  updateMeshMsgFilterButtons();
+  return rows;
+}
+function meshMsgFilterChanged(){meshMsgPageIndex=0;renderMeshcomMessages();}
+function toggleMeshMsgTransport(kind){
+  if(kind==='udp')meshMsgShowUdp=!meshMsgShowUdp;
+  if(kind==='lora')meshMsgShowLora=!meshMsgShowLora;
+  meshMsgFilterChanged();
+}
 function renderMeshcomMessages(){
   const tb=document.getElementById('mesh-msgs-tbody');if(!tb)return;
-  const rows=state.meshcomMessages||[];
+  const rows=meshMsgFiltered();
   meshMsgPageIndex=clampLogPage(meshMsgPageIndex,rows.length);
   setLogPager('mesh-msgs-page',meshMsgPageIndex,rows.length);
-  if(!rows.length){tb.innerHTML=`<tr><td colspan="8" class="sds-empty" style="text-align:center;padding:24px">No MeshCom packets yet</td></tr>`;return;}
+  if(!rows.length){tb.innerHTML=`<tr><td colspan="8" class="sds-empty" style="text-align:center;padding:24px">No matching MeshCom packets</td></tr>`;return;}
   const start=meshMsgPageIndex*LOG_PAGE_SIZE;
   tb.innerHTML=rows.slice(start,start+LOG_PAGE_SIZE).map(meshMsgRow).join('');
 }
@@ -6629,7 +6764,7 @@ async function clearMeshcomMessages(){
   try{const r=await fetch('/api/meshcom-messages',{method:'DELETE'});if(!r.ok)return;state.meshcomMessages=[];meshMsgPageIndex=0;renderMeshcomMessages();}catch{}
 }
 function exportMeshcomMessages(){
-  const rows=state.meshcomMessages||[];
+  const rows=meshMsgFiltered();
   const lines=['time\tdir\ttype\tsource\tdestination\tmessage\tpaths\tposition\trf'];
   rows.forEach(m=>{
     const pos=(m.lat!==null&&m.lat!==undefined&&m.lon!==null&&m.lon!==undefined)?(`${m.lat},${m.lon}`):'';
