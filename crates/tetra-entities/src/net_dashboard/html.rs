@@ -7343,10 +7343,15 @@ function meshNormalizeRouteItem(item){
   const route=meshRouteParts(item);
   return Object.assign({},item,{src:route.src||item?.src,via:route.via});
 }
+function meshRouteBadge(value){
+  const text=String(value||'').trim();
+  if(!text||text==='—')return '<span class="sds-empty">—</span>';
+  return `<span class="badge badge-blue" style="font-size:10px">${escHtml(text)}</span>`;
+}
 function meshVia(item){
   const via=meshRouteParts(item).via;
   if(!via.length)return '<span class="sds-empty">—</span>';
-  return via.map(v=>`<span class="badge badge-blue" style="font-size:10px">${escHtml(v)}</span>`).join(' ');
+  return via.map(meshRouteBadge).join(' ');
 }
 function meshNodeFiltered(){
   const q=(document.getElementById('mesh-node-filter')?.value||'').trim().toUpperCase();
@@ -7385,7 +7390,7 @@ function meshNodeRow(n){
   const fw=[n.firmware,n.fw_sub].filter(Boolean).join(' / ')||'—';
   const src=meshOrigin(n)||'—';
   return `<tr>
-    <td><span class="badge badge-blue" style="font-size:10px">${escHtml(src)}</span><div class="sds-empty">${escHtml(n.last_type||'')}</div></td>
+    <td>${meshRouteBadge(src)}<div class="sds-empty">${escHtml(n.last_type||'')}</div></td>
     <td>${meshVia(n)}</td>
     <td class="sds-time">${escHtml(n.last_seen||'—')}</td>
     <td>${meshMapLink(n.lat,n.lon)}</td>
@@ -7431,7 +7436,7 @@ function meshMsgRow(m){
     <td class="sds-time">${escHtml(m.ts||'')}</td>
     <td>${dirBadge(m.direction)}</td>
     <td><span class="badge" style="font-size:10px">${escHtml(m.msg_type||'unknown')}</span></td>
-    <td>${escHtml(src)}<div class="sds-empty">${escHtml(m.src_type||'')}</div></td>
+    <td>${meshRouteBadge(src)}<div class="sds-empty">${escHtml(m.src_type||'')}</div></td>
     <td>${meshVia(m)}</td>
     <td>${escHtml(m.dst||'—')}</td>
     <td class="sds-msg">${msgText}</td>
