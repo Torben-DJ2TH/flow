@@ -1070,6 +1070,7 @@ impl DashboardServer {
                     batt,
                     rssi,
                     snr,
+                    via,
                 } => {
                     s.push_meshcom_message(MeshcomMessageLogEntry {
                         ts: ts.clone(),
@@ -1077,6 +1078,7 @@ impl DashboardServer {
                         msg_type: msg_type.clone(),
                         src_type: src_type.clone(),
                         src: src.clone(),
+                        via: via.clone(),
                         dst: dst.clone(),
                         msg: msg.clone(),
                         msg_id: msg_id.clone(),
@@ -1102,9 +1104,11 @@ impl DashboardServer {
                     firmware,
                     fw_sub,
                     hw_id,
+                    via,
                 } => {
                     s.upsert_meshcom_node(MeshcomNodeLogEntry {
                         src: src.clone(),
+                        via: via.clone(),
                         last_seen: last_seen.clone(),
                         last_type: last_type.clone(),
                         lat: *lat,
@@ -1317,6 +1321,7 @@ fn event_to_ws_msg(event: &TelemetryEvent) -> Option<String> {
             batt,
             rssi,
             snr,
+            via,
         } => serde_json::json!({
             "type": "meshcom_message",
             "ts": ts,
@@ -1324,6 +1329,7 @@ fn event_to_ws_msg(event: &TelemetryEvent) -> Option<String> {
             "msg_type": msg_type,
             "src_type": src_type,
             "src": src,
+            "via": via,
             "dst": dst,
             "msg": msg,
             "msg_id": msg_id,
@@ -1348,9 +1354,11 @@ fn event_to_ws_msg(event: &TelemetryEvent) -> Option<String> {
             firmware,
             fw_sub,
             hw_id,
+            via,
         } => serde_json::json!({
             "type": "meshcom_node",
             "src": src,
+            "via": via,
             "last_seen": last_seen,
             "last_type": last_type,
             "lat": lat,
@@ -4169,6 +4177,7 @@ fn serve_meshcom_get(stream: TcpStream, shared_config: &Option<tetra_config::blu
         .map(|node| {
             serde_json::json!({
                 "src": node.src.clone(),
+                "via": node.via.clone(),
                 "last_seen": node.last_seen.clone(),
                 "last_type": node.last_type.clone(),
                 "lat": node.lat,
@@ -4193,6 +4202,7 @@ fn serve_meshcom_get(stream: TcpStream, shared_config: &Option<tetra_config::blu
                 "msg_type": msg.msg_type.clone(),
                 "src_type": msg.src_type.clone(),
                 "src": msg.src.clone(),
+                "via": msg.via.clone(),
                 "dst": msg.dst.clone(),
                 "msg": msg.msg.clone(),
                 "msg_id": msg.msg_id.clone(),
@@ -4395,6 +4405,7 @@ fn serve_geoalarm_get(stream: TcpStream, shared_config: &Option<tetra_config::bl
                 "ts": event.ts.clone(),
                 "source": event.source.clone(),
                 "device": event.device.clone(),
+                "via": event.via.clone(),
                 "lat": event.lat,
                 "lon": event.lon,
                 "distance_m": event.distance_m,
@@ -4778,6 +4789,7 @@ fn serve_meshcom_send(
                         msg_type: "msg".to_string(),
                         src_type: Some("flowstation".to_string()),
                         src: Some("FlowStation".to_string()),
+                        via: Vec::new(),
                         dst: Some(dst.to_string()),
                         msg: Some(msg_text.clone()),
                         msg_id: None,
@@ -4800,6 +4812,7 @@ fn serve_meshcom_send(
                         msg_type: "msg".to_string(),
                         src_type: Some("flowstation".to_string()),
                         src: Some("FlowStation".to_string()),
+                        via: Vec::new(),
                         dst: Some(dst.to_string()),
                         msg: Some(msg_text),
                         msg_id: None,

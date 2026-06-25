@@ -98,6 +98,8 @@ pub struct MeshcomMessageLogEntry {
     pub msg_type: String,
     pub src_type: Option<String>,
     pub src: Option<String>,
+    #[serde(default)]
+    pub via: Vec<String>,
     pub dst: Option<String>,
     pub msg: Option<String>,
     pub msg_id: Option<String>,
@@ -115,6 +117,8 @@ pub struct MeshcomMessageLogEntry {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MeshcomNodeLogEntry {
     pub src: String,
+    #[serde(default)]
+    pub via: Vec<String>,
     pub last_seen: String,
     pub last_type: String,
     pub lat: Option<f64>,
@@ -452,7 +456,8 @@ impl DashboardStateInner {
 
     /// Append one MeshCom packet to the persistent packet log. Best-effort only: write failures
     /// never affect UDP handling.
-    pub fn push_meshcom_message(&mut self, entry: MeshcomMessageLogEntry) {
+    pub fn push_meshcom_message(&mut self, mut entry: MeshcomMessageLogEntry) {
+        normalize_meshcom_message_route(&mut entry);
         self.meshcom_messages.push_front(entry);
         while self.meshcom_messages.len() > MESHCOM_MESSAGES_MAX {
             self.meshcom_messages.pop_back();
@@ -476,11 +481,13 @@ impl DashboardStateInner {
 
     /// Merge one MeshCom node update into the persistent node directory. Empty optional fields do
     /// not erase previously observed metadata for the same node.
-    pub fn upsert_meshcom_node(&mut self, update: MeshcomNodeLogEntry) {
+    pub fn upsert_meshcom_node(&mut self, mut update: MeshcomNodeLogEntry) {
+        normalize_meshcom_node_route(&mut update);
         if let Some(pos) = self.meshcom_nodes.iter().position(|node| node.src == update.src) {
             let mut node = self.meshcom_nodes.remove(pos);
             node.last_seen = update.last_seen;
             node.last_type = update.last_type;
+            node.via = update.via;
             if update.lat.is_some() {
                 node.lat = update.lat;
             }
@@ -630,12 +637,52 @@ fn load_meshcom_messages(path: &std::path::Path) -> std::collections::VecDeque<M
     let Ok(text) = std::fs::read_to_string(path) else {
         return std::collections::VecDeque::new();
     };
-    serde_json::from_str(&text).unwrap_or_default()
+    let mut entries: std::collections::VecDeque<MeshcomMessageLogEntry> = serde_json::from_str(&text).unwrap_or_default();
+    for entry in &mut entries {
+        normalize_meshcom_message_route(entry);
+    }
+    entries
 }
 
 fn load_meshcom_nodes(path: &std::path::Path) -> Vec<MeshcomNodeLogEntry> {
     let Ok(text) = std::fs::read_to_string(path) else {
         return Vec::new();
     };
-    serde_json::from_str(&text).unwrap_or_default()
+    let mut entries: Vec<MeshcomNodeLogEntry> = serde_json::from_str(&text).unwrap_or_default();
+    for entry in &mut entries {
+        normalize_meshcom_node_route(entry);
+    }
+    entries
+}
+
+fn normalize_meshcom_message_route(entry: &mut MeshcomMessageLogEntry) {
+    if !entry.via.is_empty() {
+        return;
+    }
+    let Some(src) = entry.src.as_deref() else {
+        return;
+    };
+    let (origin, via) = split_meshcom_route(src);
+    if !via.is_empty() {
+        entry.src = Some(origin);
+        entry.via = via;
+    }
+}
+
+fn normalize_meshcom_node_route(entry: &mut MeshcomNodeLogEntry) {
+    if !entry.via.is_empty() {
+        return;
+    }
+    let (origin, via) = split_meshcom_route(&entry.src);
+    if !via.is_empty() {
+        entry.src = origin;
+        entry.via = via;
+    }
+}
+
+fn split_meshcom_route(src: &str) -> (String, Vec<String>) {
+    let mut parts = src.split(',').map(str::trim).filter(|s| !s.is_empty());
+    let origin = parts.next().unwrap_or(src.trim()).to_string();
+    let via = parts.map(ToString::to_string).collect();
+    (origin, via)
 }

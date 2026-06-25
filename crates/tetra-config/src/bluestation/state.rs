@@ -480,6 +480,7 @@ impl Default for EcholinkRuntimeStatus {
 #[derive(Debug, Clone)]
 pub struct MeshcomNodeStatus {
     pub src: String,
+    pub via: Vec<String>,
     pub last_seen: String,
     pub last_type: String,
     pub lat: Option<f64>,
@@ -500,6 +501,7 @@ pub struct MeshcomMessageStatus {
     pub msg_type: String,
     pub src_type: Option<String>,
     pub src: Option<String>,
+    pub via: Vec<String>,
     pub dst: Option<String>,
     pub msg: Option<String>,
     pub msg_id: Option<String>,
@@ -556,6 +558,7 @@ pub struct GeoalarmEventStatus {
     pub ts: String,
     pub source: String,
     pub device: String,
+    pub via: Vec<String>,
     pub lat: f64,
     pub lon: f64,
     pub distance_m: f64,
