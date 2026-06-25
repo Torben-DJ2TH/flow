@@ -884,6 +884,9 @@ tr.row-emergency td:first-child{box-shadow:inset 3px 0 0 var(--danger);}
 }
 .mesh-msg-filter-buttons{display:flex;align-items:center;gap:6px;}
 .mesh-msg-filter-field{display:flex;flex-direction:column;gap:5px;min-width:0;}
+.mesh-msg-filters{
+  grid-template-columns:auto minmax(150px,0.9fr) minmax(150px,0.9fr) minmax(220px,1.2fr) auto;
+}
 .mesh-msg-filter-label{
   font-family:var(--mono);font-size:10px;font-weight:600;
   letter-spacing:0.08em;text-transform:uppercase;color:var(--text3);
@@ -2188,6 +2191,9 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
 .maps-list-title{font-weight:800;color:var(--text);}
 .maps-list-detail{font-size:12px;color:var(--text2);line-height:1.45;margin-top:4px;}
 .maps-empty{padding:28px;text-align:center;color:var(--text3);font:700 12px var(--mono);}
+.maps-source-filters{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:3px;}
+.maps-source-btn{padding:4px 9px;font-size:11px;line-height:1.15;}
+.maps-source-msg{display:block;margin-top:5px;color:var(--text3);font-size:12px;}
 @media(max-width:1100px){.maps-layout{grid-template-columns:1fr}.maps-stage{min-height:430px}.maps-list{max-height:360px;}}
 </style>
 </head>
@@ -3594,6 +3600,10 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
             <label class="mesh-msg-filter-field">
               <span class="mesh-msg-filter-label">Source filter</span>
               <input type="search" id="mesh-msg-source-filter" class="form-input" placeholder="DJ2TH, OE1ABC-12" oninput="meshMsgFilterChanged()">
+            </label>
+            <label class="mesh-msg-filter-field">
+              <span class="mesh-msg-filter-label">Destination regex</span>
+              <input type="search" id="mesh-msg-dst-regex-filter" class="form-input" placeholder="\*|262|DJ2TH" oninput="meshMsgFilterChanged()" spellcheck="false">
             </label>
             <label class="mesh-msg-filter-field">
               <span class="mesh-msg-filter-label">Message regex</span>
@@ -6225,7 +6235,17 @@ function lipPositionFromText(text){
   if(!Number.isFinite(lat)||!Number.isFinite(lon)||lat<-90||lat>90||lon<-180||lon>180)return null;
   return {lat,lon};
 }
-let mapsCurrentMarkers=[],mapsSelectedIndex=-1,mapsCurrentBounds=null,mapsCurrentView=null,mapsFocus=null,mapsFocusMarker=null,mapsUserCenter=null,mapsUserZoom=null,mapsDrag=null,mapsLatestOnly=localStorage.getItem('maps_latest_only')==='1';
+const MAP_SOURCE_KEYS=['sds','meshcom','geoalarm','station'];
+const MAP_SOURCE_LABELS={sds:'SDS/LIP',meshcom:'MeshCom',geoalarm:'GeoAlarm',station:'FlowStation'};
+function mapsLoadSourceFilters(){
+  const defaults={sds:true,meshcom:true,geoalarm:true,station:true};
+  try{
+    const raw=JSON.parse(localStorage.getItem('maps_source_filters')||'{}');
+    MAP_SOURCE_KEYS.forEach(k=>{if(typeof raw[k]==='boolean')defaults[k]=raw[k];});
+  }catch{}
+  return defaults;
+}
+let mapsCurrentMarkers=[],mapsSelectedIndex=-1,mapsCurrentBounds=null,mapsCurrentView=null,mapsFocus=null,mapsFocusMarker=null,mapsUserCenter=null,mapsUserZoom=null,mapsDrag=null,mapsWheelDelta=0,mapsLatestOnly=localStorage.getItem('maps_latest_only')==='1',mapsSourceFilters=mapsLoadSourceFilters();
 function mapsNumber(v){
   if(v===null||v===undefined||v==='')return NaN;
   if(typeof v==='string'){
@@ -6354,6 +6374,55 @@ function mapsLatestMarkers(markers){
     latest.push(m);
   });
   return latest;
+}
+function mapsSourceForMarker(m){
+  if(!m)return '';
+  if(m.type==='sds')return 'sds';
+  if(m.type==='meshcom')return 'meshcom';
+  if(m.type==='geoalarm'||m.type==='alarm')return 'geoalarm';
+  if(m.type==='station')return 'station';
+  return '';
+}
+function mapsApplySourceFilters(markers){
+  return markers.filter(m=>{
+    const source=mapsSourceForMarker(m);
+    return !source||mapsSourceFilters[source]!==false;
+  });
+}
+function mapsAnySourceEnabled(){
+  return MAP_SOURCE_KEYS.some(k=>mapsSourceFilters[k]!==false);
+}
+function mapsSaveSourceFilters(){
+  localStorage.setItem('maps_source_filters',JSON.stringify(mapsSourceFilters));
+}
+function toggleMapsSource(source){
+  if(!MAP_SOURCE_KEYS.includes(source))return;
+  mapsSourceFilters[source]=mapsSourceFilters[source]===false;
+  mapsSaveSourceFilters();
+  mapsUserCenter=null;
+  mapsUserZoom=null;
+  updateMapsSourceButtons();
+  renderMapsIfActive();
+}
+function mapsSourceButtonsHtml(message=''){
+  const buttons=MAP_SOURCE_KEYS.map(k=>{
+    const on=mapsSourceFilters[k]!==false;
+    return `<button type="button" class="btn btn-sm maps-source-btn ${on?'btn-primary':''}" aria-pressed="${on?'true':'false'}" onclick="toggleMapsSource('${k}')">${escHtml(MAP_SOURCE_LABELS[k]||k)}</button>`;
+  }).join('');
+  return `<div class="maps-source-filters">${buttons}</div>${message?`<span class="maps-source-msg">${escHtml(message)}</span>`:''}`;
+}
+function mapsSourceMessage(markerCount,rawTotal){
+  if(markerCount)return '';
+  if(!mapsAnySourceEnabled())return 'All marker sources hidden';
+  return rawTotal?`No usable coordinates yet (${mapsRawCountsText(mapsRawCounts())})`:'No positions collected yet';
+}
+function updateMapsSourceButtons(){
+  const sub=document.getElementById('maps-hero-sub');
+  if(!sub)return;
+  const markerCount=mapsCurrentMarkers.length;
+  const rawCounts=mapsRawCounts();
+  const rawTotal=rawCounts.sds+rawCounts.meshMessages+rawCounts.meshNodes+rawCounts.geo;
+  sub.innerHTML=mapsSourceButtonsHtml(mapsSourceMessage(markerCount,rawTotal));
 }
 function meshPathsText(paths){
   return Array.isArray(paths)&&paths.length?paths.join(', '):'';
@@ -6485,7 +6554,11 @@ function mapsZoom(delta,anchorEvent=null){
 function mapsWheel(e){
   if(!mapsActive())return;
   e.preventDefault();
-  mapsZoom(e.deltaY<0?1:-1,e);
+  mapsWheelDelta+=Math.max(-0.5,Math.min(0.5,-e.deltaY/100));
+  if(Math.abs(mapsWheelDelta)<1)return;
+  const step=mapsWheelDelta>0?1:-1;
+  mapsWheelDelta-=step;
+  mapsZoom(step,e);
 }
 function mapsPointerDown(e){
   if(e.button!==0)return;
@@ -6582,6 +6655,7 @@ function bindMapsControls(){
     stage.addEventListener('pointerleave',mapsPointerUp);
   }
   updateMapsLatestButton();
+  updateMapsSourceButtons();
 }
 function toggleMapsLatestOnly(){
   mapsLatestOnly=!mapsLatestOnly;
@@ -6593,7 +6667,8 @@ function toggleMapsLatestOnly(){
 }
 function renderMapsPage(){
   const allMarkers=mapsCollect();
-  const markers=mapsLatestMarkers(allMarkers);
+  const sourceMarkers=mapsApplySourceFilters(allMarkers);
+  const markers=mapsLatestMarkers(sourceMarkers);
   const visibleMarkers=mapsVisibleMarkers(markers);
   const rawCounts=mapsRawCounts();
   const rawTotal=rawCounts.sds+rawCounts.meshMessages+rawCounts.meshNodes+rawCounts.geo;
@@ -6607,9 +6682,9 @@ function renderMapsPage(){
   const dot=document.getElementById('maps-hero-dot');
   updateMapsLatestButton();
   if(count)count.textContent=markers.length
-    ? (mapsLatestOnly?`${markers.length} latest · ${allMarkers.length} entries`:`${visibleMarkers.length} positions · ${markers.length} entries`)
+    ? (mapsLatestOnly?`${markers.length} latest · ${sourceMarkers.length} enabled entries`:`${visibleMarkers.length} positions · ${markers.length} enabled entries`)
     : `${rawTotal} records · 0 positions`;
-  if(sub)sub.textContent=markers.length?'SDS/LIP · MeshCom · GeoAlarm · FlowStation':(rawTotal?`No usable coordinates yet (${mapsRawCountsText(rawCounts)})`:'No positions collected yet');
+  if(sub)sub.innerHTML=mapsSourceButtonsHtml(mapsSourceMessage(markers.length,rawTotal));
   if(dot){dot.classList.toggle('is-ok',markers.length>0);dot.classList.toggle('is-idle',!markers.length);}
   if(layer&&mapsCurrentView){
     layer.innerHTML=visibleMarkers.map((m,i)=>{
@@ -7345,12 +7420,14 @@ function meshMsgSourceMatches(m,raw){
   const parts=q.split(/[\s,]+/).filter(Boolean);
   return !parts.length||parts.some(part=>hay.includes(part));
 }
-function meshMsgRegex(){
-  const raw=(document.getElementById('mesh-msg-regex-filter')?.value||'').trim();
+function meshMsgRegexFromInput(id){
+  const raw=(document.getElementById(id)?.value||'').trim();
   if(!raw)return null;
   try{return new RegExp(raw,'i');}
   catch(e){return {error:e.message||'invalid regex'};}
 }
+function meshMsgRegex(){return meshMsgRegexFromInput('mesh-msg-regex-filter');}
+function meshMsgDstRegex(){return meshMsgRegexFromInput('mesh-msg-dst-regex-filter');}
 function updateMeshMsgFilterButtons(){
   const udp=document.getElementById('mesh-msg-filter-udp');
   const lora=document.getElementById('mesh-msg-filter-lora');
@@ -7365,11 +7442,13 @@ function updateMeshMsgFilterButtons(){
 }
 function meshMsgFiltered(){
   const sourceRaw=document.getElementById('mesh-msg-source-filter')?.value||'';
+  const dstRegex=meshMsgDstRegex();
   const regex=meshMsgRegex();
   const status=document.getElementById('mesh-msg-filter-status');
-  if(regex&&regex.error){
+  if((dstRegex&&dstRegex.error)||(regex&&regex.error)){
     updateMeshMsgFilterButtons();
-    if(status){status.textContent=`Regex error: ${regex.error}`;status.classList.add('is-error');}
+    const message=dstRegex&&dstRegex.error?`Destination regex error: ${dstRegex.error}`:`Message regex error: ${regex.error}`;
+    if(status){status.textContent=message;status.classList.add('is-error');}
     return [];
   }
   const rows=(state.meshcomMessages||[]).filter(m=>{
@@ -7379,6 +7458,7 @@ function meshMsgFiltered(){
     if(!meshMsgShowPos&&meshMsgIsPos(m))return false;
     if(!meshMsgShowTime&&meshMsgIsTime(m))return false;
     if(!meshMsgSourceMatches(m,sourceRaw))return false;
+    if(dstRegex&&!dstRegex.test(String(m.dst||'')))return false;
     if(regex&&!regex.test(String(m.msg||'')))return false;
     return true;
   });
