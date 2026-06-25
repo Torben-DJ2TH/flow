@@ -2173,6 +2173,7 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
 .maps-pin.meshcom{background:var(--accent);}
 .maps-pin.geoalarm{background:var(--warn);}
 .maps-pin.alarm{background:var(--danger);}
+.maps-pin.focus{background:#8b5cf6;}
 .maps-pin.station{background:var(--ok);}
 .maps-popup{position:absolute;left:12px;bottom:12px;max-width:min(500px,calc(100% - 24px));padding:12px;background:color-mix(in srgb,var(--bg2) 94%,transparent);border:1px solid var(--border);border-radius:var(--r);box-shadow:var(--card-shadow);z-index:3;}
 .maps-popup-title{font-weight:800;color:var(--text);margin-bottom:4px;}
@@ -6223,20 +6224,40 @@ function lipPositionFromText(text){
   if(!Number.isFinite(lat)||!Number.isFinite(lon)||lat<-90||lat>90||lon<-180||lon>180)return null;
   return {lat,lon};
 }
-let mapsCurrentMarkers=[],mapsSelectedIndex=-1,mapsCurrentBounds=null,mapsCurrentView=null,mapsFocus=null,mapsUserZoom=null,mapsLatestOnly=localStorage.getItem('maps_latest_only')==='1';
+let mapsCurrentMarkers=[],mapsSelectedIndex=-1,mapsCurrentBounds=null,mapsCurrentView=null,mapsFocus=null,mapsFocusMarker=null,mapsUserZoom=null,mapsLatestOnly=localStorage.getItem('maps_latest_only')==='1';
+function mapsNumber(v){
+  if(v===null||v===undefined||v==='')return NaN;
+  if(typeof v==='string'){
+    const s=v.trim();
+    if(!s)return NaN;
+    return Number((s.includes(',')&&!s.includes('.'))?s.replace(',','.'):s);
+  }
+  return Number(v);
+}
+function mapsCoordValue(obj,keys){
+  if(!obj)return NaN;
+  for(const k of keys){
+    const n=mapsNumber(obj[k]);
+    if(Number.isFinite(n))return n;
+  }
+  return NaN;
+}
+function mapsLat(obj){return mapsCoordValue(obj,['lat','latitude']);}
+function mapsLon(obj){return mapsCoordValue(obj,['lon','lng','long','longitude']);}
 function validMapLatLon(lat,lon){
-  const la=Number(lat),lo=Number(lon);
+  const la=mapsNumber(lat),lo=mapsNumber(lon);
   return Number.isFinite(la)&&Number.isFinite(lo)&&la>=-90&&la<=90&&lo>=-180&&lo<=180;
 }
 function mapLinkHtml(lat,lon,label){
-  const la=Number(lat),lo=Number(lon);
+  const la=mapsNumber(lat),lo=mapsNumber(lon);
   if(!validMapLatLon(la,lo))return escHtml(label||'map');
   return `<a class="sds-map-link" href="javascript:void(0)" onclick="event.preventDefault();openMapsAt(${la},${lo})">${escHtml(label||`${la.toFixed(5)}, ${lo.toFixed(5)}`)}</a>`;
 }
 function openMapsAt(lat,lon){
-  const la=Number(lat),lo=Number(lon);
+  const la=mapsNumber(lat),lo=mapsNumber(lon);
   if(!validMapLatLon(la,lo))return;
   mapsFocus={lat:la,lon:lo};
+  mapsFocusMarker={type:'focus',title:'Selected position',lat:la,lon:lo,detail:'Position opened from another dashboard table',meta:'dashboard link',ts:nowStamp(),key:`focus:${la.toFixed(6)}:${lo.toFixed(6)}`};
   showPage('maps',document.getElementById('nav-maps'));
 }
 function mapsActive(){
@@ -6248,13 +6269,13 @@ function renderMapsIfActive(){
   if(typeof requestAnimationFrame==='function')requestAnimationFrame(()=>{if(mapsActive())renderMapsPage();});
 }
 function mapsMarker(type,title,lat,lon,detail,meta,ts,key){
-  const la=Number(lat),lo=Number(lon);
+  const la=mapsNumber(lat),lo=mapsNumber(lon);
   if(!validMapLatLon(la,lo))return null;
   if(Math.abs(la)<0.000001&&Math.abs(lo)<0.000001)return null;
   return {type,title:title||'Position',lat:la,lon:lo,detail:detail||'',meta:meta||'',ts:ts||'',key:key||`${type}:${title||'Position'}`};
 }
 function mapsLatLonUsable(lat,lon){
-  const la=Number(lat),lo=Number(lon);
+  const la=mapsNumber(lat),lo=mapsNumber(lon);
   return validMapLatLon(la,lo)&&!(Math.abs(la)<0.000001&&Math.abs(lo)<0.000001);
 }
 function mapsGeoCenterFromText(text){
@@ -6267,41 +6288,59 @@ function mapsStationPosition(){
   const geoCfg=state.geoalarmConfig||{};
   const candidates=[
     {lat:geoCfg.flowstation_lat,lon:geoCfg.flowstation_lon},
+    {lat:geoCfg.flowstation_latitude,lon:geoCfg.flowstation_longitude},
     mapsGeoCenterFromText(geoCfg.runtime&&geoCfg.runtime.center),
     mapsGeoCenterFromText(document.getElementById('geo-center')?.textContent),
     {lat:document.getElementById('geo-lat')?.value,lon:document.getElementById('geo-lon')?.value},
   ].filter(Boolean);
   return candidates.find(p=>mapsLatLonUsable(p.lat,p.lon))||null;
 }
+function mapsRawCounts(){
+  return {
+    sds:(state.sdsLog||[]).length,
+    meshMessages:(state.meshcomMessages||[]).length,
+    meshNodes:(state.meshcomNodes||[]).length,
+    geo:(state.geoalarmEvents||[]).length,
+  };
+}
+function mapsRawCountsText(c){
+  return `${c.sds} SDS · ${c.meshMessages} Mesh msg · ${c.meshNodes} Mesh nodes · ${c.geo} GeoAlarm`;
+}
 function mapsCollect(){
   const station=[],items=[];
   const fsPos=mapsStationPosition();
   const fs=fsPos?mapsMarker('station','FlowStation',fsPos.lat,fsPos.lon,'Station position from GeoAlarm FlowStation latitude/longitude','GeoAlarm config','','station:flowstation'):null;
   if(fs)station.push(fs);
+  if(mapsFocusMarker)station.push(mapsFocusMarker);
   (state.sdsLog||[]).forEach(e=>{
     const lip=lipPositionFromText(e.text);
     if(!lip)return;
     const cs=callsigns[e.source_issi]?.cs;
     const src=[e.source_issi,cs].filter(Boolean).join(' ');
-    items.push(mapsMarker('sds',`TETRA LIP ${src||'—'}`,lip.lat,lip.lon,
+    const marker=mapsMarker('sds',`TETRA LIP ${src||'—'}`,lip.lat,lip.lon,
       `SDS ${String(e.direction||'').toUpperCase()} ${e.source_issi||'—'} → ${e.dest_issi||'—'}${e.is_group?' group':''}`,
-      'SDS/LIP',e.ts,`sds:${e.source_issi||src||'unknown'}`));
+      'SDS/LIP',e.ts,`sds:${e.source_issi||src||'unknown'}`);
+    if(marker)items.push(marker);
   });
   (state.meshcomNodes||[]).forEach(n=>{
     const detail=[n.last_type,meshRfText(n),n.batt!==null&&n.batt!==undefined?`Battery ${meshBatteryText(n.batt)}`:''].filter(v=>v&&v!=='—').join(' · ');
-    items.push(mapsMarker('meshcom',`MeshCom node ${n.src||'—'}`,n.lat,n.lon,detail||'MeshCom node position','MeshCom node',n.last_seen,`meshcom:${n.src||'unknown'}`));
+    const marker=mapsMarker('meshcom',`MeshCom node ${n.src||'—'}`,mapsLat(n),mapsLon(n),detail||'MeshCom node position','MeshCom node',n.last_seen,`meshcom:${n.src||'unknown'}`);
+    if(marker)items.push(marker);
   });
   (state.meshcomMessages||[]).forEach(m=>{
     const detail=m.msg||'MeshCom position packet';
     const meta=[`MeshCom ${m.src_type||m.msg_type||'packet'}`,m.src?`from ${m.src}`:'',m.dst?`to ${m.dst}`:''].filter(Boolean).join(' · ');
-    items.push(mapsMarker('meshcom',`MeshCom ${m.src||'—'}`,m.lat,m.lon,detail,meta,m.ts,`meshcom:${m.src||'unknown'}`));
+    const marker=mapsMarker('meshcom',`MeshCom ${m.src||'—'}`,mapsLat(m),mapsLon(m),detail,meta,m.ts,`meshcom:${m.src||'unknown'}`);
+    if(marker)items.push(marker);
   });
   (state.geoalarmEvents||[]).forEach(e=>{
-    const detail=[e.inside_radius?'inside radius':'outside radius',Number.isFinite(Number(e.distance_m))?`${Number(e.distance_m).toFixed(0)} m`:null,meshPathsText(e.paths)].filter(Boolean).join(' · ');
-    items.push(mapsMarker(e.alarmed?'alarm':'geoalarm',`GeoAlarm ${e.device||'—'}`,e.lat,e.lon,detail,e.source||'GeoAlarm',e.ts,`geoalarm:${e.source||'unknown'}:${e.device||'unknown'}`));
+    const distance=mapsNumber(e.distance_m);
+    const detail=[e.inside_radius?'inside radius':'outside radius',Number.isFinite(distance)?`${distance.toFixed(0)} m`:null,meshPathsText(e.paths)].filter(Boolean).join(' · ');
+    const marker=mapsMarker(e.alarmed?'alarm':'geoalarm',`GeoAlarm ${e.device||'—'}`,mapsLat(e),mapsLon(e),detail,e.source||'GeoAlarm',e.ts,`geoalarm:${e.source||'unknown'}:${e.device||'unknown'}`);
+    if(marker)items.push(marker);
   });
   items.sort((a,b)=>String(b.ts||'').localeCompare(String(a.ts||'')));
-  return station.concat(items.filter(Boolean));
+  return station.concat(items);
 }
 function mapsLatestMarkers(markers){
   if(!mapsLatestOnly)return markers;
@@ -6408,6 +6447,7 @@ function mapsZoom(delta){
 }
 function mapsInitial(m){
   if(m.type==='station')return 'FS';
+  if(m.type==='focus')return 'F';
   if(m.type==='sds')return 'S';
   if(m.type==='meshcom')return 'M';
   if(m.type==='alarm')return '!';
@@ -6415,6 +6455,7 @@ function mapsInitial(m){
 }
 function mapsTypeLabel(m){
   if(m.type==='station')return 'station';
+  if(m.type==='focus')return 'focus';
   if(m.type==='sds')return 'sds';
   if(m.type==='meshcom')return 'mesh';
   if(m.type==='alarm')return 'alarm';
@@ -6473,6 +6514,8 @@ function renderMapsPage(){
   const allMarkers=mapsCollect();
   const markers=mapsLatestMarkers(allMarkers);
   const visibleMarkers=mapsVisibleMarkers(markers);
+  const rawCounts=mapsRawCounts();
+  const rawTotal=rawCounts.sds+rawCounts.meshMessages+rawCounts.meshNodes+rawCounts.geo;
   mapsCurrentMarkers=markers;
   mapsCurrentBounds=mapsBounds(markers);
   mapsCurrentView=mapsRenderTiles(mapsCurrentBounds);
@@ -6482,8 +6525,10 @@ function renderMapsPage(){
   const sub=document.getElementById('maps-hero-sub');
   const dot=document.getElementById('maps-hero-dot');
   updateMapsLatestButton();
-  if(count)count.textContent=mapsLatestOnly?`${markers.length} latest · ${allMarkers.length} entries`:`${visibleMarkers.length} positions · ${markers.length} entries`;
-  if(sub)sub.textContent=markers.length?'SDS/LIP · MeshCom · GeoAlarm · FlowStation':'No positions collected yet';
+  if(count)count.textContent=markers.length
+    ? (mapsLatestOnly?`${markers.length} latest · ${allMarkers.length} entries`:`${visibleMarkers.length} positions · ${markers.length} entries`)
+    : `${rawTotal} records · 0 positions`;
+  if(sub)sub.textContent=markers.length?'SDS/LIP · MeshCom · GeoAlarm · FlowStation':(rawTotal?`No usable coordinates yet (${mapsRawCountsText(rawCounts)})`:'No positions collected yet');
   if(dot){dot.classList.toggle('is-ok',markers.length>0);dot.classList.toggle('is-idle',!markers.length);}
   if(layer&&mapsCurrentView){
     layer.innerHTML=visibleMarkers.map((m,i)=>{
@@ -7092,8 +7137,8 @@ async function echolinkDisconnect(){
 
 function meshMapLink(lat,lon,label){
   if(lat===null||lat===undefined||lon===null||lon===undefined)return '—';
-  const la=Number(lat),lo=Number(lon);
-  if(!Number.isFinite(la)||!Number.isFinite(lo))return '—';
+  const la=mapsNumber(lat),lo=mapsNumber(lon);
+  if(!validMapLatLon(la,lo))return '—';
   return mapLinkHtml(la,lo,label||`${la.toFixed(5)}, ${lo.toFixed(5)}`);
 }
 function meshRfText(row){
