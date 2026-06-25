@@ -95,6 +95,7 @@ Built in Rust on top of [tetra-bluestation](https://github.com/MidnightBlueLabs/
 | OTA update (pull latest, rebuild, restart — one button) | ✅ |
 | System tab: uptime, CPU, RAM, temperature, RF hardware info | ✅ |
 | Integration pages: Asterisk SIP, DAPNET, EchoLink, MeshCom, GeoAlarm, Telegram | ✅ |
+| Maps page with OpenStreetMap view for SDS/LIP, MeshCom, GeoAlarm, and FlowStation positions | ✅ |
 | Health view for Brew, Asterisk, DAPNET, EchoLink, MeshCom, GeoAlarm | ✅ |
 | Restart recovery cache for known radios after BS process restart | ✅ |
 
@@ -685,8 +686,9 @@ current route, last TX/error, and the downloaded directory list.
 ### MeshCom external UDP bridge
 
 MeshCom nodes can send JSON packets to FlowStation using MeshCom extUDP. The
-dashboard shows live nodes and messages. Incoming MeshCom text messages can be
-forwarded independently to normal SDS, SIP/Snom, and Telegram.
+dashboard shows live nodes and messages and persists both lists across restarts.
+Incoming MeshCom text messages can be forwarded independently to normal SDS,
+SIP/Snom, and Telegram.
 
 ```toml
 [meshcom]
@@ -722,6 +724,12 @@ example:
 --extudpip <flowstation-ip>
 --extudp on
 ```
+
+The MeshCom dashboard page includes separate transport filters for `udp`,
+`lora`, and `node`, plus a `pos` packet-type filter. Source matching supports a
+comma/space-separated source list, and the message field accepts a JavaScript
+regular expression. MeshCom node and message tables also have clear and text
+export buttons.
 
 ### GeoAlarm
 
@@ -863,16 +871,19 @@ Available at `http://<bts-ip>:8080` when `[dashboard]` is configured.
 **Calls** — active calls: caller, destination, duration, simplex/duplex flag.
 
 **Last Heard** — rolling history of call starts and SDS activity.
+Includes source filters for local, Brew, Brew2, Asterisk, and EchoLink entries,
+plus regex filters for ISSI and destination and call duration display.
 
 **SDS Log** — received, transmitted, and network SDS history with paging, clear,
 and text export. LIP position entries are rendered as map links when coordinates
-are available.
+are available. The table has regex filters for source/from and destination/TG.
 
 **Log** — live log stream with level filter and autoscroll.
 
 **DAPNET** — incoming DAPNET log, outgoing DAPNET send form, RIC routing, and
 per-target forwarding toggles for SDS, TPG2200 Call-Out, and Telegram. Includes
-paging, clear, and text export.
+paging, clear, text export, and regex filters for callsign, recipient, and
+message.
 
 **Asterisk SIP** — SIP account, RTP range, service-number routing, and Snom XML
 notification settings.
@@ -880,8 +891,18 @@ notification settings.
 **EchoLink** — directory login/status, QSO state, route configuration, directory
 station list, connect/disconnect controls, and last error.
 
-**MeshCom** — extUDP receive/transmit settings, live MeshCom node table, message
-log, and forwarding controls for SDS, SIP/Snom, and Telegram.
+**MeshCom** — send form, persisted message log, persisted node table, extUDP
+receive/transmit settings, and forwarding controls for SDS, SIP/Snom, and
+Telegram. Message filters can toggle `udp`, `lora`, `node`, and `pos` packets,
+filter sources by list, and filter message text by regex.
+
+**Maps** — OpenStreetMap monitor for positions collected from SDS/LIP, MeshCom,
+GeoAlarm events, and the FlowStation position from GeoAlarm configuration. The
+map renders its own OSM tile layer so markers align with the base map, ignores
+invalid `0.000000,0.000000` coordinates, can group identical coordinates, and
+has a `Latest only` button to hide older duplicate positions and keep only the
+newest coordinate per source/device. Each marker/list entry can be opened in
+OpenStreetMap.
 
 **GeoAlarm** — radius and center coordinate settings, TETRA/MeshCom source
 filters, forwarding controls for TPG2200, SDS, SIP/Snom and Telegram, plus a
