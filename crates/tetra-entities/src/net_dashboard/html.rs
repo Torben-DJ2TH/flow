@@ -2157,7 +2157,8 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
 .h-fopt{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px;}
 #page-maps .card-body{padding:16px 18px;}
 .maps-layout{display:grid;grid-template-columns:minmax(320px,1.55fr) minmax(260px,.85fr);gap:14px;align-items:stretch;}
-.maps-stage{position:relative;min-height:560px;border:1px solid var(--border);border-radius:var(--r);overflow:hidden;background:var(--bg1);}
+.maps-stage{position:relative;min-height:560px;border:1px solid var(--border);border-radius:var(--r);overflow:hidden;background:var(--bg1);cursor:grab;touch-action:none;}
+.maps-stage.dragging{cursor:grabbing;}
 .maps-tile-layer{position:absolute;inset:0;overflow:hidden;background:#cfe6ef;}
 .maps-tile{position:absolute;width:256px;height:256px;display:block;user-select:none;pointer-events:none;}
 .maps-marker-layer{position:absolute;inset:0;pointer-events:none;}
@@ -6224,7 +6225,7 @@ function lipPositionFromText(text){
   if(!Number.isFinite(lat)||!Number.isFinite(lon)||lat<-90||lat>90||lon<-180||lon>180)return null;
   return {lat,lon};
 }
-let mapsCurrentMarkers=[],mapsSelectedIndex=-1,mapsCurrentBounds=null,mapsCurrentView=null,mapsFocus=null,mapsFocusMarker=null,mapsUserZoom=null,mapsLatestOnly=localStorage.getItem('maps_latest_only')==='1';
+let mapsCurrentMarkers=[],mapsSelectedIndex=-1,mapsCurrentBounds=null,mapsCurrentView=null,mapsFocus=null,mapsFocusMarker=null,mapsUserCenter=null,mapsUserZoom=null,mapsDrag=null,mapsLatestOnly=localStorage.getItem('maps_latest_only')==='1';
 function mapsNumber(v){
   if(v===null||v===undefined||v==='')return NaN;
   if(typeof v==='string'){
@@ -6258,6 +6259,7 @@ function openMapsAt(lat,lon){
   if(!validMapLatLon(la,lo))return;
   mapsFocus={lat:la,lon:lo};
   mapsFocusMarker={type:'focus',title:'Selected position',lat:la,lon:lo,detail:'Position opened from another dashboard table',meta:'dashboard link',ts:nowStamp(),key:`focus:${la.toFixed(6)}:${lo.toFixed(6)}`};
+  mapsUserCenter={lat:la,lon:lo};
   showPage('maps',document.getElementById('nav-maps'));
 }
 function mapsActive(){
@@ -6357,7 +6359,14 @@ function meshPathsText(paths){
   return Array.isArray(paths)&&paths.length?paths.join(', '):'';
 }
 function mapsClampLat(lat){return Math.max(-85,Math.min(85,Number(lat)||0));}
-function mapsMercX(lon){return (Number(lon)+180)/360;}
+function mapsClampLon(lon){
+  let lo=mapsNumber(lon);
+  if(!Number.isFinite(lo))return 0;
+  while(lo<-180)lo+=360;
+  while(lo>180)lo-=360;
+  return lo;
+}
+function mapsMercX(lon){return (mapsClampLon(lon)+180)/360;}
 function mapsMercY(lat){
   const r=mapsClampLat(lat)*Math.PI/180;
   return (1-Math.log(Math.tan(r)+1/Math.cos(r))/Math.PI)/2;
@@ -6386,11 +6395,24 @@ function mapsOsmUrl(m){
 }
 function mapsOsmBoundsUrl(b){
   const z=mapsCurrentView?.zoom||b.zoom||mapsFitZoom(b);
-  return `https://www.openstreetmap.org/#map=${z}/${encodeURIComponent(b.centerLat)}/${encodeURIComponent(b.centerLon)}`;
+  const lat=mapsCurrentView?.centerLat??b.centerLat;
+  const lon=mapsCurrentView?.centerLon??b.centerLon;
+  return `https://www.openstreetmap.org/#map=${z}/${encodeURIComponent(lat)}/${encodeURIComponent(lon)}`;
 }
 function mapsWorldPx(lat,lon,zoom){
   const scale=256*Math.pow(2,zoom);
   return {x:mapsMercX(lon)*scale,y:mapsMercY(lat)*scale};
+}
+function mapsWorldToLatLon(x,y,zoom){
+  const scale=256*Math.pow(2,zoom);
+  const lon=mapsClampLon((Number(x)/scale)*360-180);
+  const n=Math.PI-2*Math.PI*(Number(y)/scale);
+  const lat=mapsClampLat((180/Math.PI)*Math.atan(0.5*(Math.exp(n)-Math.exp(-n))));
+  return {lat,lon};
+}
+function mapsViewCenter(b){
+  if(mapsUserCenter&&mapsLatLonUsable(mapsUserCenter.lat,mapsUserCenter.lon))return mapsUserCenter;
+  return {lat:b.centerLat,lon:b.centerLon};
 }
 const MAP_TILE_HOSTS=['https://tile.openstreetmap.org','https://a.tile.openstreetmap.org','https://b.tile.openstreetmap.org','https://c.tile.openstreetmap.org'];
 function mapsTileUrl(zoom,x,y,attempt){
@@ -6420,7 +6442,8 @@ function mapsRenderTiles(b){
   if(!stage||!layer)return null;
   const w=stage.clientWidth||900,h=stage.clientHeight||560;
   const zoom=Math.max(2,Math.min(18,mapsUserZoom??mapsFitZoom(b)));
-  const center=mapsWorldPx(b.centerLat,b.centerLon,zoom);
+  const centerLatLon=mapsViewCenter(b);
+  const center=mapsWorldPx(centerLatLon.lat,centerLatLon.lon,zoom);
   const left=center.x-w/2,top=center.y-h/2;
   const tileCount=Math.pow(2,zoom);
   const minX=Math.floor(left/256),maxX=Math.floor((left+w)/256);
@@ -6434,16 +6457,63 @@ function mapsRenderTiles(b){
     }
   }
   layer.innerHTML=tiles.join('');
-  return {zoom,left,top,width:w,height:h};
+  return {zoom,left,top,width:w,height:h,centerLat:centerLatLon.lat,centerLon:centerLatLon.lon};
 }
 function mapsMarkerPos(m,view){
   const p=mapsWorldPx(m.lat,m.lon,view.zoom);
   return {left:p.x-view.left,top:p.y-view.top};
 }
-function mapsZoom(delta){
+function mapsZoom(delta,anchorEvent=null){
+  const stage=document.getElementById('maps-stage');
   const base=mapsCurrentView?.zoom??(mapsCurrentBounds?mapsFitZoom(mapsCurrentBounds):8);
-  mapsUserZoom=Math.max(2,Math.min(18,base+delta));
+  const next=Math.max(2,Math.min(18,base+delta));
+  if(next===base)return;
+  if(stage&&mapsCurrentView&&anchorEvent){
+    const rect=stage.getBoundingClientRect();
+    const sx=Math.max(0,Math.min(rect.width,anchorEvent.clientX-rect.left));
+    const sy=Math.max(0,Math.min(rect.height,anchorEvent.clientY-rect.top));
+    const anchor=mapsWorldToLatLon(mapsCurrentView.left+sx,mapsCurrentView.top+sy,base);
+    const anchorWorld=mapsWorldPx(anchor.lat,anchor.lon,next);
+    mapsUserZoom=next;
+    mapsUserCenter=mapsWorldToLatLon(anchorWorld.x-sx+(stage.clientWidth||900)/2,anchorWorld.y-sy+(stage.clientHeight||560)/2,next);
+  }else{
+    if(mapsCurrentView)mapsUserCenter={lat:mapsCurrentView.centerLat,lon:mapsCurrentView.centerLon};
+    mapsUserZoom=next;
+  }
   renderMapsPage();
+}
+function mapsWheel(e){
+  if(!mapsActive())return;
+  e.preventDefault();
+  mapsZoom(e.deltaY<0?1:-1,e);
+}
+function mapsPointerDown(e){
+  if(e.button!==0)return;
+  if(e.target.closest('.maps-marker,.maps-controls,.maps-popup,a,button'))return;
+  const stage=document.getElementById('maps-stage');
+  if(!stage||!mapsCurrentView)return;
+  mapsDrag={id:e.pointerId,startX:e.clientX,startY:e.clientY,left:mapsCurrentView.left,top:mapsCurrentView.top,zoom:mapsCurrentView.zoom};
+  stage.classList.add('dragging');
+  try{stage.setPointerCapture(e.pointerId);}catch{}
+  e.preventDefault();
+}
+function mapsPointerMove(e){
+  if(!mapsDrag||e.pointerId!==mapsDrag.id)return;
+  const stage=document.getElementById('maps-stage');
+  if(!stage)return;
+  const dx=e.clientX-mapsDrag.startX,dy=e.clientY-mapsDrag.startY;
+  mapsUserCenter=mapsWorldToLatLon(mapsDrag.left-dx+(stage.clientWidth||900)/2,mapsDrag.top-dy+(stage.clientHeight||560)/2,mapsDrag.zoom);
+  mapsUserZoom=mapsDrag.zoom;
+  renderMapsPage();
+}
+function mapsPointerUp(e){
+  if(!mapsDrag||e.pointerId!==mapsDrag.id)return;
+  const stage=document.getElementById('maps-stage');
+  if(stage){
+    stage.classList.remove('dragging');
+    try{stage.releasePointerCapture(e.pointerId);}catch{}
+  }
+  mapsDrag=null;
 }
 function mapsInitial(m){
   if(m.type==='station')return 'FS';
@@ -6501,11 +6571,22 @@ function bindMapsControls(){
       toggleMapsLatestOnly();
     });
   }
+  const stage=document.getElementById('maps-stage');
+  if(stage&&!stage.dataset.panBound){
+    stage.dataset.panBound='1';
+    stage.addEventListener('wheel',mapsWheel,{passive:false});
+    stage.addEventListener('pointerdown',mapsPointerDown);
+    stage.addEventListener('pointermove',mapsPointerMove);
+    stage.addEventListener('pointerup',mapsPointerUp);
+    stage.addEventListener('pointercancel',mapsPointerUp);
+    stage.addEventListener('pointerleave',mapsPointerUp);
+  }
   updateMapsLatestButton();
 }
 function toggleMapsLatestOnly(){
   mapsLatestOnly=!mapsLatestOnly;
   localStorage.setItem('maps_latest_only',mapsLatestOnly?'1':'0');
+  mapsUserCenter=null;
   mapsUserZoom=null;
   updateMapsLatestButton();
   renderMapsIfActive();
