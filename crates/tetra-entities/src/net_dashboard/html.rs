@@ -3586,6 +3586,7 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
                 <button class="btn btn-sm btn-primary" id="mesh-msg-filter-lora" onclick="toggleMeshMsgTransport('lora')">lora</button>
                 <button class="btn btn-sm btn-primary" id="mesh-msg-filter-node" onclick="toggleMeshMsgTransport('node')">node</button>
                 <button class="btn btn-sm btn-primary" id="mesh-msg-filter-pos" onclick="toggleMeshMsgTransport('pos')">pos</button>
+                <button class="btn btn-sm btn-primary" id="mesh-msg-filter-time" onclick="toggleMeshMsgTransport('time')">time</button>
               </div>
             </div>
             <label class="mesh-msg-filter-field">
@@ -3639,7 +3640,7 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
         <div class="card-head">
           <div class="card-title" data-i18n="maps_title">Maps</div>
           <div class="card-actions">
-            <button class="btn btn-sm" id="maps-latest-btn" onclick="toggleMapsLatestOnly()">Latest only</button>
+            <button type="button" class="btn btn-sm" id="maps-latest-btn" aria-pressed="false">Latest only: OFF</button>
             <button class="btn btn-sm" onclick="refreshMapsData()"><span class="btn-icon" data-icon="restart"></span><span data-i18n="refresh">Refresh</span></button>
             <button class="btn btn-sm" onclick="openMapsOsm()">Open OSM</button>
           </div>
@@ -5168,7 +5169,7 @@ function showPage(name,el){
   if(name==='dapnet'){loadDapnet();loadDapnetLog();}
   if(name==='echolink'){loadEcholink();}
   if(name==='meshcom'){loadMeshcom();}
-  if(name==='maps'){refreshMapsData();}
+  if(name==='maps'){bindMapsControls();refreshMapsData();}
   if(name==='geoalarm'){loadGeoalarm();}
   if(name==='config'){loadConfig();loadWhitelist();loadWx();}
   if(name==='telegram'){loadTelegram();}
@@ -6184,7 +6185,7 @@ function _p2(n){return String(n).padStart(2,'0');}
 function nowStamp(){const d=new Date();return `${d.getFullYear()}-${_p2(d.getMonth()+1)}-${_p2(d.getDate())} ${_p2(d.getHours())}:${_p2(d.getMinutes())}:${_p2(d.getSeconds())}`;}
 const LOG_PAGE_SIZE=50;
 let sdsLogPageIndex=0,dapnetLogPageIndex=0,echolinkDirectoryPageIndex=0,meshNodePageIndex=0,meshMsgPageIndex=0,geoalarmPageIndex=0;
-let meshMsgShowUdp=true,meshMsgShowLora=true,meshMsgShowNode=true,meshMsgShowPos=true;
+let meshMsgShowUdp=true,meshMsgShowLora=true,meshMsgShowNode=true,meshMsgShowPos=true,meshMsgShowTime=true;
 function setLogPager(id,page,total){
   const el=document.getElementById(id);if(!el)return;
   if(!total){el.textContent='Page 0 / 0 · 0';return;}
@@ -6390,7 +6391,7 @@ function mapsRenderTiles(b){
     const wrappedX=((x%tileCount)+tileCount)%tileCount;
     for(let y=minY;y<=maxY;y++){
       if(y<0||y>=tileCount)continue;
-      tiles.push(`<img class="maps-tile" alt="" referrerpolicy="no-referrer" data-zoom="${zoom}" data-x="${wrappedX}" data-y="${y}" data-attempt="0" onerror="mapsTileError(this)" src="${mapsTileUrl(zoom,wrappedX,y,0)}" style="left:${(x*256-left).toFixed(2)}px;top:${(y*256-top).toFixed(2)}px">`);
+      tiles.push(`<img class="maps-tile" alt="" data-zoom="${zoom}" data-x="${wrappedX}" data-y="${y}" data-attempt="0" onerror="mapsTileError(this)" src="${mapsTileUrl(zoom,wrappedX,y,0)}" style="left:${(x*256-left).toFixed(2)}px;top:${(y*256-top).toFixed(2)}px">`);
     }
   }
   layer.innerHTML=tiles.join('');
@@ -6446,13 +6447,27 @@ function updateMapsLatestButton(){
   const btn=document.getElementById('maps-latest-btn');
   if(!btn)return;
   btn.classList.toggle('btn-primary',mapsLatestOnly);
-  btn.textContent=mapsLatestOnly?'Latest only: on':'Latest only';
+  btn.setAttribute('aria-pressed',mapsLatestOnly?'true':'false');
+  btn.textContent=mapsLatestOnly?'Latest only: ON':'Latest only: OFF';
+}
+function bindMapsControls(){
+  const btn=document.getElementById('maps-latest-btn');
+  if(btn&&!btn.dataset.bound){
+    btn.dataset.bound='1';
+    btn.addEventListener('click',e=>{
+      e.preventDefault();
+      e.stopPropagation();
+      toggleMapsLatestOnly();
+    });
+  }
+  updateMapsLatestButton();
 }
 function toggleMapsLatestOnly(){
   mapsLatestOnly=!mapsLatestOnly;
   localStorage.setItem('maps_latest_only',mapsLatestOnly?'1':'0');
   mapsUserZoom=null;
-  renderMapsPage();
+  updateMapsLatestButton();
+  renderMapsIfActive();
 }
 function renderMapsPage(){
   const allMarkers=mapsCollect();
@@ -7196,6 +7211,7 @@ function meshMsgIsUdp(m){return meshMsgTransport(m)==='udp';}
 function meshMsgIsLora(m){return meshMsgTransport(m)==='lora';}
 function meshMsgIsNode(m){return meshMsgTransport(m)==='node';}
 function meshMsgIsPos(m){return String(m.msg_type||'').trim().toLowerCase()==='pos';}
+function meshMsgIsTime(m){return String(m.src||'').trim().toUpperCase().startsWith('OE1XAR')&&String(m.msg||'').trim().startsWith('{CET}');}
 function meshMsgSourceMatches(m,raw){
   const q=String(raw||'').trim().toUpperCase();
   if(!q)return true;
@@ -7214,10 +7230,12 @@ function updateMeshMsgFilterButtons(){
   const lora=document.getElementById('mesh-msg-filter-lora');
   const node=document.getElementById('mesh-msg-filter-node');
   const pos=document.getElementById('mesh-msg-filter-pos');
+  const time=document.getElementById('mesh-msg-filter-time');
   if(udp){udp.classList.toggle('btn-primary',meshMsgShowUdp);udp.classList.toggle('btn-danger',!meshMsgShowUdp);}
   if(lora){lora.classList.toggle('btn-primary',meshMsgShowLora);lora.classList.toggle('btn-danger',!meshMsgShowLora);}
   if(node){node.classList.toggle('btn-primary',meshMsgShowNode);node.classList.toggle('btn-danger',!meshMsgShowNode);}
   if(pos){pos.classList.toggle('btn-primary',meshMsgShowPos);pos.classList.toggle('btn-danger',!meshMsgShowPos);}
+  if(time){time.classList.toggle('btn-primary',meshMsgShowTime);time.classList.toggle('btn-danger',!meshMsgShowTime);}
 }
 function meshMsgFiltered(){
   const sourceRaw=document.getElementById('mesh-msg-source-filter')?.value||'';
@@ -7233,6 +7251,7 @@ function meshMsgFiltered(){
     if(!meshMsgShowLora&&meshMsgIsLora(m))return false;
     if(!meshMsgShowNode&&meshMsgIsNode(m))return false;
     if(!meshMsgShowPos&&meshMsgIsPos(m))return false;
+    if(!meshMsgShowTime&&meshMsgIsTime(m))return false;
     if(!meshMsgSourceMatches(m,sourceRaw))return false;
     if(regex&&!regex.test(String(m.msg||'')))return false;
     return true;
@@ -7251,6 +7270,7 @@ function toggleMeshMsgTransport(kind){
   if(kind==='lora')meshMsgShowLora=!meshMsgShowLora;
   if(kind==='node')meshMsgShowNode=!meshMsgShowNode;
   if(kind==='pos')meshMsgShowPos=!meshMsgShowPos;
+  if(kind==='time')meshMsgShowTime=!meshMsgShowTime;
   meshMsgFilterChanged();
 }
 function renderMeshcomMessages(){
@@ -9351,6 +9371,7 @@ async function checkUpdate(){
 // endpoints. Probe one privileged endpoint: 401 => anonymous (public mode);
 // 200 => either a no-auth deployment or an authenticated admin — behave as before.
 async function boot(){
+  bindMapsControls();
   const hasAuthMarker = document.cookie.split(';').some(c=>c.trim().startsWith('fs_auth='));
   let anonymous = false;
   if(!hasAuthMarker){
