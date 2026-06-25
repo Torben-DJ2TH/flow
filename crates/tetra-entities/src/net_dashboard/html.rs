@@ -2157,7 +2157,8 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
 .h-fopt{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px;}
 #page-maps .card-body{padding:16px 18px;}
 .maps-layout{display:grid;grid-template-columns:minmax(320px,1.55fr) minmax(260px,.85fr);gap:14px;align-items:stretch;}
-.maps-stage{position:relative;min-height:560px;border:1px solid var(--border);border-radius:var(--r);overflow:hidden;background:var(--bg1);}
+.maps-stage{position:relative;min-height:560px;border:1px solid var(--border);border-radius:var(--r);overflow:hidden;background:var(--bg1);cursor:grab;touch-action:none;}
+.maps-stage.dragging{cursor:grabbing;}
 .maps-tile-layer{position:absolute;inset:0;overflow:hidden;background:#cfe6ef;}
 .maps-tile{position:absolute;width:256px;height:256px;display:block;user-select:none;pointer-events:none;}
 .maps-marker-layer{position:absolute;inset:0;pointer-events:none;}
@@ -2173,6 +2174,7 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
 .maps-pin.meshcom{background:var(--accent);}
 .maps-pin.geoalarm{background:var(--warn);}
 .maps-pin.alarm{background:var(--danger);}
+.maps-pin.focus{background:#8b5cf6;}
 .maps-pin.station{background:var(--ok);}
 .maps-popup{position:absolute;left:12px;bottom:12px;max-width:min(500px,calc(100% - 24px));padding:12px;background:color-mix(in srgb,var(--bg2) 94%,transparent);border:1px solid var(--border);border-radius:var(--r);box-shadow:var(--card-shadow);z-index:3;}
 .maps-popup-title{font-weight:800;color:var(--text);margin-bottom:4px;}
@@ -3586,6 +3588,7 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
                 <button class="btn btn-sm btn-primary" id="mesh-msg-filter-lora" onclick="toggleMeshMsgTransport('lora')">lora</button>
                 <button class="btn btn-sm btn-primary" id="mesh-msg-filter-node" onclick="toggleMeshMsgTransport('node')">node</button>
                 <button class="btn btn-sm btn-primary" id="mesh-msg-filter-pos" onclick="toggleMeshMsgTransport('pos')">pos</button>
+                <button class="btn btn-sm btn-primary" id="mesh-msg-filter-time" onclick="toggleMeshMsgTransport('time')">time</button>
               </div>
             </div>
             <label class="mesh-msg-filter-field">
@@ -3639,7 +3642,7 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
         <div class="card-head">
           <div class="card-title" data-i18n="maps_title">Maps</div>
           <div class="card-actions">
-            <button class="btn btn-sm" id="maps-latest-btn" onclick="toggleMapsLatestOnly()">Latest only</button>
+            <button type="button" class="btn btn-sm" id="maps-latest-btn" aria-pressed="false">Latest only: OFF</button>
             <button class="btn btn-sm" onclick="refreshMapsData()"><span class="btn-icon" data-icon="restart"></span><span data-i18n="refresh">Refresh</span></button>
             <button class="btn btn-sm" onclick="openMapsOsm()">Open OSM</button>
           </div>
@@ -5168,7 +5171,7 @@ function showPage(name,el){
   if(name==='dapnet'){loadDapnet();loadDapnetLog();}
   if(name==='echolink'){loadEcholink();}
   if(name==='meshcom'){loadMeshcom();}
-  if(name==='maps'){refreshMapsData();}
+  if(name==='maps'){bindMapsControls();refreshMapsData();}
   if(name==='geoalarm'){loadGeoalarm();}
   if(name==='config'){loadConfig();loadWhitelist();loadWx();}
   if(name==='telegram'){loadTelegram();}
@@ -6184,7 +6187,7 @@ function _p2(n){return String(n).padStart(2,'0');}
 function nowStamp(){const d=new Date();return `${d.getFullYear()}-${_p2(d.getMonth()+1)}-${_p2(d.getDate())} ${_p2(d.getHours())}:${_p2(d.getMinutes())}:${_p2(d.getSeconds())}`;}
 const LOG_PAGE_SIZE=50;
 let sdsLogPageIndex=0,dapnetLogPageIndex=0,echolinkDirectoryPageIndex=0,meshNodePageIndex=0,meshMsgPageIndex=0,geoalarmPageIndex=0;
-let meshMsgShowUdp=true,meshMsgShowLora=true,meshMsgShowNode=true,meshMsgShowPos=true;
+let meshMsgShowUdp=true,meshMsgShowLora=true,meshMsgShowNode=true,meshMsgShowPos=true,meshMsgShowTime=true;
 function setLogPager(id,page,total){
   const el=document.getElementById(id);if(!el)return;
   if(!total){el.textContent='Page 0 / 0 · 0';return;}
@@ -6222,20 +6225,41 @@ function lipPositionFromText(text){
   if(!Number.isFinite(lat)||!Number.isFinite(lon)||lat<-90||lat>90||lon<-180||lon>180)return null;
   return {lat,lon};
 }
-let mapsCurrentMarkers=[],mapsSelectedIndex=-1,mapsCurrentBounds=null,mapsCurrentView=null,mapsFocus=null,mapsUserZoom=null,mapsLatestOnly=localStorage.getItem('maps_latest_only')==='1';
+let mapsCurrentMarkers=[],mapsSelectedIndex=-1,mapsCurrentBounds=null,mapsCurrentView=null,mapsFocus=null,mapsFocusMarker=null,mapsUserCenter=null,mapsUserZoom=null,mapsDrag=null,mapsLatestOnly=localStorage.getItem('maps_latest_only')==='1';
+function mapsNumber(v){
+  if(v===null||v===undefined||v==='')return NaN;
+  if(typeof v==='string'){
+    const s=v.trim();
+    if(!s)return NaN;
+    return Number((s.includes(',')&&!s.includes('.'))?s.replace(',','.'):s);
+  }
+  return Number(v);
+}
+function mapsCoordValue(obj,keys){
+  if(!obj)return NaN;
+  for(const k of keys){
+    const n=mapsNumber(obj[k]);
+    if(Number.isFinite(n))return n;
+  }
+  return NaN;
+}
+function mapsLat(obj){return mapsCoordValue(obj,['lat','latitude']);}
+function mapsLon(obj){return mapsCoordValue(obj,['lon','lng','long','longitude']);}
 function validMapLatLon(lat,lon){
-  const la=Number(lat),lo=Number(lon);
+  const la=mapsNumber(lat),lo=mapsNumber(lon);
   return Number.isFinite(la)&&Number.isFinite(lo)&&la>=-90&&la<=90&&lo>=-180&&lo<=180;
 }
 function mapLinkHtml(lat,lon,label){
-  const la=Number(lat),lo=Number(lon);
+  const la=mapsNumber(lat),lo=mapsNumber(lon);
   if(!validMapLatLon(la,lo))return escHtml(label||'map');
   return `<a class="sds-map-link" href="javascript:void(0)" onclick="event.preventDefault();openMapsAt(${la},${lo})">${escHtml(label||`${la.toFixed(5)}, ${lo.toFixed(5)}`)}</a>`;
 }
 function openMapsAt(lat,lon){
-  const la=Number(lat),lo=Number(lon);
+  const la=mapsNumber(lat),lo=mapsNumber(lon);
   if(!validMapLatLon(la,lo))return;
   mapsFocus={lat:la,lon:lo};
+  mapsFocusMarker={type:'focus',title:'Selected position',lat:la,lon:lo,detail:'Position opened from another dashboard table',meta:'dashboard link',ts:nowStamp(),key:`focus:${la.toFixed(6)}:${lo.toFixed(6)}`};
+  mapsUserCenter={lat:la,lon:lo};
   showPage('maps',document.getElementById('nav-maps'));
 }
 function mapsActive(){
@@ -6247,13 +6271,13 @@ function renderMapsIfActive(){
   if(typeof requestAnimationFrame==='function')requestAnimationFrame(()=>{if(mapsActive())renderMapsPage();});
 }
 function mapsMarker(type,title,lat,lon,detail,meta,ts,key){
-  const la=Number(lat),lo=Number(lon);
+  const la=mapsNumber(lat),lo=mapsNumber(lon);
   if(!validMapLatLon(la,lo))return null;
   if(Math.abs(la)<0.000001&&Math.abs(lo)<0.000001)return null;
   return {type,title:title||'Position',lat:la,lon:lo,detail:detail||'',meta:meta||'',ts:ts||'',key:key||`${type}:${title||'Position'}`};
 }
 function mapsLatLonUsable(lat,lon){
-  const la=Number(lat),lo=Number(lon);
+  const la=mapsNumber(lat),lo=mapsNumber(lon);
   return validMapLatLon(la,lo)&&!(Math.abs(la)<0.000001&&Math.abs(lo)<0.000001);
 }
 function mapsGeoCenterFromText(text){
@@ -6266,41 +6290,59 @@ function mapsStationPosition(){
   const geoCfg=state.geoalarmConfig||{};
   const candidates=[
     {lat:geoCfg.flowstation_lat,lon:geoCfg.flowstation_lon},
+    {lat:geoCfg.flowstation_latitude,lon:geoCfg.flowstation_longitude},
     mapsGeoCenterFromText(geoCfg.runtime&&geoCfg.runtime.center),
     mapsGeoCenterFromText(document.getElementById('geo-center')?.textContent),
     {lat:document.getElementById('geo-lat')?.value,lon:document.getElementById('geo-lon')?.value},
   ].filter(Boolean);
   return candidates.find(p=>mapsLatLonUsable(p.lat,p.lon))||null;
 }
+function mapsRawCounts(){
+  return {
+    sds:(state.sdsLog||[]).length,
+    meshMessages:(state.meshcomMessages||[]).length,
+    meshNodes:(state.meshcomNodes||[]).length,
+    geo:(state.geoalarmEvents||[]).length,
+  };
+}
+function mapsRawCountsText(c){
+  return `${c.sds} SDS · ${c.meshMessages} Mesh msg · ${c.meshNodes} Mesh nodes · ${c.geo} GeoAlarm`;
+}
 function mapsCollect(){
   const station=[],items=[];
   const fsPos=mapsStationPosition();
   const fs=fsPos?mapsMarker('station','FlowStation',fsPos.lat,fsPos.lon,'Station position from GeoAlarm FlowStation latitude/longitude','GeoAlarm config','','station:flowstation'):null;
   if(fs)station.push(fs);
+  if(mapsFocusMarker)station.push(mapsFocusMarker);
   (state.sdsLog||[]).forEach(e=>{
     const lip=lipPositionFromText(e.text);
     if(!lip)return;
     const cs=callsigns[e.source_issi]?.cs;
     const src=[e.source_issi,cs].filter(Boolean).join(' ');
-    items.push(mapsMarker('sds',`TETRA LIP ${src||'—'}`,lip.lat,lip.lon,
+    const marker=mapsMarker('sds',`TETRA LIP ${src||'—'}`,lip.lat,lip.lon,
       `SDS ${String(e.direction||'').toUpperCase()} ${e.source_issi||'—'} → ${e.dest_issi||'—'}${e.is_group?' group':''}`,
-      'SDS/LIP',e.ts,`sds:${e.source_issi||src||'unknown'}`));
+      'SDS/LIP',e.ts,`sds:${e.source_issi||src||'unknown'}`);
+    if(marker)items.push(marker);
   });
   (state.meshcomNodes||[]).forEach(n=>{
     const detail=[n.last_type,meshRfText(n),n.batt!==null&&n.batt!==undefined?`Battery ${meshBatteryText(n.batt)}`:''].filter(v=>v&&v!=='—').join(' · ');
-    items.push(mapsMarker('meshcom',`MeshCom node ${n.src||'—'}`,n.lat,n.lon,detail||'MeshCom node position','MeshCom node',n.last_seen,`meshcom:${n.src||'unknown'}`));
+    const marker=mapsMarker('meshcom',`MeshCom node ${n.src||'—'}`,mapsLat(n),mapsLon(n),detail||'MeshCom node position','MeshCom node',n.last_seen,`meshcom:${n.src||'unknown'}`);
+    if(marker)items.push(marker);
   });
   (state.meshcomMessages||[]).forEach(m=>{
     const detail=m.msg||'MeshCom position packet';
     const meta=[`MeshCom ${m.src_type||m.msg_type||'packet'}`,m.src?`from ${m.src}`:'',m.dst?`to ${m.dst}`:''].filter(Boolean).join(' · ');
-    items.push(mapsMarker('meshcom',`MeshCom ${m.src||'—'}`,m.lat,m.lon,detail,meta,m.ts,`meshcom:${m.src||'unknown'}`));
+    const marker=mapsMarker('meshcom',`MeshCom ${m.src||'—'}`,mapsLat(m),mapsLon(m),detail,meta,m.ts,`meshcom:${m.src||'unknown'}`);
+    if(marker)items.push(marker);
   });
   (state.geoalarmEvents||[]).forEach(e=>{
-    const detail=[e.inside_radius?'inside radius':'outside radius',Number.isFinite(Number(e.distance_m))?`${Number(e.distance_m).toFixed(0)} m`:null,meshPathsText(e.paths)].filter(Boolean).join(' · ');
-    items.push(mapsMarker(e.alarmed?'alarm':'geoalarm',`GeoAlarm ${e.device||'—'}`,e.lat,e.lon,detail,e.source||'GeoAlarm',e.ts,`geoalarm:${e.source||'unknown'}:${e.device||'unknown'}`));
+    const distance=mapsNumber(e.distance_m);
+    const detail=[e.inside_radius?'inside radius':'outside radius',Number.isFinite(distance)?`${distance.toFixed(0)} m`:null,meshPathsText(e.paths)].filter(Boolean).join(' · ');
+    const marker=mapsMarker(e.alarmed?'alarm':'geoalarm',`GeoAlarm ${e.device||'—'}`,mapsLat(e),mapsLon(e),detail,e.source||'GeoAlarm',e.ts,`geoalarm:${e.source||'unknown'}:${e.device||'unknown'}`);
+    if(marker)items.push(marker);
   });
   items.sort((a,b)=>String(b.ts||'').localeCompare(String(a.ts||'')));
-  return station.concat(items.filter(Boolean));
+  return station.concat(items);
 }
 function mapsLatestMarkers(markers){
   if(!mapsLatestOnly)return markers;
@@ -6317,7 +6359,14 @@ function meshPathsText(paths){
   return Array.isArray(paths)&&paths.length?paths.join(', '):'';
 }
 function mapsClampLat(lat){return Math.max(-85,Math.min(85,Number(lat)||0));}
-function mapsMercX(lon){return (Number(lon)+180)/360;}
+function mapsClampLon(lon){
+  let lo=mapsNumber(lon);
+  if(!Number.isFinite(lo))return 0;
+  while(lo<-180)lo+=360;
+  while(lo>180)lo-=360;
+  return lo;
+}
+function mapsMercX(lon){return (mapsClampLon(lon)+180)/360;}
 function mapsMercY(lat){
   const r=mapsClampLat(lat)*Math.PI/180;
   return (1-Math.log(Math.tan(r)+1/Math.cos(r))/Math.PI)/2;
@@ -6346,11 +6395,24 @@ function mapsOsmUrl(m){
 }
 function mapsOsmBoundsUrl(b){
   const z=mapsCurrentView?.zoom||b.zoom||mapsFitZoom(b);
-  return `https://www.openstreetmap.org/#map=${z}/${encodeURIComponent(b.centerLat)}/${encodeURIComponent(b.centerLon)}`;
+  const lat=mapsCurrentView?.centerLat??b.centerLat;
+  const lon=mapsCurrentView?.centerLon??b.centerLon;
+  return `https://www.openstreetmap.org/#map=${z}/${encodeURIComponent(lat)}/${encodeURIComponent(lon)}`;
 }
 function mapsWorldPx(lat,lon,zoom){
   const scale=256*Math.pow(2,zoom);
   return {x:mapsMercX(lon)*scale,y:mapsMercY(lat)*scale};
+}
+function mapsWorldToLatLon(x,y,zoom){
+  const scale=256*Math.pow(2,zoom);
+  const lon=mapsClampLon((Number(x)/scale)*360-180);
+  const n=Math.PI-2*Math.PI*(Number(y)/scale);
+  const lat=mapsClampLat((180/Math.PI)*Math.atan(0.5*(Math.exp(n)-Math.exp(-n))));
+  return {lat,lon};
+}
+function mapsViewCenter(b){
+  if(mapsUserCenter&&mapsLatLonUsable(mapsUserCenter.lat,mapsUserCenter.lon))return mapsUserCenter;
+  return {lat:b.centerLat,lon:b.centerLon};
 }
 const MAP_TILE_HOSTS=['https://tile.openstreetmap.org','https://a.tile.openstreetmap.org','https://b.tile.openstreetmap.org','https://c.tile.openstreetmap.org'];
 function mapsTileUrl(zoom,x,y,attempt){
@@ -6380,7 +6442,8 @@ function mapsRenderTiles(b){
   if(!stage||!layer)return null;
   const w=stage.clientWidth||900,h=stage.clientHeight||560;
   const zoom=Math.max(2,Math.min(18,mapsUserZoom??mapsFitZoom(b)));
-  const center=mapsWorldPx(b.centerLat,b.centerLon,zoom);
+  const centerLatLon=mapsViewCenter(b);
+  const center=mapsWorldPx(centerLatLon.lat,centerLatLon.lon,zoom);
   const left=center.x-w/2,top=center.y-h/2;
   const tileCount=Math.pow(2,zoom);
   const minX=Math.floor(left/256),maxX=Math.floor((left+w)/256);
@@ -6390,23 +6453,71 @@ function mapsRenderTiles(b){
     const wrappedX=((x%tileCount)+tileCount)%tileCount;
     for(let y=minY;y<=maxY;y++){
       if(y<0||y>=tileCount)continue;
-      tiles.push(`<img class="maps-tile" alt="" referrerpolicy="no-referrer" data-zoom="${zoom}" data-x="${wrappedX}" data-y="${y}" data-attempt="0" onerror="mapsTileError(this)" src="${mapsTileUrl(zoom,wrappedX,y,0)}" style="left:${(x*256-left).toFixed(2)}px;top:${(y*256-top).toFixed(2)}px">`);
+      tiles.push(`<img class="maps-tile" alt="" data-zoom="${zoom}" data-x="${wrappedX}" data-y="${y}" data-attempt="0" onerror="mapsTileError(this)" src="${mapsTileUrl(zoom,wrappedX,y,0)}" style="left:${(x*256-left).toFixed(2)}px;top:${(y*256-top).toFixed(2)}px">`);
     }
   }
   layer.innerHTML=tiles.join('');
-  return {zoom,left,top,width:w,height:h};
+  return {zoom,left,top,width:w,height:h,centerLat:centerLatLon.lat,centerLon:centerLatLon.lon};
 }
 function mapsMarkerPos(m,view){
   const p=mapsWorldPx(m.lat,m.lon,view.zoom);
   return {left:p.x-view.left,top:p.y-view.top};
 }
-function mapsZoom(delta){
+function mapsZoom(delta,anchorEvent=null){
+  const stage=document.getElementById('maps-stage');
   const base=mapsCurrentView?.zoom??(mapsCurrentBounds?mapsFitZoom(mapsCurrentBounds):8);
-  mapsUserZoom=Math.max(2,Math.min(18,base+delta));
+  const next=Math.max(2,Math.min(18,base+delta));
+  if(next===base)return;
+  if(stage&&mapsCurrentView&&anchorEvent){
+    const rect=stage.getBoundingClientRect();
+    const sx=Math.max(0,Math.min(rect.width,anchorEvent.clientX-rect.left));
+    const sy=Math.max(0,Math.min(rect.height,anchorEvent.clientY-rect.top));
+    const anchor=mapsWorldToLatLon(mapsCurrentView.left+sx,mapsCurrentView.top+sy,base);
+    const anchorWorld=mapsWorldPx(anchor.lat,anchor.lon,next);
+    mapsUserZoom=next;
+    mapsUserCenter=mapsWorldToLatLon(anchorWorld.x-sx+(stage.clientWidth||900)/2,anchorWorld.y-sy+(stage.clientHeight||560)/2,next);
+  }else{
+    if(mapsCurrentView)mapsUserCenter={lat:mapsCurrentView.centerLat,lon:mapsCurrentView.centerLon};
+    mapsUserZoom=next;
+  }
   renderMapsPage();
+}
+function mapsWheel(e){
+  if(!mapsActive())return;
+  e.preventDefault();
+  mapsZoom(e.deltaY<0?1:-1,e);
+}
+function mapsPointerDown(e){
+  if(e.button!==0)return;
+  if(e.target.closest('.maps-marker,.maps-controls,.maps-popup,a,button'))return;
+  const stage=document.getElementById('maps-stage');
+  if(!stage||!mapsCurrentView)return;
+  mapsDrag={id:e.pointerId,startX:e.clientX,startY:e.clientY,left:mapsCurrentView.left,top:mapsCurrentView.top,zoom:mapsCurrentView.zoom};
+  stage.classList.add('dragging');
+  try{stage.setPointerCapture(e.pointerId);}catch{}
+  e.preventDefault();
+}
+function mapsPointerMove(e){
+  if(!mapsDrag||e.pointerId!==mapsDrag.id)return;
+  const stage=document.getElementById('maps-stage');
+  if(!stage)return;
+  const dx=e.clientX-mapsDrag.startX,dy=e.clientY-mapsDrag.startY;
+  mapsUserCenter=mapsWorldToLatLon(mapsDrag.left-dx+(stage.clientWidth||900)/2,mapsDrag.top-dy+(stage.clientHeight||560)/2,mapsDrag.zoom);
+  mapsUserZoom=mapsDrag.zoom;
+  renderMapsPage();
+}
+function mapsPointerUp(e){
+  if(!mapsDrag||e.pointerId!==mapsDrag.id)return;
+  const stage=document.getElementById('maps-stage');
+  if(stage){
+    stage.classList.remove('dragging');
+    try{stage.releasePointerCapture(e.pointerId);}catch{}
+  }
+  mapsDrag=null;
 }
 function mapsInitial(m){
   if(m.type==='station')return 'FS';
+  if(m.type==='focus')return 'F';
   if(m.type==='sds')return 'S';
   if(m.type==='meshcom')return 'M';
   if(m.type==='alarm')return '!';
@@ -6414,6 +6525,7 @@ function mapsInitial(m){
 }
 function mapsTypeLabel(m){
   if(m.type==='station')return 'station';
+  if(m.type==='focus')return 'focus';
   if(m.type==='sds')return 'sds';
   if(m.type==='meshcom')return 'mesh';
   if(m.type==='alarm')return 'alarm';
@@ -6446,18 +6558,45 @@ function updateMapsLatestButton(){
   const btn=document.getElementById('maps-latest-btn');
   if(!btn)return;
   btn.classList.toggle('btn-primary',mapsLatestOnly);
-  btn.textContent=mapsLatestOnly?'Latest only: on':'Latest only';
+  btn.setAttribute('aria-pressed',mapsLatestOnly?'true':'false');
+  btn.textContent=mapsLatestOnly?'Latest only: ON':'Latest only: OFF';
+}
+function bindMapsControls(){
+  const btn=document.getElementById('maps-latest-btn');
+  if(btn&&!btn.dataset.bound){
+    btn.dataset.bound='1';
+    btn.addEventListener('click',e=>{
+      e.preventDefault();
+      e.stopPropagation();
+      toggleMapsLatestOnly();
+    });
+  }
+  const stage=document.getElementById('maps-stage');
+  if(stage&&!stage.dataset.panBound){
+    stage.dataset.panBound='1';
+    stage.addEventListener('wheel',mapsWheel,{passive:false});
+    stage.addEventListener('pointerdown',mapsPointerDown);
+    stage.addEventListener('pointermove',mapsPointerMove);
+    stage.addEventListener('pointerup',mapsPointerUp);
+    stage.addEventListener('pointercancel',mapsPointerUp);
+    stage.addEventListener('pointerleave',mapsPointerUp);
+  }
+  updateMapsLatestButton();
 }
 function toggleMapsLatestOnly(){
   mapsLatestOnly=!mapsLatestOnly;
   localStorage.setItem('maps_latest_only',mapsLatestOnly?'1':'0');
+  mapsUserCenter=null;
   mapsUserZoom=null;
-  renderMapsPage();
+  updateMapsLatestButton();
+  renderMapsIfActive();
 }
 function renderMapsPage(){
   const allMarkers=mapsCollect();
   const markers=mapsLatestMarkers(allMarkers);
   const visibleMarkers=mapsVisibleMarkers(markers);
+  const rawCounts=mapsRawCounts();
+  const rawTotal=rawCounts.sds+rawCounts.meshMessages+rawCounts.meshNodes+rawCounts.geo;
   mapsCurrentMarkers=markers;
   mapsCurrentBounds=mapsBounds(markers);
   mapsCurrentView=mapsRenderTiles(mapsCurrentBounds);
@@ -6467,8 +6606,10 @@ function renderMapsPage(){
   const sub=document.getElementById('maps-hero-sub');
   const dot=document.getElementById('maps-hero-dot');
   updateMapsLatestButton();
-  if(count)count.textContent=mapsLatestOnly?`${markers.length} latest · ${allMarkers.length} entries`:`${visibleMarkers.length} positions · ${markers.length} entries`;
-  if(sub)sub.textContent=markers.length?'SDS/LIP · MeshCom · GeoAlarm · FlowStation':'No positions collected yet';
+  if(count)count.textContent=markers.length
+    ? (mapsLatestOnly?`${markers.length} latest · ${allMarkers.length} entries`:`${visibleMarkers.length} positions · ${markers.length} entries`)
+    : `${rawTotal} records · 0 positions`;
+  if(sub)sub.textContent=markers.length?'SDS/LIP · MeshCom · GeoAlarm · FlowStation':(rawTotal?`No usable coordinates yet (${mapsRawCountsText(rawCounts)})`:'No positions collected yet');
   if(dot){dot.classList.toggle('is-ok',markers.length>0);dot.classList.toggle('is-idle',!markers.length);}
   if(layer&&mapsCurrentView){
     layer.innerHTML=visibleMarkers.map((m,i)=>{
@@ -7077,8 +7218,8 @@ async function echolinkDisconnect(){
 
 function meshMapLink(lat,lon,label){
   if(lat===null||lat===undefined||lon===null||lon===undefined)return '—';
-  const la=Number(lat),lo=Number(lon);
-  if(!Number.isFinite(la)||!Number.isFinite(lo))return '—';
+  const la=mapsNumber(lat),lo=mapsNumber(lon);
+  if(!validMapLatLon(la,lo))return '—';
   return mapLinkHtml(la,lo,label||`${la.toFixed(5)}, ${lo.toFixed(5)}`);
 }
 function meshRfText(row){
@@ -7196,6 +7337,7 @@ function meshMsgIsUdp(m){return meshMsgTransport(m)==='udp';}
 function meshMsgIsLora(m){return meshMsgTransport(m)==='lora';}
 function meshMsgIsNode(m){return meshMsgTransport(m)==='node';}
 function meshMsgIsPos(m){return String(m.msg_type||'').trim().toLowerCase()==='pos';}
+function meshMsgIsTime(m){return String(m.src||'').trim().toUpperCase().startsWith('OE1XAR')&&String(m.msg||'').trim().startsWith('{CET}');}
 function meshMsgSourceMatches(m,raw){
   const q=String(raw||'').trim().toUpperCase();
   if(!q)return true;
@@ -7214,10 +7356,12 @@ function updateMeshMsgFilterButtons(){
   const lora=document.getElementById('mesh-msg-filter-lora');
   const node=document.getElementById('mesh-msg-filter-node');
   const pos=document.getElementById('mesh-msg-filter-pos');
+  const time=document.getElementById('mesh-msg-filter-time');
   if(udp){udp.classList.toggle('btn-primary',meshMsgShowUdp);udp.classList.toggle('btn-danger',!meshMsgShowUdp);}
   if(lora){lora.classList.toggle('btn-primary',meshMsgShowLora);lora.classList.toggle('btn-danger',!meshMsgShowLora);}
   if(node){node.classList.toggle('btn-primary',meshMsgShowNode);node.classList.toggle('btn-danger',!meshMsgShowNode);}
   if(pos){pos.classList.toggle('btn-primary',meshMsgShowPos);pos.classList.toggle('btn-danger',!meshMsgShowPos);}
+  if(time){time.classList.toggle('btn-primary',meshMsgShowTime);time.classList.toggle('btn-danger',!meshMsgShowTime);}
 }
 function meshMsgFiltered(){
   const sourceRaw=document.getElementById('mesh-msg-source-filter')?.value||'';
@@ -7233,6 +7377,7 @@ function meshMsgFiltered(){
     if(!meshMsgShowLora&&meshMsgIsLora(m))return false;
     if(!meshMsgShowNode&&meshMsgIsNode(m))return false;
     if(!meshMsgShowPos&&meshMsgIsPos(m))return false;
+    if(!meshMsgShowTime&&meshMsgIsTime(m))return false;
     if(!meshMsgSourceMatches(m,sourceRaw))return false;
     if(regex&&!regex.test(String(m.msg||'')))return false;
     return true;
@@ -7251,6 +7396,7 @@ function toggleMeshMsgTransport(kind){
   if(kind==='lora')meshMsgShowLora=!meshMsgShowLora;
   if(kind==='node')meshMsgShowNode=!meshMsgShowNode;
   if(kind==='pos')meshMsgShowPos=!meshMsgShowPos;
+  if(kind==='time')meshMsgShowTime=!meshMsgShowTime;
   meshMsgFilterChanged();
 }
 function renderMeshcomMessages(){
@@ -9351,6 +9497,7 @@ async function checkUpdate(){
 // endpoints. Probe one privileged endpoint: 401 => anonymous (public mode);
 // 200 => either a no-auth deployment or an authenticated admin — behave as before.
 async function boot(){
+  bindMapsControls();
   const hasAuthMarker = document.cookie.split(';').some(c=>c.trim().startsWith('fs_auth='));
   let anonymous = false;
   if(!hasAuthMarker){
