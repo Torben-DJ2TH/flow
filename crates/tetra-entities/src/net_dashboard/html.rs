@@ -3516,6 +3516,7 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
               <div class="mesh-msg-filter-buttons">
                 <button class="btn btn-sm btn-primary" id="mesh-msg-filter-udp" onclick="toggleMeshMsgTransport('udp')">udp</button>
                 <button class="btn btn-sm btn-primary" id="mesh-msg-filter-lora" onclick="toggleMeshMsgTransport('lora')">lora</button>
+                <button class="btn btn-sm btn-primary" id="mesh-msg-filter-node" onclick="toggleMeshMsgTransport('node')">node</button>
               </div>
             </div>
             <label class="mesh-msg-filter-field">
@@ -6018,7 +6019,7 @@ function _p2(n){return String(n).padStart(2,'0');}
 function nowStamp(){const d=new Date();return `${d.getFullYear()}-${_p2(d.getMonth()+1)}-${_p2(d.getDate())} ${_p2(d.getHours())}:${_p2(d.getMinutes())}:${_p2(d.getSeconds())}`;}
 const LOG_PAGE_SIZE=50;
 let sdsLogPageIndex=0,dapnetLogPageIndex=0,echolinkDirectoryPageIndex=0,meshNodePageIndex=0,meshMsgPageIndex=0,geoalarmPageIndex=0;
-let meshMsgShowUdp=true,meshMsgShowLora=true;
+let meshMsgShowUdp=true,meshMsgShowLora=true,meshMsgShowNode=true;
 function setLogPager(id,page,total){
   const el=document.getElementById(id);if(!el)return;
   if(!total){el.textContent='Page 0 / 0 · 0';return;}
@@ -6696,6 +6697,7 @@ function meshMsgTransport(m){
 }
 function meshMsgIsUdp(m){return meshMsgTransport(m)==='udp';}
 function meshMsgIsLora(m){return meshMsgTransport(m)==='lora';}
+function meshMsgIsNode(m){return meshMsgTransport(m)==='node';}
 function meshMsgSourceMatches(m,raw){
   const q=String(raw||'').trim().toUpperCase();
   if(!q)return true;
@@ -6712,8 +6714,10 @@ function meshMsgRegex(){
 function updateMeshMsgFilterButtons(){
   const udp=document.getElementById('mesh-msg-filter-udp');
   const lora=document.getElementById('mesh-msg-filter-lora');
+  const node=document.getElementById('mesh-msg-filter-node');
   if(udp){udp.classList.toggle('btn-primary',meshMsgShowUdp);udp.classList.toggle('btn-danger',!meshMsgShowUdp);}
   if(lora){lora.classList.toggle('btn-primary',meshMsgShowLora);lora.classList.toggle('btn-danger',!meshMsgShowLora);}
+  if(node){node.classList.toggle('btn-primary',meshMsgShowNode);node.classList.toggle('btn-danger',!meshMsgShowNode);}
 }
 function meshMsgFiltered(){
   const sourceRaw=document.getElementById('mesh-msg-source-filter')?.value||'';
@@ -6727,6 +6731,7 @@ function meshMsgFiltered(){
   const rows=(state.meshcomMessages||[]).filter(m=>{
     if(!meshMsgShowUdp&&meshMsgIsUdp(m))return false;
     if(!meshMsgShowLora&&meshMsgIsLora(m))return false;
+    if(!meshMsgShowNode&&meshMsgIsNode(m))return false;
     if(!meshMsgSourceMatches(m,sourceRaw))return false;
     if(regex&&!regex.test(String(m.msg||'')))return false;
     return true;
@@ -6743,6 +6748,7 @@ function meshMsgFilterChanged(){meshMsgPageIndex=0;renderMeshcomMessages();}
 function toggleMeshMsgTransport(kind){
   if(kind==='udp')meshMsgShowUdp=!meshMsgShowUdp;
   if(kind==='lora')meshMsgShowLora=!meshMsgShowLora;
+  if(kind==='node')meshMsgShowNode=!meshMsgShowNode;
   meshMsgFilterChanged();
 }
 function renderMeshcomMessages(){
