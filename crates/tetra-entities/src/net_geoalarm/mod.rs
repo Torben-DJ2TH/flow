@@ -23,21 +23,21 @@ const MAX_EVENTS: usize = 250;
 #[derive(Debug, Clone)]
 enum GeoAlarmSource {
     Tetra { issi: u32 },
-    Meshcom { src: String },
+    Meshcom { src: String, via: Vec<String> },
 }
 
 impl GeoAlarmSource {
     fn label(&self) -> String {
         match self {
             Self::Tetra { issi } => format!("TETRA {issi}"),
-            Self::Meshcom { src } => format!("MeshCom {src}"),
+            Self::Meshcom { src, .. } => format!("MeshCom {src}"),
         }
     }
 
     fn key(&self) -> String {
         match self {
             Self::Tetra { issi } => format!("tetra:{issi}"),
-            Self::Meshcom { src } => format!("meshcom:{}", src.trim().to_ascii_uppercase()),
+            Self::Meshcom { src, .. } => format!("meshcom:{}", src.trim().to_ascii_uppercase()),
         }
     }
 
@@ -80,12 +80,17 @@ impl GeoAlarmSink {
 
     #[inline]
     pub fn send_meshcom_position(&self, src: String, lat: f64, lon: f64) {
+        self.send_meshcom_position_with_via(src, Vec::new(), lat, lon);
+    }
+
+    #[inline]
+    pub fn send_meshcom_position_with_via(&self, src: String, via: Vec<String>, lat: f64, lon: f64) {
         let src = src.trim();
         if src.is_empty() {
             return;
         }
         let _ = self.tx.send(GeoAlarmUpdate {
-            source: GeoAlarmSource::Meshcom { src: src.to_string() },
+            source: GeoAlarmSource::Meshcom { src: src.to_string(), via },
             lat,
             lon,
         });
@@ -266,6 +271,7 @@ impl GeoAlarmWorker {
             ts: stamp,
             source: update.source.kind().to_string(),
             device: label,
+            via: geoalarm_source_via(&update.source),
             lat: update.lat,
             lon: update.lon,
             distance_m: distance,
@@ -467,7 +473,7 @@ fn source_allowed(geoalarm: &CfgGeoalarm, source: &GeoAlarmSource) -> bool {
             !geoalarm.tetra_issi_blacklist.contains(issi)
                 && (geoalarm.tetra_issi_whitelist.is_empty() || geoalarm.tetra_issi_whitelist.contains(issi))
         }
-        GeoAlarmSource::Meshcom { src } => {
+        GeoAlarmSource::Meshcom { src, .. } => {
             let src = src.trim().to_ascii_uppercase();
             !geoalarm.meshcom_source_blacklist.contains(&src)
                 && (geoalarm.meshcom_source_whitelist.is_empty() || geoalarm.meshcom_source_whitelist.contains(&src))
@@ -481,11 +487,18 @@ fn telegram_source_allowed(geoalarm: &CfgGeoalarm, source: &GeoAlarmSource) -> b
             !geoalarm.telegram_tetra_issi_blacklist.contains(issi)
                 && (geoalarm.telegram_tetra_issi_whitelist.is_empty() || geoalarm.telegram_tetra_issi_whitelist.contains(issi))
         }
-        GeoAlarmSource::Meshcom { src } => {
+        GeoAlarmSource::Meshcom { src, .. } => {
             let src = src.trim().to_ascii_uppercase();
             !geoalarm.telegram_meshcom_source_blacklist.contains(&src)
                 && (geoalarm.telegram_meshcom_source_whitelist.is_empty() || geoalarm.telegram_meshcom_source_whitelist.contains(&src))
         }
+    }
+}
+
+fn geoalarm_source_via(source: &GeoAlarmSource) -> Vec<String> {
+    match source {
+        GeoAlarmSource::Meshcom { via, .. } => via.clone(),
+        _ => Vec::new(),
     }
 }
 

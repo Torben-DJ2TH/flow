@@ -210,6 +210,8 @@ pub enum TelemetryEvent {
         batt: Option<f64>,
         rssi: Option<i64>,
         snr: Option<i64>,
+        /// MeshCom relay path after the originating node. Appended last for bitcode wire-stability.
+        via: Vec<String>,
     },
     /// MeshCom node directory update for the dashboard MeshCom Nodes table. Appended last for
     /// bitcode wire-stability.
@@ -226,6 +228,8 @@ pub enum TelemetryEvent {
         firmware: Option<String>,
         fw_sub: Option<String>,
         hw_id: Option<String>,
+        /// MeshCom relay path after the originating node. Appended last for bitcode wire-stability.
+        via: Vec<String>,
     },
     /// External ISSI registered through a Brew/TetraPack backhaul. Appended last for bitcode
     /// wire-stability. Used for optional Telegram alerts without relying on noisy log lines.

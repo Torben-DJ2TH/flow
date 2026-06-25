@@ -3558,6 +3558,7 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
             <table>
               <thead><tr>
                 <th>Node</th>
+                <th>Via</th>
                 <th>Last seen</th>
                 <th>Position</th>
                 <th>Battery</th>
@@ -3618,6 +3619,7 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
                 <th data-i18n="th_dir">Dir</th>
                 <th data-i18n="th_type">Type</th>
                 <th>Source</th>
+                <th>Via</th>
                 <th>Destination</th>
                 <th data-i18n="th_message">Message</th>
                 <th>Paths</th>
@@ -3851,6 +3853,7 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
                 <th data-i18n="th_time">Time</th>
                 <th>Source</th>
                 <th>Device</th>
+                <th>Via</th>
                 <th>Distance</th>
                 <th>Position</th>
                 <th>Status</th>
@@ -5815,7 +5818,7 @@ function handleMsg(msg){
       renderDapnetLog();break;
     case 'meshcom_message':
       if(!state.meshcomMessages)state.meshcomMessages=[];
-      state.meshcomMessages.unshift({ts:msg.ts||nowStamp(),direction:msg.direction,msg_type:msg.msg_type,src_type:msg.src_type,src:msg.src,dst:msg.dst,msg:msg.msg,msg_id:msg.msg_id,paths:msg.paths||[],lat:msg.lat,lon:msg.lon,alt:msg.alt,batt:msg.batt,rssi:msg.rssi,snr:msg.snr});
+      state.meshcomMessages.unshift(meshNormalizeRouteItem({ts:msg.ts||nowStamp(),direction:msg.direction,msg_type:msg.msg_type,src_type:msg.src_type,src:msg.src,via:msg.via||[],dst:msg.dst,msg:msg.msg,msg_id:msg.msg_id,paths:msg.paths||[],lat:msg.lat,lon:msg.lon,alt:msg.alt,batt:msg.batt,rssi:msg.rssi,snr:msg.snr}));
       if(state.meshcomMessages.length>10000)state.meshcomMessages.pop();
       renderMeshcomMessages();renderMapsIfActive();break;
     case 'meshcom_node':
@@ -6345,19 +6348,24 @@ function mapsCollect(){
     if(marker)items.push(marker);
   });
   (state.meshcomNodes||[]).forEach(n=>{
-    const detail=[n.last_type,meshRfText(n),n.batt!==null&&n.batt!==undefined?`Battery ${meshBatteryText(n.batt)}`:''].filter(v=>v&&v!=='—').join(' · ');
-    const marker=mapsMarker('meshcom',`MeshCom node ${n.src||'—'}`,mapsLat(n),mapsLon(n),detail||'MeshCom node position','MeshCom node',n.last_seen,`meshcom:${n.src||'unknown'}`);
+    const src=meshOrigin(n)||'—';
+    const via=meshRouteParts(n).via;
+    const detail=[n.last_type,via.length?`via ${via.join(', ')}`:'',meshRfText(n),n.batt!==null&&n.batt!==undefined?`Battery ${meshBatteryText(n.batt)}`:''].filter(v=>v&&v!=='—').join(' · ');
+    const marker=mapsMarker('meshcom',`MeshCom node ${src}`,mapsLat(n),mapsLon(n),detail||'MeshCom node position','MeshCom node',n.last_seen,`meshcom:${src||'unknown'}`);
     if(marker)items.push(marker);
   });
   (state.meshcomMessages||[]).forEach(m=>{
     const detail=m.msg||'MeshCom position packet';
-    const meta=[`MeshCom ${m.src_type||m.msg_type||'packet'}`,m.src?`from ${m.src}`:'',m.dst?`to ${m.dst}`:''].filter(Boolean).join(' · ');
-    const marker=mapsMarker('meshcom',`MeshCom ${m.src||'—'}`,mapsLat(m),mapsLon(m),detail,meta,m.ts,`meshcom:${m.src||'unknown'}`);
+    const src=meshOrigin(m)||'—';
+    const via=meshRouteParts(m).via;
+    const meta=[`MeshCom ${m.src_type||m.msg_type||'packet'}`,src?`from ${src}`:'',via.length?`via ${via.join(', ')}`:'',m.dst?`to ${m.dst}`:''].filter(Boolean).join(' · ');
+    const marker=mapsMarker('meshcom',`MeshCom ${src}`,mapsLat(m),mapsLon(m),detail,meta,m.ts,`meshcom:${src||'unknown'}`);
     if(marker)items.push(marker);
   });
   (state.geoalarmEvents||[]).forEach(e=>{
     const distance=mapsNumber(e.distance_m);
-    const detail=[e.inside_radius?'inside radius':'outside radius',Number.isFinite(distance)?`${distance.toFixed(0)} m`:null,meshPathsText(e.paths)].filter(Boolean).join(' · ');
+    const via=Array.isArray(e.via)?e.via.filter(Boolean):[];
+    const detail=[e.inside_radius?'inside radius':'outside radius',via.length?`via ${via.join(', ')}`:'',Number.isFinite(distance)?`${distance.toFixed(0)} m`:null,meshPathsText(e.paths)].filter(Boolean).join(' · ');
     const marker=mapsMarker(e.alarmed?'alarm':'geoalarm',`GeoAlarm ${e.device||'—'}`,mapsLat(e),mapsLon(e),detail,e.source||'GeoAlarm',e.ts,`geoalarm:${e.source||'unknown'}:${e.device||'unknown'}`);
     if(marker)items.push(marker);
   });
@@ -7321,12 +7329,31 @@ function meshPaths(paths){
   if(!Array.isArray(paths)||!paths.length)return '<span class="sds-empty">—</span>';
   return paths.map(p=>`<span class="badge badge-blue" style="font-size:10px">${escHtml(p)}</span>`).join(' ');
 }
+function meshRouteParts(item){
+  const raw=String(item?.src||'').trim();
+  let via=Array.isArray(item?.via)?item.via.map(v=>String(v||'').trim()).filter(Boolean):[];
+  if(!via.length&&raw.includes(',')){
+    const parts=raw.split(',').map(v=>v.trim()).filter(Boolean);
+    return {src:parts.shift()||raw,via:parts};
+  }
+  return {src:raw,via};
+}
+function meshOrigin(item){return meshRouteParts(item).src;}
+function meshNormalizeRouteItem(item){
+  const route=meshRouteParts(item);
+  return Object.assign({},item,{src:route.src||item?.src,via:route.via});
+}
+function meshVia(item){
+  const via=meshRouteParts(item).via;
+  if(!via.length)return '<span class="sds-empty">—</span>';
+  return via.map(v=>`<span class="badge badge-blue" style="font-size:10px">${escHtml(v)}</span>`).join(' ');
+}
 function meshNodeFiltered(){
   const q=(document.getElementById('mesh-node-filter')?.value||'').trim().toUpperCase();
   const rows=(state.meshcomNodes||[]).slice().sort((a,b)=>String(b.last_seen||'').localeCompare(String(a.last_seen||'')));
   if(!q)return rows;
   return rows.filter(n=>
-    String(n.src||'').toUpperCase().includes(q) ||
+    meshOrigin(n).toUpperCase().includes(q) ||
     String(n.hw_id||'').toUpperCase().includes(q) ||
     String(n.firmware||'').toUpperCase().includes(q) ||
     String(n.fw_sub||'').toUpperCase().includes(q)
@@ -7335,9 +7362,12 @@ function meshNodeFiltered(){
 function upsertMeshcomNode(update){
   if(!update||!update.src)return;
   if(!state.meshcomNodes)state.meshcomNodes=[];
-  const idx=state.meshcomNodes.findIndex(n=>n.src===update.src);
+  const updateSrc=meshOrigin(update);
+  const idx=state.meshcomNodes.findIndex(n=>meshOrigin(n)===updateSrc);
   if(idx>=0){
     const node=Object.assign({},state.meshcomNodes[idx],{
+      src:updateSrc,
+      via:meshRouteParts(update).via,
       last_seen:update.last_seen,
       last_type:update.last_type
     });
@@ -7347,14 +7377,16 @@ function upsertMeshcomNode(update){
     state.meshcomNodes.splice(idx,1);
     state.meshcomNodes.unshift(node);
   } else {
-    state.meshcomNodes.unshift(update);
+    state.meshcomNodes.unshift(Object.assign({},update,{src:updateSrc,via:meshRouteParts(update).via}));
   }
   if(state.meshcomNodes.length>65535)state.meshcomNodes.pop();
 }
 function meshNodeRow(n){
   const fw=[n.firmware,n.fw_sub].filter(Boolean).join(' / ')||'—';
+  const src=meshOrigin(n)||'—';
   return `<tr>
-    <td><span class="badge badge-blue" style="font-size:10px">${escHtml(n.src||'—')}</span><div class="sds-empty">${escHtml(n.last_type||'')}</div></td>
+    <td><span class="badge badge-blue" style="font-size:10px">${escHtml(src)}</span><div class="sds-empty">${escHtml(n.last_type||'')}</div></td>
+    <td>${meshVia(n)}</td>
     <td class="sds-time">${escHtml(n.last_seen||'—')}</td>
     <td>${meshMapLink(n.lat,n.lon)}</td>
     <td>${meshBatteryText(n.batt)}</td>
@@ -7368,14 +7400,14 @@ function renderMeshcomNodes(){
   const rows=meshNodeFiltered();
   meshNodePageIndex=clampLogPage(meshNodePageIndex,rows.length);
   setLogPager('mesh-nodes-page',meshNodePageIndex,rows.length);
-  if(!rows.length){tb.innerHTML=`<tr><td colspan="7" class="sds-empty" style="text-align:center;padding:24px">No MeshCom nodes yet</td></tr>`;return;}
+  if(!rows.length){tb.innerHTML=`<tr><td colspan="8" class="sds-empty" style="text-align:center;padding:24px">No MeshCom nodes yet</td></tr>`;return;}
   const start=meshNodePageIndex*LOG_PAGE_SIZE;
   tb.innerHTML=rows.slice(start,start+LOG_PAGE_SIZE).map(meshNodeRow).join('');
 }
 function meshNodePrevPage(){meshNodePageIndex--;renderMeshcomNodes();}
 function meshNodeNextPage(){meshNodePageIndex++;renderMeshcomNodes();}
 async function loadMeshcomNodes(){
-  try{const r=await fetch('/api/meshcom-nodes');if(!r.ok)return;state.meshcomNodes=await r.json();meshNodePageIndex=0;renderMeshcomNodes();renderMapsIfActive();}catch{}
+  try{const r=await fetch('/api/meshcom-nodes');if(!r.ok)return;state.meshcomNodes=(await r.json()).map(meshNormalizeRouteItem);meshNodePageIndex=0;renderMeshcomNodes();renderMapsIfActive();}catch{}
 }
 async function clearMeshcomNodes(){
   if(!confirm('Clear MeshCom Nodes?'))return;
@@ -7383,22 +7415,24 @@ async function clearMeshcomNodes(){
 }
 function exportMeshcomNodes(){
   const rows=meshNodeFiltered();
-  const lines=['time\tnode\ttype\tposition\tbattery\trf\tfirmware\thw_id'];
+  const lines=['time\tnode\tvia\ttype\tposition\tbattery\trf\tfirmware\thw_id'];
   rows.forEach(n=>{
     const pos=(n.lat!==null&&n.lat!==undefined&&n.lon!==null&&n.lon!==undefined)?(`${n.lat},${n.lon}`):'';
     const fw=[n.firmware,n.fw_sub].filter(Boolean).join(' / ');
-    lines.push([n.last_seen||'',n.src||'',n.last_type||'',pos,meshBatteryText(n.batt),meshRfText(n),fw,n.hw_id||''].join('\t'));
+    lines.push([n.last_seen||'',meshOrigin(n)||'',meshRouteParts(n).via.join(','),n.last_type||'',pos,meshBatteryText(n.batt),meshRfText(n),fw,n.hw_id||''].join('\t'));
   });
   downloadTextFile(`flowstation-meshcom-nodes-${logExportStamp()}.txt`,lines.join('\n')+'\n');
 }
 function meshMsgRow(m){
   const msgText=m.msg?escHtml(m.msg):(m.lat!==null&&m.lat!==undefined&&m.lon!==null&&m.lon!==undefined?'<span class="sds-empty">[position]</span>':'');
   const posRf=[meshMapLink(m.lat,m.lon,'map'),meshRfText(m)].filter(x=>x&&x!=='—').join(' · ')||'—';
+  const src=meshOrigin(m)||'—';
   return `<tr>
     <td class="sds-time">${escHtml(m.ts||'')}</td>
     <td>${dirBadge(m.direction)}</td>
     <td><span class="badge" style="font-size:10px">${escHtml(m.msg_type||'unknown')}</span></td>
-    <td>${escHtml(m.src||'—')}<div class="sds-empty">${escHtml(m.src_type||'')}</div></td>
+    <td>${escHtml(src)}<div class="sds-empty">${escHtml(m.src_type||'')}</div></td>
+    <td>${meshVia(m)}</td>
     <td>${escHtml(m.dst||'—')}</td>
     <td class="sds-msg">${msgText}</td>
     <td>${meshPaths(m.paths)}</td>
@@ -7416,7 +7450,7 @@ function meshMsgIsTime(m){return String(m.src||'').trim().toUpperCase().startsWi
 function meshMsgSourceMatches(m,raw){
   const q=String(raw||'').trim().toUpperCase();
   if(!q)return true;
-  const hay=String(m.src||'').toUpperCase();
+  const hay=meshOrigin(m).toUpperCase();
   const parts=q.split(/[\s,]+/).filter(Boolean);
   return !parts.length||parts.some(part=>hay.includes(part));
 }
@@ -7484,14 +7518,14 @@ function renderMeshcomMessages(){
   const rows=meshMsgFiltered();
   meshMsgPageIndex=clampLogPage(meshMsgPageIndex,rows.length);
   setLogPager('mesh-msgs-page',meshMsgPageIndex,rows.length);
-  if(!rows.length){tb.innerHTML=`<tr><td colspan="8" class="sds-empty" style="text-align:center;padding:24px">No matching MeshCom packets</td></tr>`;return;}
+  if(!rows.length){tb.innerHTML=`<tr><td colspan="9" class="sds-empty" style="text-align:center;padding:24px">No matching MeshCom packets</td></tr>`;return;}
   const start=meshMsgPageIndex*LOG_PAGE_SIZE;
   tb.innerHTML=rows.slice(start,start+LOG_PAGE_SIZE).map(meshMsgRow).join('');
 }
 function meshMsgPrevPage(){meshMsgPageIndex--;renderMeshcomMessages();}
 function meshMsgNextPage(){meshMsgPageIndex++;renderMeshcomMessages();}
 async function loadMeshcomMessages(){
-  try{const r=await fetch('/api/meshcom-messages');if(!r.ok)return;state.meshcomMessages=await r.json();meshMsgPageIndex=0;renderMeshcomMessages();renderMapsIfActive();}catch{}
+  try{const r=await fetch('/api/meshcom-messages');if(!r.ok)return;state.meshcomMessages=(await r.json()).map(meshNormalizeRouteItem);meshMsgPageIndex=0;renderMeshcomMessages();renderMapsIfActive();}catch{}
 }
 async function clearMeshcomMessages(){
   if(!confirm('Clear MeshCom Messages?'))return;
@@ -7499,14 +7533,15 @@ async function clearMeshcomMessages(){
 }
 function exportMeshcomMessages(){
   const rows=meshMsgFiltered();
-  const lines=['time\tdir\ttype\tsource\tdestination\tmessage\tpaths\tposition\trf'];
+  const lines=['time\tdir\ttype\tsource\tvia\tdestination\tmessage\tpaths\tposition\trf'];
   rows.forEach(m=>{
     const pos=(m.lat!==null&&m.lat!==undefined&&m.lon!==null&&m.lon!==undefined)?(`${m.lat},${m.lon}`):'';
     lines.push([
       m.ts||'',
       String(m.direction||'').toUpperCase(),
       m.msg_type||'',
-      [m.src||'',m.src_type?`(${m.src_type})`:''].filter(Boolean).join(' '),
+      [meshOrigin(m)||'',m.src_type?`(${m.src_type})`:''].filter(Boolean).join(' '),
+      meshRouteParts(m).via.join(','),
       m.dst||'',
       m.msg||'',
       Array.isArray(m.paths)?m.paths.join(','):'',
@@ -7605,10 +7640,12 @@ function geoEventRow(e){
   const status=e.alarmed
     ? '<span class="badge badge-green" style="font-size:10px">ALARM</span>'
     : (e.inside_radius?'<span class="badge badge-blue" style="font-size:10px">inside</span>':'<span class="badge" style="font-size:10px">outside</span>');
+  const via=Array.isArray(e.via)?e.via.map(v=>String(v||'').trim()).filter(Boolean):[];
   return `<tr>
     <td class="sds-time">${escHtml(e.ts||'')}</td>
     <td>${escHtml(e.source||'—')}</td>
     <td>${escHtml(e.device||'—')}</td>
+    <td>${via.length?via.map(v=>`<span class="badge badge-blue" style="font-size:10px">${escHtml(v)}</span>`).join(' '):'<span class="sds-empty">—</span>'}</td>
     <td class="sds-time">${Number(e.distance_m||0).toFixed(0)} m</td>
     <td>${meshMapLink(e.lat,e.lon,'map')}</td>
     <td>${status}</td>
@@ -7620,7 +7657,7 @@ function renderGeoalarmEvents(){
   const rows=state.geoalarmEvents||[];
   geoalarmPageIndex=clampLogPage(geoalarmPageIndex,rows.length);
   setLogPager('geo-events-page',geoalarmPageIndex,rows.length);
-  if(!rows.length){tb.innerHTML=`<tr><td colspan="7" class="sds-empty" style="text-align:center;padding:24px">No GeoAlarm events yet</td></tr>`;return;}
+  if(!rows.length){tb.innerHTML=`<tr><td colspan="8" class="sds-empty" style="text-align:center;padding:24px">No GeoAlarm events yet</td></tr>`;return;}
   const start=geoalarmPageIndex*LOG_PAGE_SIZE;
   tb.innerHTML=rows.slice(start,start+LOG_PAGE_SIZE).map(geoEventRow).join('');
 }

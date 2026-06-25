@@ -188,6 +188,7 @@ impl MeshcomWorker {
         let value: Value = serde_json::from_str(text).map_err(|e| format!("invalid JSON: {e}"))?;
         let msg_type = string_field(&value, "type").unwrap_or_else(|| "unknown".to_string());
         let src = string_field(&value, "src");
+        let (src, via) = split_meshcom_source(src);
         let dst = string_field(&value, "dst");
         let src_type = string_field(&value, "src_type");
         let msg = string_field(&value, "msg").map(|s| truncate_chars(&s, 512));
@@ -212,7 +213,7 @@ impl MeshcomWorker {
         );
 
         if let (Some(sink), Some(source), Some(lat), Some(lon)) = (&self.geoalarm_sink, src.as_deref(), lat, lon) {
-            sink.send_meshcom_position(source.to_string(), lat, lon);
+            sink.send_meshcom_position_with_via(source.to_string(), via.clone(), lat, lon);
         }
 
         self.rx_packets = self.rx_packets.saturating_add(1);
@@ -222,6 +223,7 @@ impl MeshcomWorker {
             msg_type: msg_type.clone(),
             src_type,
             src: src.clone(),
+            via: via.clone(),
             dst,
             msg,
             msg_id,
@@ -237,6 +239,7 @@ impl MeshcomWorker {
         if let Some(source) = src {
             let node = MeshcomNodeStatus {
                 src: source,
+                via,
                 last_seen: ts.clone(),
                 last_type: msg_type.clone(),
                 lat,
@@ -278,6 +281,7 @@ impl MeshcomWorker {
                 batt: event.batt,
                 rssi: event.rssi,
                 snr: event.snr,
+                via: event.via.clone(),
             });
         }
     }
@@ -297,6 +301,7 @@ impl MeshcomWorker {
                 firmware: node.firmware.clone(),
                 fw_sub: node.fw_sub.clone(),
                 hw_id: node.hw_id.clone(),
+                via: node.via.clone(),
             });
         }
     }
@@ -305,6 +310,7 @@ impl MeshcomWorker {
         if let Some(node) = self.nodes.iter_mut().find(|node| node.src == update.src) {
             node.last_seen = update.last_seen;
             node.last_type = update.last_type;
+            node.via = update.via;
             if update.lat.is_some() {
                 node.lat = update.lat;
             }
@@ -478,6 +484,17 @@ fn string_field(value: &Value, key: &str) -> Option<String> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(ToString::to_string)
+}
+
+fn split_meshcom_source(src: Option<String>) -> (Option<String>, Vec<String>) {
+    let Some(src) = src else {
+        return (None, Vec::new());
+    };
+    let mut parts = src.split(',').map(str::trim).filter(|s| !s.is_empty());
+    let Some(origin) = parts.next() else {
+        return (None, Vec::new());
+    };
+    (Some(origin.to_string()), parts.map(ToString::to_string).collect())
 }
 
 fn f64_field(value: &Value, key: &str) -> Option<f64> {
