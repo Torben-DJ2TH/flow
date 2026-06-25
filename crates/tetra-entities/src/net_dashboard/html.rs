@@ -874,7 +874,7 @@ tr.row-emergency td:first-child{box-shadow:inset 3px 0 0 var(--danger);}
   padding:4px 8px;border-radius:6px;font-family:var(--mono);font-size:11px;
 }
 .autoscroll-label{display:flex;align-items:center;gap:5px;font-family:var(--mono);font-size:11px;color:var(--text2);cursor:pointer;}
-.mesh-msg-filters,.dapnet-log-filters{
+.mesh-msg-filters,.dapnet-log-filters,.sds-log-filters,.lastheard-filters{
   display:grid;
   grid-template-columns:auto minmax(180px,1fr) minmax(220px,1.3fr) auto;
   align-items:end;
@@ -891,7 +891,7 @@ tr.row-emergency td:first-child{box-shadow:inset 3px 0 0 var(--danger);}
 .mesh-msg-filter-status{font-family:var(--mono);font-size:11px;color:var(--text3);white-space:nowrap;}
 .mesh-msg-filter-status.is-error{color:var(--danger);}
 @media(max-width:900px){
-  .mesh-msg-filters,.dapnet-log-filters{grid-template-columns:1fr;}
+  .mesh-msg-filters,.dapnet-log-filters,.sds-log-filters,.lastheard-filters{grid-template-columns:1fr;}
   .mesh-msg-filter-status{white-space:normal;}
 }
 
@@ -2686,6 +2686,27 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
           </div>
         </div>
         <div class="card-body">
+          <div class="lastheard-filters">
+            <div class="mesh-msg-filter-field">
+              <span class="mesh-msg-filter-label">Source</span>
+              <div class="mesh-msg-filter-buttons">
+                <button class="btn btn-sm btn-primary" id="lh-source-local" onclick="toggleLastHeardSource('local')">local</button>
+                <button class="btn btn-sm btn-primary" id="lh-source-brew" onclick="toggleLastHeardSource('brew')">brew</button>
+                <button class="btn btn-sm btn-primary" id="lh-source-brew2" onclick="toggleLastHeardSource('brew2')">brew2</button>
+                <button class="btn btn-sm btn-primary" id="lh-source-asterisk" onclick="toggleLastHeardSource('asterisk')">asterisk</button>
+                <button class="btn btn-sm btn-primary" id="lh-source-echolink" onclick="toggleLastHeardSource('echolink')">echolink</button>
+              </div>
+            </div>
+            <label class="mesh-msg-filter-field">
+              <span class="mesh-msg-filter-label">ISSI regex</span>
+              <input type="search" id="lastheard-issi-filter" class="form-input" placeholder="2632585|DJ2TH" oninput="lastHeardFilterChanged()" spellcheck="false">
+            </label>
+            <label class="mesh-msg-filter-field">
+              <span class="mesh-msg-filter-label">Destination regex</span>
+              <input type="search" id="lastheard-dest-filter" class="form-input" placeholder="26200|91385" oninput="lastHeardFilterChanged()" spellcheck="false">
+            </label>
+            <span class="mesh-msg-filter-status" id="lastheard-filter-status">—</span>
+          </div>
           <div class="table-wrap">
             <table>
               <thead><tr>
@@ -2744,6 +2765,17 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
           </div>
         </div>
         <div class="card-body">
+          <div class="sds-log-filters">
+            <label class="mesh-msg-filter-field">
+              <span class="mesh-msg-filter-label">From regex</span>
+              <input type="search" id="sdslog-from-filter" class="form-input" placeholder="2632585|DJ2TH" oninput="sdsLogFilterChanged()" spellcheck="false">
+            </label>
+            <label class="mesh-msg-filter-field">
+              <span class="mesh-msg-filter-label">TG regex</span>
+              <input type="search" id="sdslog-tg-filter" class="form-input" placeholder="26200|91102" oninput="sdsLogFilterChanged()" spellcheck="false">
+            </label>
+            <span class="mesh-msg-filter-status" id="sdslog-filter-status">—</span>
+          </div>
           <div class="table-wrap">
             <table>
               <thead><tr>
@@ -5772,6 +5804,58 @@ function lastHeardDuration(entry){
   if(secs==null||Number.isNaN(Number(secs)))return'<span class="muted">—</span>';
   return`<span class="num accent">${formatDur(Math.max(0,Math.floor(Number(secs))))}</span>`;
 }
+const LAST_HEARD_SOURCES=['local','brew','brew2','asterisk','echolink'];
+let lastHeardSourceVisible={local:true,brew:true,brew2:true,asterisk:true,echolink:true};
+function lastHeardRegex(id,label){
+  const raw=(document.getElementById(id)?.value||'').trim();
+  if(!raw)return null;
+  try{return new RegExp(raw,'i');}
+  catch(e){return {error:`${label}: ${e.message||'invalid regex'}`};}
+}
+function lastHeardIdText(id){
+  const c=callsigns[id];
+  return [id,c&&c.cs?c.cs:''].filter(v=>v!==null&&v!==undefined&&String(v).length).join(' ');
+}
+function lastHeardSourceAllowed(entry){
+  const source=String(entry.source||'local').toLowerCase();
+  return lastHeardSourceVisible[source]!==false;
+}
+function updateLastHeardSourceButtons(){
+  LAST_HEARD_SOURCES.forEach(source=>{
+    const btn=document.getElementById(`lh-source-${source}`);
+    const enabled=lastHeardSourceVisible[source]!==false;
+    if(btn){btn.classList.toggle('btn-primary',enabled);btn.classList.toggle('btn-danger',!enabled);}
+  });
+}
+function lastHeardFiltered(){
+  const status=document.getElementById('lastheard-filter-status');
+  const issiRe=lastHeardRegex('lastheard-issi-filter','ISSI');
+  const destRe=lastHeardRegex('lastheard-dest-filter','Destination');
+  const broken=[issiRe,destRe].find(re=>re&&re.error);
+  if(broken){
+    updateLastHeardSourceButtons();
+    if(status){status.textContent=`Regex error: ${broken.error}`;status.classList.add('is-error');}
+    return [];
+  }
+  const rows=(state.lastHeard||[]).filter(e=>{
+    if(!lastHeardSourceAllowed(e))return false;
+    if(issiRe&&!issiRe.test(lastHeardIdText(e.issi)))return false;
+    if(destRe&&!destRe.test(e.dest?lastHeardIdText(e.dest):''))return false;
+    return true;
+  });
+  if(status){
+    const total=(state.lastHeard||[]).length;
+    status.textContent=`${rows.length} / ${total}`;
+    status.classList.remove('is-error');
+  }
+  updateLastHeardSourceButtons();
+  return rows;
+}
+function lastHeardFilterChanged(){renderLastHeard();}
+function toggleLastHeardSource(source){
+  lastHeardSourceVisible[source]=!(lastHeardSourceVisible[source]!==false);
+  renderLastHeard();
+}
 function renderAll(){renderStations();renderCalls();renderLastHeard();updateTsBlocks();}
 
 // ── TS Visualizer ─────────────────────────────────────────────────────────
@@ -5999,8 +6083,10 @@ function renderCalls(){
 function renderLastHeard(){
   const tb=document.getElementById('lastheard-tbody');
   if(!tb)return;
-  if(!state.lastHeard.length){tb.innerHTML=`<tr><td colspan="6"><div class="empty-state"><span class="empty-ico">${svgIcon('lastheard')}</span><div class="empty-msg">${t('no_activity')}</div></div></td></tr>`;return;}
-  tb.innerHTML=state.lastHeard.map(e=>{
+  const total=(state.lastHeard||[]).length;
+  const rows=lastHeardFiltered();
+  if(!rows.length){tb.innerHTML=`<tr><td colspan="6"><div class="empty-state"><span class="empty-ico">${svgIcon('lastheard')}</span><div class="empty-msg">${total?'No matching activity':t('no_activity')}</div></div></td></tr>`;return;}
+  tb.innerHTML=rows.map(e=>{
     const destStr=e.dest?`<code>${e.dest}</code>`:'<span class="muted">—</span>';
     const isOnline=!!state.ms[e.issi];
     const issiHtml=`${idCell(e.issi)}${isOnline?` <span class="pill pill-ok">${t('online_badge')}</span>`:''}`;
@@ -6074,12 +6160,48 @@ function sdsRow(e){
   const body=sdsMessageBody(e);
   return `<tr><td class="sds-time num">${escHtml(e.ts||'')}</td><td>${dirBadge(e.direction)}</td><td>${idCell(e.source_issi)}</td><td>${to}</td><td class="sds-msg">${body}</td></tr>`;
 }
+function sdsLogRegex(id,label){
+  const raw=(document.getElementById(id)?.value||'').trim();
+  if(!raw)return null;
+  try{return new RegExp(raw,'i');}
+  catch(e){return {error:`${label}: ${e.message||'invalid regex'}`};}
+}
+function sdsLogFromText(e){
+  const c=callsigns[e.source_issi];
+  return [e.source_issi,c&&c.cs?c.cs:''].filter(v=>v!==null&&v!==undefined&&String(v).length).join(' ');
+}
+function sdsLogTgText(e){
+  return e.is_group?String(e.dest_issi||''):'';
+}
+function sdsLogFiltered(){
+  const status=document.getElementById('sdslog-filter-status');
+  const fromRe=sdsLogRegex('sdslog-from-filter','From');
+  const tgRe=sdsLogRegex('sdslog-tg-filter','TG');
+  const broken=[fromRe,tgRe].find(re=>re&&re.error);
+  if(broken){
+    if(status){status.textContent=`Regex error: ${broken.error}`;status.classList.add('is-error');}
+    return [];
+  }
+  const rows=(state.sdsLog||[]).filter(e=>{
+    if(fromRe&&!fromRe.test(sdsLogFromText(e)))return false;
+    if(tgRe&&!tgRe.test(sdsLogTgText(e)))return false;
+    return true;
+  });
+  if(status){
+    const total=(state.sdsLog||[]).length;
+    status.textContent=`${rows.length} / ${total}`;
+    status.classList.remove('is-error');
+  }
+  return rows;
+}
+function sdsLogFilterChanged(){sdsLogPageIndex=0;renderSdsLog();}
 function renderSdsLog(){
   const tb=document.getElementById('sdslog-tbody');if(!tb)return;
-  const rows=state.sdsLog||[];
+  const total=(state.sdsLog||[]).length;
+  const rows=sdsLogFiltered();
   sdsLogPageIndex=clampLogPage(sdsLogPageIndex,rows.length);
   setLogPager('sdslog-page',sdsLogPageIndex,rows.length);
-  if(!rows.length){tb.innerHTML=`<tr><td colspan="5" class="sds-empty" style="text-align:center;padding:24px">${t('no_sds')}</td></tr>`;return;}
+  if(!rows.length){tb.innerHTML=`<tr><td colspan="5" class="sds-empty" style="text-align:center;padding:24px">${total?'No matching SDS messages':t('no_sds')}</td></tr>`;return;}
   const start=sdsLogPageIndex*LOG_PAGE_SIZE;
   tb.innerHTML=rows.slice(start,start+LOG_PAGE_SIZE).map(sdsRow).join('');
 }
@@ -6093,7 +6215,7 @@ async function clearSdsLog(){
   try{const r=await fetch('/api/sds-log',{method:'DELETE'});if(!r.ok)return;state.sdsLog=[];sdsLogPageIndex=0;renderSdsLog();}catch{}
 }
 function exportSdsLog(){
-  const rows=state.sdsLog||[];
+  const rows=sdsLogFiltered();
   if(!rows.length)return;
   const lines=['TIME\tDIR\tFROM\tTO\tGROUP\tPID\tMESSAGE'];
   for(const e of rows){
