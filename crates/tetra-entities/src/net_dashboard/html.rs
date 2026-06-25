@@ -736,11 +736,11 @@ input[type="radio"]{accent-color:var(--accent);}
 .page{display:none;}
 .page.active{display:block;}
 #page-meshcom.active{display:flex;flex-direction:column;}
-#meshcom-messages-card{order:1;}
-#meshcom-nodes-card{order:2;}
-#meshcom-config-card{order:3;}
-#meshcom-routing-card{order:4;}
-#meshcom-send-card{order:5;}
+#meshcom-send-card{order:1;}
+#meshcom-messages-card{order:2;}
+#meshcom-nodes-card{order:3;}
+#meshcom-config-card{order:4;}
+#meshcom-routing-card{order:5;}
 
 /* ── Stat cards ── */
 .stat-grid{
@@ -2155,6 +2155,33 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
 .h-finline .h-flabel-sm{color:var(--muted);font-size:12px;}
 .h-fopts{display:flex;gap:14px;flex-wrap:wrap;}
 .h-fopt{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px;}
+#page-maps .card-body{padding:16px 18px;}
+.maps-layout{display:grid;grid-template-columns:minmax(320px,1.55fr) minmax(260px,.85fr);gap:14px;align-items:stretch;}
+.maps-stage{position:relative;min-height:560px;border:1px solid var(--border);border-radius:var(--r);overflow:hidden;background:var(--bg1);}
+.maps-stage iframe{position:absolute;inset:0;width:100%;height:100%;border:0;filter:saturate(.9) contrast(.95);}
+.maps-marker-layer{position:absolute;inset:0;pointer-events:none;}
+.maps-marker{position:absolute;transform:translate(-50%,-100%);width:30px;height:36px;border:0;background:transparent;padding:0;pointer-events:auto;cursor:pointer;z-index:2;}
+.maps-pin{display:flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);border:2px solid rgba(255,255,255,.72);box-shadow:0 8px 22px rgba(0,0,0,.34);}
+.maps-pin span{transform:rotate(45deg);font:800 10px var(--mono);color:#fff;text-transform:uppercase;}
+.maps-marker.active .maps-pin{outline:3px solid color-mix(in srgb,var(--accent2) 70%,transparent);outline-offset:3px;}
+.maps-pin.sds{background:var(--accent2);}
+.maps-pin.meshcom{background:var(--accent);}
+.maps-pin.geoalarm{background:var(--warn);}
+.maps-pin.alarm{background:var(--danger);}
+.maps-pin.station{background:var(--ok);}
+.maps-popup{position:absolute;left:12px;bottom:12px;max-width:min(500px,calc(100% - 24px));padding:12px;background:color-mix(in srgb,var(--bg2) 94%,transparent);border:1px solid var(--border);border-radius:var(--r);box-shadow:var(--card-shadow);z-index:3;}
+.maps-popup-title{font-weight:800;color:var(--text);margin-bottom:4px;}
+.maps-popup-meta,.maps-list-meta{font:700 11px/1.5 var(--mono);color:var(--text3);}
+.maps-popup-detail{margin-top:8px;color:var(--text2);font-size:13px;line-height:1.45;}
+.maps-list{max-height:560px;overflow:auto;border:1px solid var(--border);border-radius:var(--r);background:var(--bg1);}
+.maps-list-row{display:grid;grid-template-columns:auto 1fr;gap:10px;padding:11px 12px;border-bottom:1px solid var(--border);cursor:pointer;}
+.maps-list-row:last-child{border-bottom:0;}
+.maps-list-row:hover,.maps-list-row.active{background:var(--bg3);}
+.maps-list-type{font:800 10px var(--mono);text-transform:uppercase;color:var(--text3);padding-top:3px;}
+.maps-list-title{font-weight:800;color:var(--text);}
+.maps-list-detail{font-size:12px;color:var(--text2);line-height:1.45;margin-top:4px;}
+.maps-empty{padding:28px;text-align:center;color:var(--text3);font:700 12px var(--mono);}
+@media(max-width:1100px){.maps-layout{grid-template-columns:1fr}.maps-stage{min-height:430px}.maps-list{max-height:360px;}}
 </style>
 </head>
 <body>
@@ -2252,6 +2279,10 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
     <div class="nav-item" onclick="showPage('sdslog',this)" id="nav-sdslog">
       <span class="nav-icon" data-icon="sdslog"></span>
       <span class="nav-label" data-i18n="sdslog">SDS LOG</span>
+    </div>
+    <div class="nav-item" onclick="showPage('maps',this)" id="nav-maps">
+      <span class="nav-icon" data-icon="maps"></span>
+      <span class="nav-label" data-i18n="maps">Maps</span>
     </div>
 
     <!-- INTEGRATIONS — external services (each hidden until its probe succeeds). -->
@@ -3585,6 +3616,40 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
       </div>
     </div>
 
+    <!-- ── MAPS ── -->
+    <div class="page" id="page-maps">
+      <div class="section-label" data-i18n-section="monitor">Monitor</div>
+      <div class="hero">
+        <span class="hero-dot is-idle" id="maps-hero-dot"></span>
+        <div class="hero-main">
+          <div class="hero-title" data-i18n="maps_title">Maps</div>
+          <div class="hero-sub" id="maps-hero-sub">OpenStreetMap positions</div>
+        </div>
+        <div class="hero-metrics">
+          <span class="pill pill-idle" id="maps-count">0 markers</span>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title" data-i18n="maps_title">Maps</div>
+          <div class="card-actions">
+            <button class="btn btn-sm" onclick="refreshMapsData()"><span class="btn-icon" data-icon="restart"></span><span data-i18n="refresh">Refresh</span></button>
+            <button class="btn btn-sm" onclick="openMapsOsm()">Open OSM</button>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="maps-layout">
+            <div class="maps-stage" id="maps-stage">
+              <iframe id="maps-frame" title="OpenStreetMap map" loading="lazy"></iframe>
+              <div class="maps-marker-layer" id="maps-marker-layer"></div>
+              <div class="maps-popup" id="maps-popup" style="display:none"></div>
+            </div>
+            <div class="maps-list" id="maps-list"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- ── GEOALARM ── -->
     <div class="page" id="page-geoalarm">
       <div class="section-label" data-i18n="integrations">Integrations</div>
@@ -4414,6 +4479,7 @@ const ICONS = {
   system:'<rect x="6" y="6" width="12" height="12" rx="2.5"/><rect x="9.5" y="9.5" width="5" height="5" rx="1"/><path d="M9 3.5v2.5M15 3.5v2.5M9 18v2.5M15 18v2.5M3.5 9H6M3.5 15H6M18 9h2.5M18 15h2.5"/>',
   asterisk:'<circle cx="12" cy="12" r="7.5"/><path d="M12 7.5v9M8.1 9.75l7.8 4.5M15.9 9.75l-7.8 4.5"/>',
   dapnet:'<path d="M6.5 16v-4a5.5 5.5 0 0 1 11 0v4l1.5 2h-14Z"/><path d="M10.5 18.5a1.6 1.6 0 0 0 3 0"/>',
+  maps:'<path d="M9 18 4 20.5V6.5L9 4l6 2.5 5-2.5v14L15 20.5 9 18Z"/><path d="M9 4v14M15 6.5v14"/>',
   geoalarm:'<path d="M12 21s6.5-5.4 6.5-10.5A6.5 6.5 0 0 0 5.5 10.5C5.5 15.6 12 21 12 21Z"/><circle cx="12" cy="10.3" r="2.3"/>',
   overview:'<rect x="4" y="4" width="7" height="7" rx="1.6"/><rect x="13" y="4" width="7" height="7" rx="1.6"/><rect x="4" y="13" width="7" height="7" rx="1.6"/><rect x="13" y="13" width="7" height="7" rx="1.6"/>',
   // kpi / domain
@@ -4468,7 +4534,7 @@ const LANGS={
   en:{
     bts_ip:'BTS IP',offline:'OFFLINE',online:'ONLINE',
     brew_online:'ONLINE',brew_offline:'OFFLINE',
-    stations:'Radios',calls:'Calls',lastheard:'Last Heard',log:'Log',rf:'RF',health:'Health',asterisk:'Asterisk SIP',dapnet:'DAPNET',echolink:'EchoLink',echolink_title:'EchoLink',meshcom:'MeshCom',meshcom_title:'MeshCom',geoalarm:'GeoAlarm',geoalarm_title:'GeoAlarm',config:'Config',
+    stations:'Radios',calls:'Calls',lastheard:'Last Heard',log:'Log',rf:'RF',health:'Health',asterisk:'Asterisk SIP',dapnet:'DAPNET',echolink:'EchoLink',echolink_title:'EchoLink',meshcom:'MeshCom',meshcom_title:'MeshCom',maps:'Maps',maps_title:'Maps',geoalarm:'GeoAlarm',geoalarm_title:'GeoAlarm',config:'Config',
     sdslog:'SDS Log',th_dir:'Dir',th_from:'From',th_to:'To',th_message:'Message',no_sds:'No SDS messages yet',sds_refresh:'Refresh',
     rf_freq:'Center freq',rf_rate:'Sample rate',rf_rms:'RMS',rf_peak:'Peak',rf_age:'Snapshot',
     rf_waiting:'waiting…',rf_live:'live',rf_stale:'stale',
@@ -4685,7 +4751,7 @@ const LANGS={
   de:{
     bts_ip:'BTS-IP',offline:'OFFLINE',online:'ONLINE',
     brew_online:'ONLINE',brew_offline:'OFFLINE',
-    stations:'Radios',calls:'Anrufe',lastheard:'Zuletzt Gehört',log:'Log',rf:'RF',health:'Health',asterisk:'Asterisk SIP',dapnet:'DAPNET',echolink:'EchoLink',echolink_title:'EchoLink',meshcom:'MeshCom',meshcom_title:'MeshCom',geoalarm:'GeoAlarm',geoalarm_title:'GeoAlarm',config:'Config',
+    stations:'Radios',calls:'Anrufe',lastheard:'Zuletzt Gehört',log:'Log',rf:'RF',health:'Health',asterisk:'Asterisk SIP',dapnet:'DAPNET',echolink:'EchoLink',echolink_title:'EchoLink',meshcom:'MeshCom',meshcom_title:'MeshCom',maps:'Maps',maps_title:'Maps',geoalarm:'GeoAlarm',geoalarm_title:'GeoAlarm',config:'Config',
     sdslog:'SDS-Log',th_dir:'Ri.',th_from:'Von',th_to:'An',th_message:'Nachricht',no_sds:'Noch keine SDS-Nachrichten',sds_refresh:'Aktualisieren',
     rf_freq:'Mittenfrequenz',rf_rate:'Abtastrate',rf_rms:'RMS',rf_peak:'Spitze',rf_age:'Aufnahme',
     rf_waiting:'wartet…',rf_live:'live',rf_stale:'veraltet',
@@ -5075,7 +5141,7 @@ function closeMobileSidebar(){
 }
 
 // ── Page navigation ───────────────────────────────────────────────────────
-const PAGE_TITLES={stations:'stations',calls:'calls',lastheard:'lastheard',log:'log',sdslog:'sdslog',rf:'rf',health:'health',asterisk:'asterisk',dapnet:'dapnet',echolink:'echolink',meshcom:'meshcom',geoalarm:'geoalarm',config:'config',system:'system'};
+const PAGE_TITLES={stations:'stations',calls:'calls',lastheard:'lastheard',log:'log',sdslog:'sdslog',rf:'rf',health:'health',asterisk:'asterisk',dapnet:'dapnet',echolink:'echolink',meshcom:'meshcom',maps:'maps',geoalarm:'geoalarm',config:'config',system:'system'};
 function showPage(name,el){
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
@@ -5090,6 +5156,7 @@ function showPage(name,el){
   if(name==='dapnet'){loadDapnet();loadDapnetLog();}
   if(name==='echolink'){loadEcholink();}
   if(name==='meshcom'){loadMeshcom();}
+  if(name==='maps'){refreshMapsData();}
   if(name==='geoalarm'){loadGeoalarm();}
   if(name==='config'){loadConfig();loadWhitelist();loadWx();}
   if(name==='telegram'){loadTelegram();}
@@ -5411,7 +5478,7 @@ async function wifiCall(url, body){
 function escAttr(s){ return String(s).replace(/&/g,'&amp;').replace(/'/g,"&#39;").replace(/"/g,'&quot;'); }
 
 // ── State + WS ────────────────────────────────────────────────────────────
-let ws=null,state={ms:{},calls:{},emergencies:{},lastHeard:[],sdsLog:[],dapnetLog:[],echolinkDirectory:[],echolinkDirectoryStatus:'',meshcomNodes:[],meshcomMessages:[],geoalarmEvents:[],brewOnline:false,brewVer:0,brewStatus:null,brewStatusLoadedAt:0},sdsDest=0;
+let ws=null,state={ms:{},calls:{},emergencies:{},lastHeard:[],sdsLog:[],dapnetLog:[],echolinkDirectory:[],echolinkDirectoryStatus:'',meshcomNodes:[],meshcomMessages:[],geoalarmEvents:[],geoalarmConfig:null,brewOnline:false,brewVer:0,brewStatus:null,brewStatusLoadedAt:0},sdsDest=0;
 
 // ── RadioID callsigns (indicativ) ──────────────────────────────────────────────
 // issi -> {cs:"CALLSIGN", fl:"🇷🇴"} (found; fl is the country flag emoji from the prefix, or "")
@@ -5715,7 +5782,7 @@ function handleMsg(msg){
       if(!state.sdsLog)state.sdsLog=[];
       state.sdsLog.unshift({ts:nowStamp(),direction:msg.direction,source_issi:msg.source_issi,dest_issi:msg.dest_issi,is_group:msg.is_group,protocol_id:msg.protocol_id,text:msg.text});
       if(state.sdsLog.length>500)state.sdsLog.pop();
-      renderSdsLog();refreshCallsigns();break;
+      renderSdsLog();renderMapsIfActive();refreshCallsigns();break;
     case 'dapnet_log':
       if(!state.dapnetLog)state.dapnetLog=[];
       state.dapnetLog.unshift({ts:nowStamp(),direction:msg.direction,id:msg.id,callsign:msg.callsign,recipient:msg.recipient,text:msg.text,priority:msg.priority,paths:msg.paths||[]});
@@ -5725,10 +5792,10 @@ function handleMsg(msg){
       if(!state.meshcomMessages)state.meshcomMessages=[];
       state.meshcomMessages.unshift({ts:msg.ts||nowStamp(),direction:msg.direction,msg_type:msg.msg_type,src_type:msg.src_type,src:msg.src,dst:msg.dst,msg:msg.msg,msg_id:msg.msg_id,paths:msg.paths||[],lat:msg.lat,lon:msg.lon,alt:msg.alt,batt:msg.batt,rssi:msg.rssi,snr:msg.snr});
       if(state.meshcomMessages.length>10000)state.meshcomMessages.pop();
-      renderMeshcomMessages();break;
+      renderMeshcomMessages();renderMapsIfActive();break;
     case 'meshcom_node':
       upsertMeshcomNode(msg);
-      renderMeshcomNodes();break;
+      renderMeshcomNodes();renderMapsIfActive();break;
     case 'tx_visual':handleTxVisual(msg);break;
     case 'tx_quality':handleTxQuality(msg);break;
     case 'sdr_health':handleSdrHealth(msg);break;
@@ -6143,13 +6210,199 @@ function lipPositionFromText(text){
   if(!Number.isFinite(lat)||!Number.isFinite(lon)||lat<-90||lat>90||lon<-180||lon>180)return null;
   return {lat,lon};
 }
+let mapsCurrentMarkers=[],mapsSelectedIndex=-1,mapsCurrentBounds=null,mapsFocus=null;
+function validMapLatLon(lat,lon){
+  const la=Number(lat),lo=Number(lon);
+  return Number.isFinite(la)&&Number.isFinite(lo)&&la>=-90&&la<=90&&lo>=-180&&lo<=180;
+}
+function mapLinkHtml(lat,lon,label){
+  const la=Number(lat),lo=Number(lon);
+  if(!validMapLatLon(la,lo))return escHtml(label||'map');
+  return `<a class="sds-map-link" href="javascript:void(0)" onclick="event.preventDefault();openMapsAt(${la},${lo})">${escHtml(label||`${la.toFixed(5)}, ${lo.toFixed(5)}`)}</a>`;
+}
+function openMapsAt(lat,lon){
+  const la=Number(lat),lo=Number(lon);
+  if(!validMapLatLon(la,lo))return;
+  mapsFocus={lat:la,lon:lo};
+  showPage('maps',document.getElementById('nav-maps'));
+}
+function mapsActive(){
+  return !!document.getElementById('page-maps')?.classList.contains('active');
+}
+function renderMapsIfActive(){if(mapsActive())renderMapsPage();}
+function mapsMarker(type,title,lat,lon,detail,meta,ts){
+  const la=Number(lat),lo=Number(lon);
+  if(!validMapLatLon(la,lo))return null;
+  return {type,title:title||'Position',lat:la,lon:lo,detail:detail||'',meta:meta||'',ts:ts||''};
+}
+function mapsCollect(){
+  const station=[],items=[];
+  const geoCfg=state.geoalarmConfig||{};
+  const fs=mapsMarker('station','FlowStation',geoCfg.flowstation_lat,geoCfg.flowstation_lon,'Station position from GeoAlarm FlowStation latitude/longitude','GeoAlarm config','');
+  if(fs)station.push(fs);
+  (state.sdsLog||[]).forEach(e=>{
+    const lip=lipPositionFromText(e.text);
+    if(!lip)return;
+    const cs=callsigns[e.source_issi]?.cs;
+    const src=[e.source_issi,cs].filter(Boolean).join(' ');
+    items.push(mapsMarker('sds',`TETRA LIP ${src||'—'}`,lip.lat,lip.lon,
+      `SDS ${String(e.direction||'').toUpperCase()} ${e.source_issi||'—'} → ${e.dest_issi||'—'}${e.is_group?' group':''}`,
+      'SDS/LIP',e.ts));
+  });
+  (state.meshcomNodes||[]).forEach(n=>{
+    const detail=[n.last_type,meshRfText(n),n.batt!==null&&n.batt!==undefined?`Battery ${meshBatteryText(n.batt)}`:''].filter(v=>v&&v!=='—').join(' · ');
+    items.push(mapsMarker('meshcom',`MeshCom node ${n.src||'—'}`,n.lat,n.lon,detail||'MeshCom node position','MeshCom node',n.last_seen));
+  });
+  (state.meshcomMessages||[]).forEach(m=>{
+    const detail=m.msg||'MeshCom position packet';
+    const meta=[`MeshCom ${m.src_type||m.msg_type||'packet'}`,m.src?`from ${m.src}`:'',m.dst?`to ${m.dst}`:''].filter(Boolean).join(' · ');
+    items.push(mapsMarker('meshcom',`MeshCom ${m.src||'—'}`,m.lat,m.lon,detail,meta,m.ts));
+  });
+  (state.geoalarmEvents||[]).forEach(e=>{
+    const detail=[e.inside_radius?'inside radius':'outside radius',Number.isFinite(Number(e.distance_m))?`${Number(e.distance_m).toFixed(0)} m`:null,meshPathsText(e.paths)].filter(Boolean).join(' · ');
+    items.push(mapsMarker(e.alarmed?'alarm':'geoalarm',`GeoAlarm ${e.device||'—'}`,e.lat,e.lon,detail,e.source||'GeoAlarm',e.ts));
+  });
+  items.sort((a,b)=>String(b.ts||'').localeCompare(String(a.ts||'')));
+  return station.concat(items.filter(Boolean));
+}
+function meshPathsText(paths){
+  return Array.isArray(paths)&&paths.length?paths.join(', '):'';
+}
+function mapsClampLat(lat){return Math.max(-85,Math.min(85,Number(lat)||0));}
+function mapsMercX(lon){return (Number(lon)+180)/360;}
+function mapsMercY(lat){
+  const r=mapsClampLat(lat)*Math.PI/180;
+  return (1-Math.log(Math.tan(r)+1/Math.cos(r))/Math.PI)/2;
+}
+function mapsZoomForSpan(span){
+  if(span<0.01)return 16;
+  if(span<0.04)return 14;
+  if(span<0.15)return 12;
+  if(span<0.8)return 10;
+  if(span<4)return 8;
+  return 6;
+}
+function mapsBounds(markers){
+  const valid=markers.filter(m=>validMapLatLon(m.lat,m.lon));
+  if(!valid.length)return {minLon:5.5,minLat:47,maxLon:15.5,maxLat:55.5,centerLat:51.2,centerLon:10.4,zoom:6};
+  let minLat=90,maxLat=-90,minLon=180,maxLon=-180;
+  valid.forEach(m=>{minLat=Math.min(minLat,m.lat);maxLat=Math.max(maxLat,m.lat);minLon=Math.min(minLon,m.lon);maxLon=Math.max(maxLon,m.lon);});
+  const latSpan=Math.max(0.01,maxLat-minLat),lonSpan=Math.max(0.01,maxLon-minLon);
+  const latPad=Math.max(0.01,latSpan*0.18),lonPad=Math.max(0.01,lonSpan*0.18);
+  minLat=Math.max(-85,minLat-latPad);maxLat=Math.min(85,maxLat+latPad);
+  minLon=Math.max(-180,minLon-lonPad);maxLon=Math.min(180,maxLon+lonPad);
+  return {minLon,minLat,maxLon,maxLat,centerLat:(minLat+maxLat)/2,centerLon:(minLon+maxLon)/2,zoom:mapsZoomForSpan(Math.max(maxLat-minLat,maxLon-minLon))};
+}
+function mapsEmbedUrl(b){
+  return `https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent(`${b.minLon},${b.minLat},${b.maxLon},${b.maxLat}`)}&layer=mapnik`;
+}
+function mapsOsmUrl(m){
+  return `https://www.openstreetmap.org/?mlat=${encodeURIComponent(m.lat)}&mlon=${encodeURIComponent(m.lon)}#map=16/${encodeURIComponent(m.lat)}/${encodeURIComponent(m.lon)}`;
+}
+function mapsOsmBoundsUrl(b){
+  return `https://www.openstreetmap.org/#map=${b.zoom}/${encodeURIComponent(b.centerLat)}/${encodeURIComponent(b.centerLon)}`;
+}
+function mapsMarkerPos(m,b){
+  const minX=mapsMercX(b.minLon),maxX=mapsMercX(b.maxLon);
+  const topY=mapsMercY(b.maxLat),botY=mapsMercY(b.minLat);
+  const x=(mapsMercX(m.lon)-minX)/Math.max(0.000001,maxX-minX)*100;
+  const y=(mapsMercY(m.lat)-topY)/Math.max(0.000001,botY-topY)*100;
+  return {left:Math.max(0,Math.min(100,x)),top:Math.max(0,Math.min(100,y))};
+}
+function mapsInitial(m){
+  if(m.type==='station')return 'FS';
+  if(m.type==='sds')return 'S';
+  if(m.type==='meshcom')return 'M';
+  if(m.type==='alarm')return '!';
+  return 'G';
+}
+function mapsTypeLabel(m){
+  if(m.type==='station')return 'station';
+  if(m.type==='sds')return 'sds';
+  if(m.type==='meshcom')return 'mesh';
+  if(m.type==='alarm')return 'alarm';
+  return 'geo';
+}
+function mapsNearestIndex(markers,focus){
+  if(!focus||!markers.length)return -1;
+  let best=-1,bestD=Infinity;
+  markers.forEach((m,i)=>{
+    const d=Math.pow(m.lat-focus.lat,2)+Math.pow(m.lon-focus.lon,2);
+    if(d<bestD){bestD=d;best=i;}
+  });
+  return best;
+}
+function renderMapsPage(){
+  const markers=mapsCollect();
+  mapsCurrentMarkers=markers;
+  mapsCurrentBounds=mapsBounds(markers);
+  const frame=document.getElementById('maps-frame');
+  const layer=document.getElementById('maps-marker-layer');
+  const list=document.getElementById('maps-list');
+  const count=document.getElementById('maps-count');
+  const sub=document.getElementById('maps-hero-sub');
+  const dot=document.getElementById('maps-hero-dot');
+  if(count)count.textContent=`${markers.length} marker${markers.length===1?'':'s'}`;
+  if(sub)sub.textContent=markers.length?'SDS/LIP · MeshCom · GeoAlarm · FlowStation':'No positions collected yet';
+  if(dot){dot.classList.toggle('is-ok',markers.length>0);dot.classList.toggle('is-idle',!markers.length);}
+  if(frame){
+    const mapUrl=mapsEmbedUrl(mapsCurrentBounds);
+    if(frame.getAttribute('src')!==mapUrl)frame.src=mapUrl;
+  }
+  if(layer){
+    layer.innerHTML=markers.map((m,i)=>{
+      const p=mapsMarkerPos(m,mapsCurrentBounds);
+      return `<button class="maps-marker" id="maps-marker-${i}" style="left:${p.left.toFixed(4)}%;top:${p.top.toFixed(4)}%" onclick="selectMapMarker(${i})" title="${escHtml(m.title)}"><span class="maps-pin ${escHtml(m.type)}"><span>${escHtml(mapsInitial(m))}</span></span></button>`;
+    }).join('');
+  }
+  if(list){
+    list.innerHTML=markers.length?markers.map((m,i)=>`<div class="maps-list-row" id="maps-row-${i}" onclick="selectMapMarker(${i})">
+      <div class="maps-list-type">${escHtml(mapsTypeLabel(m))}</div>
+      <div>
+        <div class="maps-list-title">${escHtml(m.title)}</div>
+        <div class="maps-list-meta">${m.ts?escHtml(m.ts)+' · ':''}${m.lat.toFixed(6)}, ${m.lon.toFixed(6)}</div>
+        ${m.detail?`<div class="maps-list-detail">${escHtml(m.detail)}</div>`:''}
+      </div>
+    </div>`).join(''):'<div class="maps-empty">No positions yet</div>';
+  }
+  const focusIdx=mapsNearestIndex(markers,mapsFocus);
+  const idx=focusIdx>=0?focusIdx:(markers.length?Math.max(0,Math.min(mapsSelectedIndex,markers.length-1)):-1);
+  selectMapMarker(idx,false);
+  mapsFocus=null;
+}
+function selectMapMarker(index,scroll=true){
+  mapsSelectedIndex=index;
+  document.querySelectorAll('.maps-marker,.maps-list-row').forEach(el=>el.classList.remove('active'));
+  const popup=document.getElementById('maps-popup');
+  const m=mapsCurrentMarkers[index];
+  if(!m){if(popup)popup.style.display='none';return;}
+  document.getElementById(`maps-marker-${index}`)?.classList.add('active');
+  const row=document.getElementById(`maps-row-${index}`);
+  row?.classList.add('active');
+  if(scroll)row?.scrollIntoView({block:'nearest'});
+  if(popup){
+    popup.style.display='block';
+    popup.innerHTML=`<div class="maps-popup-title">${escHtml(m.title)}</div>
+      <div class="maps-popup-meta">${escHtml(mapsTypeLabel(m))}${m.ts?' · '+escHtml(m.ts):''} · ${m.lat.toFixed(6)}, ${m.lon.toFixed(6)}</div>
+      ${m.meta?`<div class="maps-popup-meta">${escHtml(m.meta)}</div>`:''}
+      ${m.detail?`<div class="maps-popup-detail">${escHtml(m.detail)}</div>`:''}
+      <div style="margin-top:9px"><a class="sds-map-link" href="${mapsOsmUrl(m)}" target="_blank" rel="noopener noreferrer">Open in OpenStreetMap</a></div>`;
+  }
+}
+function openMapsOsm(){
+  const m=mapsCurrentMarkers[mapsSelectedIndex];
+  window.open(m?mapsOsmUrl(m):mapsOsmBoundsUrl(mapsCurrentBounds||mapsBounds([])),'_blank','noopener,noreferrer');
+}
+function refreshMapsData(){
+  renderMapsPage();
+  Promise.allSettled([loadSdsLog(),loadMeshcomNodes(),loadMeshcomMessages(),loadGeoalarm()]).then(()=>renderMapsPage());
+}
 function sdsMessageBody(e){
   if(e.text&&e.text.length){
     const lip=lipPositionFromText(e.text);
     if(lip){
       const label=`LIP position: ${lip.lat.toFixed(6)}, ${lip.lon.toFixed(6)}`;
-      const url=`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${lip.lat.toFixed(6)},${lip.lon.toFixed(6)}`)}`;
-      return `<a class="sds-map-link" href="${url}" target="_blank" rel="noopener noreferrer">${escHtml(label)}</a>`;
+      return mapLinkHtml(lip.lat,lip.lon,label);
     }
     return escHtml(e.text);
   }
@@ -6206,13 +6459,13 @@ function renderSdsLog(){
   tb.innerHTML=rows.slice(start,start+LOG_PAGE_SIZE).map(sdsRow).join('');
 }
 async function loadSdsLog(){
-  try{const r=await fetch('/api/sds-log');if(!r.ok)return;state.sdsLog=await r.json();sdsLogPageIndex=0;renderSdsLog();refreshCallsigns();}catch{}
+  try{const r=await fetch('/api/sds-log');if(!r.ok)return;state.sdsLog=await r.json();sdsLogPageIndex=0;renderSdsLog();renderMapsIfActive();refreshCallsigns();}catch{}
 }
 function sdsLogPrevPage(){sdsLogPageIndex--;renderSdsLog();}
 function sdsLogNextPage(){sdsLogPageIndex++;renderSdsLog();}
 async function clearSdsLog(){
   if(!confirm('Clear SDS Log?'))return;
-  try{const r=await fetch('/api/sds-log',{method:'DELETE'});if(!r.ok)return;state.sdsLog=[];sdsLogPageIndex=0;renderSdsLog();}catch{}
+  try{const r=await fetch('/api/sds-log',{method:'DELETE'});if(!r.ok)return;state.sdsLog=[];sdsLogPageIndex=0;renderSdsLog();renderMapsIfActive();}catch{}
 }
 function exportSdsLog(){
   const rows=sdsLogFiltered();
@@ -6703,8 +6956,7 @@ function meshMapLink(lat,lon,label){
   if(lat===null||lat===undefined||lon===null||lon===undefined)return '—';
   const la=Number(lat),lo=Number(lon);
   if(!Number.isFinite(la)||!Number.isFinite(lo))return '—';
-  const url=`https://maps.google.com/?q=${encodeURIComponent(la+','+lo)}`;
-  return `<a class="sds-map-link" href="${url}" target="_blank" rel="noopener noreferrer">${escHtml(label||`${la.toFixed(5)}, ${lo.toFixed(5)}`)}</a>`;
+  return mapLinkHtml(la,lo,label||`${la.toFixed(5)}, ${lo.toFixed(5)}`);
 }
 function meshRfText(row){
   const parts=[];
@@ -6784,11 +7036,11 @@ function renderMeshcomNodes(){
 function meshNodePrevPage(){meshNodePageIndex--;renderMeshcomNodes();}
 function meshNodeNextPage(){meshNodePageIndex++;renderMeshcomNodes();}
 async function loadMeshcomNodes(){
-  try{const r=await fetch('/api/meshcom-nodes');if(!r.ok)return;state.meshcomNodes=await r.json();meshNodePageIndex=0;renderMeshcomNodes();}catch{}
+  try{const r=await fetch('/api/meshcom-nodes');if(!r.ok)return;state.meshcomNodes=await r.json();meshNodePageIndex=0;renderMeshcomNodes();renderMapsIfActive();}catch{}
 }
 async function clearMeshcomNodes(){
   if(!confirm('Clear MeshCom Nodes?'))return;
-  try{const r=await fetch('/api/meshcom-nodes',{method:'DELETE'});if(!r.ok)return;state.meshcomNodes=[];meshNodePageIndex=0;renderMeshcomNodes();}catch{}
+  try{const r=await fetch('/api/meshcom-nodes',{method:'DELETE'});if(!r.ok)return;state.meshcomNodes=[];meshNodePageIndex=0;renderMeshcomNodes();renderMapsIfActive();}catch{}
 }
 function exportMeshcomNodes(){
   const rows=meshNodeFiltered();
@@ -6885,11 +7137,11 @@ function renderMeshcomMessages(){
 function meshMsgPrevPage(){meshMsgPageIndex--;renderMeshcomMessages();}
 function meshMsgNextPage(){meshMsgPageIndex++;renderMeshcomMessages();}
 async function loadMeshcomMessages(){
-  try{const r=await fetch('/api/meshcom-messages');if(!r.ok)return;state.meshcomMessages=await r.json();meshMsgPageIndex=0;renderMeshcomMessages();}catch{}
+  try{const r=await fetch('/api/meshcom-messages');if(!r.ok)return;state.meshcomMessages=await r.json();meshMsgPageIndex=0;renderMeshcomMessages();renderMapsIfActive();}catch{}
 }
 async function clearMeshcomMessages(){
   if(!confirm('Clear MeshCom Messages?'))return;
-  try{const r=await fetch('/api/meshcom-messages',{method:'DELETE'});if(!r.ok)return;state.meshcomMessages=[];meshMsgPageIndex=0;renderMeshcomMessages();}catch{}
+  try{const r=await fetch('/api/meshcom-messages',{method:'DELETE'});if(!r.ok)return;state.meshcomMessages=[];meshMsgPageIndex=0;renderMeshcomMessages();renderMapsIfActive();}catch{}
 }
 function exportMeshcomMessages(){
   const rows=meshMsgFiltered();
@@ -7070,9 +7322,11 @@ async function loadGeoalarm(){
     setIntegrationHero('geo', !!d.enabled, !!d.enabled&&!geoErr,
       d.enabled?(geoErr?t('integ_error'):t('integ_enabled')):t('integ_disabled'),
       rt.center||`${d.flowstation_lat??0}, ${d.flowstation_lon??0}`);
+    state.geoalarmConfig=d;
     state.geoalarmEvents=d.events||[];
     geoalarmPageIndex=0;
     renderGeoalarmEvents();
+    renderMapsIfActive();
     setGeoMsg('',true);
   }catch{setGeoMsg(t('conn_error'),false);setIntegrationHero('geo',false,false,t('conn_error'),'');}
 }
