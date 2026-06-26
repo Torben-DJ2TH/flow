@@ -29,8 +29,8 @@ impl CcBsSubentity {
     fn network_group_call_allowed(&self, network_entity: TetraEntity, dest_gssi: u32) -> bool {
         match network_entity {
             TetraEntity::Echolink => {
-                let cfg = self.config.config();
-                cfg.echolink.enabled && !cfg.cell.local_ssi_ranges.contains(dest_gssi)
+                let cfg = self.config.effective_echolink();
+                cfg.enabled && cfg.inbound_enabled && cfg.default_tetra_dest_is_group && cfg.default_tetra_dest_issi == dest_gssi
             }
             _ => brew::is_brew_inbound_allowed_for_entity(&self.config, network_entity, dest_gssi),
         }
