@@ -830,6 +830,8 @@ impl DashboardServer {
                             simplex: false,
                             carrier_num: *carrier_num,
                             ts: *ts,
+                            peer_carrier_num: None,
+                            peer_ts: None,
                             priority: *priority,
                         },
                     );
@@ -901,8 +903,8 @@ impl DashboardServer {
                     simplex,
                     carrier_num,
                     ts,
-                    peer_carrier_num: _,
-                    peer_ts: _,
+                    peer_carrier_num,
+                    peer_ts,
                     priority,
                     source,
                 } => {
@@ -919,6 +921,8 @@ impl DashboardServer {
                             simplex: *simplex,
                             carrier_num: *carrier_num,
                             ts: *ts,
+                            peer_carrier_num: *peer_carrier_num,
+                            peer_ts: *peer_ts,
                             priority: *priority,
                         },
                     );

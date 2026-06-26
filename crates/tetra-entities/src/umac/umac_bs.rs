@@ -1638,23 +1638,34 @@ impl UmacBs {
                 let carrier_num = prim.carrier_num;
                 let ts = prim.ts;
                 let data = prim.data;
+                let ul_circuit_active = self.scheduler_for(carrier_num).circuit_is_active(Direction::Ul, ts);
 
-                // Track last UL voice frame time for inactivity detection
-                if (1..=4).contains(&ts) {
+                // Track/report UL voice only while CMCE still owns an uplink circuit for
+                // this carrier/timeslot. Late decoder output after a call release must not
+                // recreate a "busy" dashboard slot or keep inactivity state alive.
+                if ul_circuit_active && (1..=4).contains(&ts) {
                     self.last_ul_voice.insert((carrier_num, ts), self.dltime);
+                    if let Some(sink) = &self.telemetry {
+                        sink.send(TelemetryEvent::TsVoiceActivity {
+                            carrier_num,
+                            ts,
+                            speaker_issi: self.ul_signal_owner.get(&(carrier_num, ts)).copied(),
+                        });
+                    }
                 }
-                if let Some(sink) = &self.telemetry {
-                    sink.send(TelemetryEvent::TsVoiceActivity {
+                if !ul_circuit_active {
+                    tracing::trace!(
+                        "rx_tmd_prim: dropping UL voice on inactive circuit carrier={} ts={}",
                         carrier_num,
-                        ts,
-                        speaker_issi: self.ul_signal_owner.get(&(carrier_num, ts)).copied(),
-                    });
+                        ts
+                    );
+                    return;
                 }
 
                 // Forward UL voice to Brew (User plane) if loaded. Each Brew entity only accepts
                 // frames for timeslots it explicitly claimed from CMCE.
                 if self.config.config().brew.is_some() || self.config.config().brew2.is_some() {
-                    if self.scheduler_for(carrier_num).circuit_is_active(Direction::Ul, ts) {
+                    if ul_circuit_active {
                         for dest in crate::net_brew::BREW_ENTITIES {
                             if crate::net_brew::is_active_for_entity(&self.config, dest) {
                                 queue.push_back(SapMsg {
@@ -1678,7 +1689,7 @@ impl UmacBs {
                 // keeps its own ts -> dialog map and ignores unrelated circuits.
                 #[cfg(feature = "asterisk")]
                 if self.config.config().asterisk.enabled {
-                    if self.scheduler_for(carrier_num).circuit_is_active(Direction::Ul, ts) {
+                    if ul_circuit_active {
                         let msg = SapMsg {
                             sap: Sap::TmdSap,
                             src: TetraEntity::Umac,
@@ -1698,7 +1709,7 @@ impl UmacBs {
                 // Forward UL voice to EchoLink if the bridge is enabled. The EchoLink entity keeps
                 // its own ts -> QSO map and ignores unrelated circuits.
                 if self.config.effective_echolink().enabled {
-                    if self.scheduler_for(carrier_num).circuit_is_active(Direction::Ul, ts) {
+                    if ul_circuit_active {
                         let msg = SapMsg {
                             sap: Sap::TmdSap,
                             src: TetraEntity::Umac,

@@ -5653,7 +5653,11 @@ function handleMsg(msg){
         state.calls[c.call_id]={...c,started_at:Date.now()-(c.started_secs_ago||0)*1000};
         if(c.ts&&c.ts>=1){
           const sub=c.call_type==='group'?t('call_group'):(c.simplex?t('call_p2p_s'):t('call_p2p_d'));
-          tsSetCall(c.carrier_num,c.ts,{...c,sub});
+          const call={...c,sub,started_at:state.calls[c.call_id].started_at};
+          tsSetCall(c.carrier_num,c.ts,call);
+          if(c.call_type==='individual'&&c.peer_ts&&c.peer_ts>=1){
+            tsSetCall(c.peer_carrier_num||c.carrier_num,c.peer_ts,call);
+          }
         }
       });
       if(msg.log&&msg.log.length){document.getElementById('log-container').innerHTML='';msg.log.forEach(e=>appendLog(e));}
@@ -5710,7 +5714,11 @@ function handleMsg(msg){
       if(msg.last_heard)pushLastHeard(msg.last_heard);
       if(msg.ts&&msg.ts>=1){
         const sub=msg.call_type==='group'?t('call_group'):(msg.simplex?t('call_p2p_s'):t('call_p2p_d'));
-        tsSetCall(msg.carrier_num,msg.ts,{...msg,sub});
+        const call={...msg,sub};
+        tsSetCall(msg.carrier_num,msg.ts,call);
+        if(msg.call_type==='individual'&&msg.peer_ts&&msg.peer_ts>=1){
+          tsSetCall(msg.peer_carrier_num||msg.carrier_num,msg.peer_ts,call);
+        }
         updateTsBlocks();
       }
       renderCalls();renderLastHeard();break;
@@ -6070,7 +6078,7 @@ function tsSetCall(carrierNum,ts,call){
     gssi:call.gssi, called_issi:call.called_issi, caller_issi:call.caller_issi,
     speaker_issi:call.active_speaker||call.speaker_issi||call.caller_issi,
     simplex:call.simplex, sub:call.sub, priority:call.priority||0,
-    voice_ts:null, started_at:Date.now()
+    voice_ts:null, started_at:call.started_at||Date.now()
   });
 }
 // Point a timeslot at the ISSI now transmitting (group-call speaker hand-offs).
@@ -6089,7 +6097,9 @@ function tsVoice(carrierNum,ts,speaker_issi){
   if(!tsIsTrafficSlot(carrier,ts))return;
   tsEnsureCarrier(carrier);
   const key=tsKey(carrier,ts);
-  if(!tsState.has(key))tsState.set(key,{call_id:0,call_type:'',carrier_num:carrier,gssi:null,voice_ts:null,started_at:Date.now()});
+  // A late decoder frame can arrive after CMCE already emitted call_ended. Do not
+  // recreate a permanent anonymous "PRIVATE / Alloc" slot from voice alone.
+  if(!tsState.has(key))return;
   const st=tsState.get(key);
   st.voice_ts=Date.now();
   if(speaker_issi!=null)st.speaker_issi=speaker_issi;

@@ -131,6 +131,18 @@ pub fn is_brew_inbound_allowed_for_entity(config: &SharedConfig, entity: TetraEn
     is_active_for_entity(config, entity) && !config.config().cell.local_ssi_ranges.contains(ssi)
 }
 
+/// Determine whether Brew-originated external subscriber state may be mirrored into CMCE.
+///
+/// Brew servers can announce remote subscribers with REGISTER/REREGISTER/AFFILIATE/DEAFFILIATE
+/// events. Those are useful for network-only listeners, but they must never create a CMCE
+/// subscriber entry for a local-only service SSI (for example the BS control/source ISSI).
+/// `local_ssi_ranges` is the existing local-only boundary used for inbound Brew traffic, so use
+/// the same boundary for external subscriber state.
+#[inline]
+pub fn is_brew_external_subscriber_allowed_for_entity(config: &SharedConfig, entity: TetraEntity, issi: u32) -> bool {
+    is_active_for_entity(config, entity) && !config.config().cell.local_ssi_ranges.contains(issi)
+}
+
 /// Determine if a given ISSI should be sent to the Brew server.
 /// On TetraPack, subscriber ISSIs must be 7 digits (1_000_000..=9_999_999).
 /// Special service ISSIs (e.g. 600 echo, short numbers) are always forwarded to Brew —
@@ -154,5 +166,54 @@ pub fn is_brew_issi_routable_for_entity(config: &SharedConfig, entity: TetraEnti
         (issi >= 1_000_000 && issi <= 9_999_999) || issi < 1_000_000 || is_pbx_gateway_issi(&brew_config, issi)
     } else {
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tetra_config::bluestation::{SharedConfig, parsing::from_toml_str};
+
+    fn shared_config(extra_cell: &str) -> SharedConfig {
+        let toml = format!(
+            r#"
+config_version = "0.6"
+stack_mode = "Bs"
+
+[phy_io]
+backend = "None"
+
+[net_info]
+mcc = 901
+mnc = 9999
+
+[cell_info]
+main_carrier = 1584
+freq_band = 4
+freq_offset = 0
+duplex_spacing = 4
+reverse_operation = false
+location_area = 1
+{}
+
+[brew]
+host = "example.invalid"
+port = 443
+tls = true
+username = 0
+password = ""
+"#,
+            extra_cell
+        );
+        SharedConfig::from_parts(from_toml_str(&toml).expect("test config parses"), None)
+    }
+
+    #[test]
+    fn external_subscriber_state_respects_local_ssi_ranges() {
+        let cfg = shared_config("local_ssi_ranges = [[999, 999], [9998, 9999]]");
+
+        assert!(!is_brew_external_subscriber_allowed_for_entity(&cfg, TetraEntity::Brew, 999));
+        assert!(!is_brew_external_subscriber_allowed_for_entity(&cfg, TetraEntity::Brew, 9999));
+        assert!(is_brew_external_subscriber_allowed_for_entity(&cfg, TetraEntity::Brew, 2632585));
     }
 }

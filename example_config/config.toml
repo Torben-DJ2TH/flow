@@ -147,9 +147,13 @@ colour_code = 1
 # Local SSI ranges for this cell. Traffic for these ranges will not leave the cell.
 # Overrides any settings in the brew section, if enabled.
 # Incoming brew traffic on these ranges will also be rejected.
+# Brew-originated external REGISTER/AFFILIATE/DEAFFILIATE state for these
+# ranges is ignored before it reaches CMCE, keeping local services local-only.
 # The end of the range is INCLUSIVE — the end number IS in the range.
 local_ssi_ranges = [
     [0, 90],
+    [999, 999],     # local voice echo / loopback
+    [9998, 9999],   # WX service + BS control/source ISSI
 ]
 
 # Cell services. Leave the defaults unless you know what you're changing.

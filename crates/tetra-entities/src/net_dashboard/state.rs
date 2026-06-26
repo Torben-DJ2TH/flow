@@ -31,6 +31,8 @@ pub struct CallState {
     pub simplex: bool,
     pub carrier_num: u16,
     pub ts: u8,
+    pub peer_carrier_num: Option<u16>,
+    pub peer_ts: Option<u8>,
     /// ETSI call priority (0..=15). 15 = emergency call; 12..=15 = pre-emptive priority.
     pub priority: u8,
 }
@@ -258,6 +260,8 @@ pub struct CallEntry {
     pub simplex: bool,
     pub carrier_num: u16,
     pub ts: u8,
+    pub peer_carrier_num: Option<u16>,
+    pub peer_ts: Option<u8>,
     /// ETSI call priority (0..=15); 15 = emergency. Mirrored from the call-started telemetry.
     pub priority: u8,
 }
@@ -574,6 +578,8 @@ impl DashboardStateInner {
                 simplex: c.simplex,
                 carrier_num: c.carrier_num,
                 ts: c.ts,
+                peer_carrier_num: c.peer_carrier_num,
+                peer_ts: c.peer_ts,
                 priority: c.priority,
             })
             .collect()

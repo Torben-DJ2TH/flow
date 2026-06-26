@@ -356,7 +356,10 @@ colour_code = 1
 ### Internal service ISSIs
 
 FlowStation reserves a few short ISSIs for services that terminate inside the
-base station instead of being routed to another radio or network bridge:
+base station instead of being routed to another radio or network bridge. Put
+these values in `cell_info.local_ssi_ranges`; Brew-originated external
+`REGISTER`/`AFFILIATE`/`DEAFFILIATE` state for those ranges is ignored before it
+reaches CMCE.
 
 | ISSI | Service | Notes |
 |---:|---|---|
@@ -953,6 +956,12 @@ REGISTER/REREGISTER/DEREGISTER updates and the matching CMCE subscriber registry
 updates are now debug-level only. Normal INFO logs stay readable during large
 Brew/TetraPack resyncs; enable debug logging when investigating subscriber
 state.
+
+**Brew subscriber state for local ISSIs** — external Brew
+REGISTER/REREGISTER/AFFILIATE/DEAFFILIATE/DEREGISTER updates are filtered before
+CMCE when the ISSI falls into `cell_info.local_ssi_ranges`. This keeps local
+service numbers such as `999`, `9998`, and `9999` from being treated as remote
+Brew subscribers.
 
 **Local echo service 999** — P2P calls to ISSI `999` now bypass the normal
 local-registration and network-bridge checks. FlowStation creates an explicit

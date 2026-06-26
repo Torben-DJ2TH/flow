@@ -338,30 +338,13 @@ impl BrewEntity {
                     match msg_type {
                         t if t == self.brew_config.subscriber_type_register => {
                             tracing::debug!("[{}] BrewEntity: external subscriber issi={} -> REGISTER", self.log_label(), issi);
-                            self.emit_external_subscriber_registered(issi);
-                            queue.push_back(SapMsg {
-                                sap: tetra_core::Sap::Control,
-                                src: self.entity,
-                                dest: TetraEntity::Cmce,
-                                msg: SapMsgInner::MmSubscriberUpdate(MmSubscriberUpdate {
-                                    issi,
-                                    groups: Vec::new(),
-                                    action: BrewSubscriberAction::Register,
-                                }),
-                            });
+                            if self.queue_external_subscriber_update(queue, issi, Vec::new(), BrewSubscriberAction::Register, "REGISTER") {
+                                self.emit_external_subscriber_registered(issi);
+                            }
                         }
                         t if t == self.brew_config.subscriber_type_reregister => {
                             tracing::debug!("[{}] BrewEntity: external subscriber issi={} -> REREGISTER", self.log_label(), issi);
-                            queue.push_back(SapMsg {
-                                sap: tetra_core::Sap::Control,
-                                src: self.entity,
-                                dest: TetraEntity::Cmce,
-                                msg: SapMsgInner::MmSubscriberUpdate(MmSubscriberUpdate {
-                                    issi,
-                                    groups: Vec::new(),
-                                    action: BrewSubscriberAction::Register,
-                                }),
-                            });
+                            self.queue_external_subscriber_update(queue, issi, Vec::new(), BrewSubscriberAction::Register, "REREGISTER");
                         }
                         t if t == self.brew_config.subscriber_type_affiliate => {
                             if !groups.is_empty() {
@@ -371,16 +354,13 @@ impl BrewEntity {
                                     issi,
                                     groups
                                 );
-                                queue.push_back(SapMsg {
-                                    sap: tetra_core::Sap::Control,
-                                    src: self.entity,
-                                    dest: TetraEntity::Cmce,
-                                    msg: SapMsgInner::MmSubscriberUpdate(MmSubscriberUpdate {
-                                        issi,
-                                        groups: groups.clone(),
-                                        action: BrewSubscriberAction::Affiliate,
-                                    }),
-                                });
+                                self.queue_external_subscriber_update(
+                                    queue,
+                                    issi,
+                                    groups.clone(),
+                                    BrewSubscriberAction::Affiliate,
+                                    "AFFILIATE",
+                                );
                             }
                         }
                         t if t == self.brew_config.subscriber_type_deaffiliate => {
@@ -391,31 +371,26 @@ impl BrewEntity {
                                     issi,
                                     groups
                                 );
-                                queue.push_back(SapMsg {
-                                    sap: tetra_core::Sap::Control,
-                                    src: self.entity,
-                                    dest: TetraEntity::Cmce,
-                                    msg: SapMsgInner::MmSubscriberUpdate(MmSubscriberUpdate {
-                                        issi,
-                                        groups: groups.clone(),
-                                        action: BrewSubscriberAction::Deaffiliate,
-                                    }),
-                                });
+                                self.queue_external_subscriber_update(
+                                    queue,
+                                    issi,
+                                    groups.clone(),
+                                    BrewSubscriberAction::Deaffiliate,
+                                    "DEAFFILIATE",
+                                );
                             }
                         }
                         t if t == self.brew_config.subscriber_type_deregister => {
                             tracing::debug!("[{}] BrewEntity: external subscriber issi={} -> DEREGISTER", self.log_label(), issi);
-                            self.emit_external_subscriber_deregistered(issi);
-                            queue.push_back(SapMsg {
-                                sap: tetra_core::Sap::Control,
-                                src: self.entity,
-                                dest: TetraEntity::Cmce,
-                                msg: SapMsgInner::MmSubscriberUpdate(MmSubscriberUpdate {
-                                    issi,
-                                    groups: Vec::new(),
-                                    action: BrewSubscriberAction::Deregister,
-                                }),
-                            });
+                            if self.queue_external_subscriber_update(
+                                queue,
+                                issi,
+                                Vec::new(),
+                                BrewSubscriberAction::Deregister,
+                                "DEREGISTER",
+                            ) {
+                                self.emit_external_subscriber_deregistered(issi);
+                            }
                         }
                         _ => {
                             tracing::debug!(
@@ -859,6 +834,33 @@ impl BrewEntity {
             dest: TetraEntity::Mm,
             msg: SapMsgInner::BrewReconnected,
         });
+    }
+
+    fn queue_external_subscriber_update(
+        &self,
+        queue: &mut MessageQueue,
+        issi: u32,
+        groups: Vec<u32>,
+        action: BrewSubscriberAction,
+        action_label: &str,
+    ) -> bool {
+        if !super::is_brew_external_subscriber_allowed_for_entity(&self.config, self.entity, issi) {
+            tracing::debug!(
+                "[{}] BrewEntity: external subscriber issi={} -> {} ignored (local SSI range)",
+                self.log_label(),
+                issi,
+                action_label
+            );
+            return false;
+        }
+
+        queue.push_back(SapMsg {
+            sap: tetra_core::Sap::Control,
+            src: self.entity,
+            dest: TetraEntity::Cmce,
+            msg: SapMsgInner::MmSubscriberUpdate(MmSubscriberUpdate { issi, groups, action }),
+        });
+        true
     }
 
     fn emit_external_subscriber_registered(&self, issi: u32) {

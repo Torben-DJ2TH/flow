@@ -11,9 +11,9 @@ pub mod worker;
 
 /// Convenience re-export of commonly externally used functions
 pub use components::brew_routable::{
-    BREW_ENTITIES, is_active, is_active_for_entity, is_brew_entity, is_brew_gssi_routable, is_brew_gssi_routable_for_entity,
-    is_brew_inbound_allowed, is_brew_inbound_allowed_for_entity, is_brew_issi_routable, is_brew_issi_routable_for_entity,
-    is_brew_local_issi_allowed_for_entity, route_entity_for_local_issi,
+    BREW_ENTITIES, is_active, is_active_for_entity, is_brew_entity, is_brew_external_subscriber_allowed_for_entity, is_brew_gssi_routable,
+    is_brew_gssi_routable_for_entity, is_brew_inbound_allowed, is_brew_inbound_allowed_for_entity, is_brew_issi_routable,
+    is_brew_issi_routable_for_entity, is_brew_local_issi_allowed_for_entity, route_entity_for_local_issi,
 };
 pub use components::brew_routable::{brew_config_for_entity, feature_sds_enabled, feature_sds_enabled_for_entity};
 
