@@ -1003,7 +1003,9 @@ impl CcBsSubentity {
             );
             network_call.number = target;
             network_call.destination = 0;
-            network_call.duplex = 1;
+            network_call.duplex = 0;
+            network_call.communication = CommunicationType::P2Mp.into_raw() as u8;
+            network_call.timeout = CallTimeout::T5m.into_raw() as u8;
         } else {
             if !brew::is_active(&self.config) {
                 tracing::info!(
@@ -1109,12 +1111,17 @@ impl CcBsSubentity {
         }
 
         // Allocate one bearer for the local MS.
+        let is_echolink = network_entity == TetraEntity::Echolink;
         let circuit_calling = {
             let mut state = self.config.state_write();
             match self.circuits.allocate_circuit_with_allocator(
                 Direction::Both,
-                pdu.basic_service_information.communication_type,
-                pdu.simplex_duplex_selection,
+                if is_echolink {
+                    CommunicationType::P2Mp
+                } else {
+                    pdu.basic_service_information.communication_type
+                },
+                if is_echolink { false } else { pdu.simplex_duplex_selection },
                 &mut state.timeslot_alloc,
                 TimeslotOwner::Cmce,
             ) {
@@ -1186,14 +1193,14 @@ impl CcBsSubentity {
                 called_ts: ts,
                 calling_usage: usage,
                 called_usage: usage,
-                simplex_duplex: pdu.simplex_duplex_selection,
+                simplex_duplex: if is_echolink { false } else { pdu.simplex_duplex_selection },
                 priority: pdu.call_priority,
                 state: IndividualCallState::CallSetupPending,
                 formal_state: CcFormalState::Idle.after(CcFormalEvent::SetupRequest),
                 setup_timer_started: Some(self.dltime),
                 setup_timeout: Some(CallTimeoutSetupPhase::T60s),
                 active_timer_started: None,
-                call_timeout: Self::p2p_call_timeout(pdu.simplex_duplex_selection),
+                call_timeout: Self::p2p_call_timeout(if is_echolink { false } else { pdu.simplex_duplex_selection }),
                 called_over_brew: true,
                 calling_over_brew: false,
                 brew_uuid: Some(brew_uuid),

@@ -1,4 +1,4 @@
-//! EchoLink UDP/GSM bridge for circuit-switched individual calls.
+//! EchoLink UDP/GSM bridge for simplex P2MP voice calls.
 
 mod audio;
 
@@ -15,6 +15,7 @@ use tetra_pdus::cmce::enums::call_timeout::CallTimeout;
 use tetra_saps::{
     SapMsg, SapMsgInner,
     control::call_control::{CallControl, NetworkCircuitCall},
+    control::enums::communication_type::CommunicationType,
     tmd::{TmdCircuitDataInd, TmdCircuitDataReq},
 };
 use uuid::Uuid;
@@ -305,6 +306,7 @@ impl EcholinkEntity {
             self.reject_setup(queue, brew_uuid, 34);
             return;
         }
+        let call = echolink_simplex_p2mp_call(call);
         let target = normalize_echolink_target(&call.number);
         if target.is_empty() {
             self.set_error(format!("empty EchoLink target for uuid={}", brew_uuid));
@@ -391,10 +393,24 @@ impl EcholinkEntity {
         });
     }
 
+    fn send_group_end_to_cmce(&self, queue: &mut MessageQueue, brew_uuid: Uuid) {
+        queue.push_back(SapMsg {
+            sap: Sap::Control,
+            src: TetraEntity::Echolink,
+            dest: TetraEntity::Cmce,
+            msg: SapMsgInner::CmceCallControl(CallControl::NetworkCallEnd { brew_uuid }),
+        });
+    }
+
     fn maybe_connect_dialog(&mut self, queue: &mut MessageQueue, cfg: &CfgEcholink, idx: usize) {
         enum ConnectAction {
             ConfirmTetraOriginated(Uuid, NetworkCircuitCall),
-            StartTetraLeg(Uuid, NetworkCircuitCall),
+            StartGroupLeg {
+                uuid: Uuid,
+                source_issi: u32,
+                dest_gssi: u32,
+                remote_call: String,
+            },
             Release(String),
             None,
         }
@@ -409,35 +425,22 @@ impl EcholinkEntity {
             dialog.state = QsoState::Connected;
 
             if let (Some(uuid), Some(call)) = (dialog.uuid, dialog.call.clone()) {
-                ConnectAction::ConfirmTetraOriginated(uuid, call)
+                ConnectAction::ConfirmTetraOriginated(uuid, echolink_simplex_p2mp_call(call))
             } else if dialog.uuid.is_none() {
                 if !cfg.inbound_enabled || cfg.default_tetra_dest_issi == 0 {
                     ConnectAction::Release("no inbound TETRA route configured for EchoLink dashboard connect".to_string())
-                } else if cfg.default_tetra_dest_is_group {
-                    ConnectAction::Release(
-                        "inbound EchoLink group destinations are not supported by the circuit-call bridge yet".to_string(),
-                    )
+                } else if !cfg.default_tetra_dest_is_group {
+                    ConnectAction::Release("EchoLink simplex/P2MP requires default_tetra_dest_is_group=true".to_string())
                 } else {
                     let uuid = Uuid::new_v4();
-                    let call = NetworkCircuitCall {
-                        source_issi: cfg.default_tetra_source_issi,
-                        destination: cfg.default_tetra_dest_issi,
-                        number: dialog.remote_call.clone(),
-                        priority: 0,
-                        service: 0,
-                        mode: 0,
-                        duplex: 1,
-                        method: 0,
-                        communication: 0,
-                        grant: 0,
-                        permission: 0,
-                        timeout: CallTimeout::Infinite.into_raw() as u8,
-                        ownership: 0,
-                        queued: 0,
-                    };
+                    let remote_call = dialog.remote_call.clone();
                     dialog.uuid = Some(uuid);
-                    dialog.call = Some(call.clone());
-                    ConnectAction::StartTetraLeg(uuid, call)
+                    ConnectAction::StartGroupLeg {
+                        uuid,
+                        source_issi: cfg.default_tetra_source_issi,
+                        dest_gssi: cfg.default_tetra_dest_issi,
+                        remote_call,
+                    }
                 }
             } else {
                 ConnectAction::None
@@ -454,13 +457,24 @@ impl EcholinkEntity {
                     msg: SapMsgInner::CmceCallControl(CallControl::NetworkCircuitConnectRequest { brew_uuid: uuid, call }),
                 });
             }
-            ConnectAction::StartTetraLeg(uuid, call) => {
+            ConnectAction::StartGroupLeg {
+                uuid,
+                source_issi,
+                dest_gssi,
+                remote_call,
+            } => {
                 queue.push_back(SapMsg {
                     sap: Sap::Control,
                     src: TetraEntity::Echolink,
                     dest: TetraEntity::Cmce,
-                    msg: SapMsgInner::CmceCallControl(CallControl::NetworkCircuitSetupRequest { brew_uuid: uuid, call }),
+                    msg: SapMsgInner::CmceCallControl(CallControl::NetworkCallStart {
+                        brew_uuid: uuid,
+                        source_issi,
+                        dest_gssi,
+                        priority: 0,
+                    }),
                 });
+                tracing::info!("EchoLink: dashboard QSO {} -> GSSI {}", remote_call, dest_gssi);
             }
             ConnectAction::Release(reason) => {
                 self.set_error(reason);
@@ -490,6 +504,16 @@ impl EcholinkEntity {
         }
     }
 
+    fn release_dialog_by_call_id(&mut self, queue: &mut MessageQueue, call_id: u16, from_cmce: bool) {
+        if let Some(idx) = self
+            .dialogs
+            .iter()
+            .position(|d| d.media_ready.map(|(ready_call_id, _, _)| ready_call_id) == Some(call_id))
+        {
+            self.release_dialog_idx(queue, idx, from_cmce, true);
+        }
+    }
+
     fn release_dialog_idx(&mut self, queue: &mut MessageQueue, idx: usize, from_cmce: bool, send_bye: bool) {
         if idx >= self.dialogs.len() {
             return;
@@ -501,10 +525,15 @@ impl EcholinkEntity {
             self.dialog_by_slot.remove(&(carrier_num, ts));
         }
         let uuid = self.dialogs[idx].uuid;
+        let is_circuit_call = self.dialogs[idx].call.is_some();
         self.dialogs[idx].state = QsoState::Released;
         if !from_cmce {
             if let Some(uuid) = uuid {
-                self.send_release_to_cmce(queue, uuid, 16);
+                if is_circuit_call {
+                    self.send_release_to_cmce(queue, uuid, 16);
+                } else {
+                    self.send_group_end_to_cmce(queue, uuid);
+                }
             }
         }
         self.dialogs.remove(idx);
@@ -694,8 +723,8 @@ impl EcholinkEntity {
                 self.send_bye_to(addr);
                 return;
             }
-            if cfg.default_tetra_dest_is_group {
-                self.set_error("inbound EchoLink group destinations are not supported by the circuit-call bridge yet");
+            if !cfg.default_tetra_dest_is_group {
+                self.set_error("inbound EchoLink requires default_tetra_dest_is_group=true for simplex/P2MP");
                 self.send_bye_to(addr);
                 return;
             }
@@ -715,25 +744,9 @@ impl EcholinkEntity {
             return;
         };
         let uuid = Uuid::new_v4();
-        let call = NetworkCircuitCall {
-            source_issi: cfg.default_tetra_source_issi,
-            destination: cfg.default_tetra_dest_issi,
-            number: remote_call.clone(),
-            priority: 0,
-            service: 0,
-            mode: 0,
-            duplex: 1,
-            method: 0,
-            communication: 0,
-            grant: 0,
-            permission: 0,
-            timeout: CallTimeout::Infinite.into_raw() as u8,
-            ownership: 0,
-            queued: 0,
-        };
         let dialog = EcholinkDialog {
             uuid: Some(uuid),
-            call: Some(call.clone()),
+            call: None,
             target: remote_call.clone(),
             remote_call: remote_call.clone(),
             remote_ip: remote_control.ip(),
@@ -755,13 +768,17 @@ impl EcholinkEntity {
             sap: Sap::Control,
             src: TetraEntity::Echolink,
             dest: TetraEntity::Cmce,
-            msg: SapMsgInner::CmceCallControl(CallControl::NetworkCircuitSetupRequest { brew_uuid: uuid, call }),
+            msg: SapMsgInner::CmceCallControl(CallControl::NetworkCallStart {
+                brew_uuid: uuid,
+                source_issi: cfg.default_tetra_source_issi,
+                dest_gssi: cfg.default_tetra_dest_issi,
+                priority: 0,
+            }),
         });
         tracing::info!(
-            "EchoLink: inbound QSO {} from {} -> {} {}",
+            "EchoLink: inbound simplex/P2MP QSO {} from {} -> GSSI {}",
             remote_call,
             remote_control,
-            if cfg.default_tetra_dest_is_group { "GSSI" } else { "ISSI" },
             cfg.default_tetra_dest_issi
         );
     }
@@ -980,6 +997,21 @@ impl TetraEntityTrait for EcholinkEntity {
             SapMsgInner::CmceCallControl(CallControl::NetworkCircuitSetupRequest { brew_uuid, call }) => {
                 self.start_outbound_call(queue, &cfg, brew_uuid, call);
             }
+            SapMsgInner::CmceCallControl(CallControl::NetworkCallReady {
+                brew_uuid,
+                call_id,
+                carrier_num,
+                ts,
+                ..
+            }) => {
+                self.mark_media_ready(brew_uuid, call_id, carrier_num, ts);
+            }
+            SapMsgInner::CmceCallControl(CallControl::NetworkCallEnd { brew_uuid }) => {
+                self.release_dialog_by_uuid(queue, brew_uuid, true);
+            }
+            SapMsgInner::CmceCallControl(CallControl::CallEnded { call_id, .. }) => {
+                self.release_dialog_by_call_id(queue, call_id, true);
+            }
             SapMsgInner::CmceCallControl(CallControl::NetworkCircuitSetupAccept { brew_uuid }) => {
                 tracing::info!("EchoLink: inbound setup accepted by CMCE uuid={}", brew_uuid);
             }
@@ -992,7 +1024,7 @@ impl TetraEntityTrait for EcholinkEntity {
             }
             SapMsgInner::CmceCallControl(CallControl::NetworkCircuitConnectRequest { brew_uuid, call }) => {
                 if let Some(dialog) = self.dialogs.iter_mut().find(|d| d.uuid == Some(brew_uuid)) {
-                    dialog.call = Some(call);
+                    dialog.call = Some(echolink_simplex_p2mp_call(call));
                     dialog.state = QsoState::Connected;
                 }
                 queue.push_back(SapMsg {
@@ -1096,6 +1128,13 @@ fn station_matches_target(station: &str, target: &str) -> bool {
         return true;
     }
     station.trim_matches('*').eq_ignore_ascii_case(target.trim_matches('*'))
+}
+
+fn echolink_simplex_p2mp_call(mut call: NetworkCircuitCall) -> NetworkCircuitCall {
+    call.duplex = 0;
+    call.communication = CommunicationType::P2Mp.into_raw() as u8;
+    call.timeout = CallTimeout::T5m.into_raw() as u8;
+    call
 }
 
 fn route_label(cfg: &CfgEcholink) -> Option<String> {

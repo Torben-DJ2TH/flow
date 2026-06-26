@@ -699,12 +699,16 @@ reconnect_interval_secs = 30
 max_session_secs = 3600
 
 default_tetra_source_issi = 9999
-default_tetra_dest_issi = 2632585
-default_tetra_dest_is_group = false
+default_tetra_dest_issi = 26225
+default_tetra_dest_is_group = true  # EchoLink inbound uses simplex/P2MP group calls
 ```
 
 The EchoLink dashboard page shows directory status, station count, QSO status,
 current route, last TX/error, and the downloaded directory list.
+Inbound EchoLink audio is bridged into TETRA as a simplex P2MP group call, so
+`default_tetra_dest_is_group` should be enabled and `default_tetra_dest_issi`
+should be a GSSI. TETRA-originated EchoLink service-number calls are signalled
+as simplex toward the EchoLink bridge.
 
 ### MeshCom external UDP bridge
 

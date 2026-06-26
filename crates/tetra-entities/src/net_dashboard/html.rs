@@ -3285,9 +3285,9 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
                 <label style="color:var(--muted);font-size:13px">Source ISSI</label>
                 <input type="number" id="el-source-issi" class="form-input" min="1" max="16777215" placeholder="9999">
                 <label style="color:var(--muted);font-size:13px">Default destination</label>
-                <input type="number" id="el-dest-issi" class="form-input" min="0" max="16777215" placeholder="ISSI">
+                <input type="number" id="el-dest-issi" class="form-input" min="0" max="16777215" placeholder="GSSI">
                 <label style="color:var(--muted);font-size:13px">Group destination</label>
-                <label style="display:flex;align-items:center;gap:10px"><span class="sw"><input type="checkbox" id="el-dest-group" disabled><i></i></span><span style="color:var(--muted);font-size:12px">not supported yet</span></label>
+                <label style="display:flex;align-items:center;gap:10px"><span class="sw"><input type="checkbox" id="el-dest-group"><i></i></span><span style="color:var(--muted);font-size:12px">required for simplex/P2MP inbound</span></label>
               </div>
             </div>
             <div>
@@ -3324,7 +3324,7 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
             <button class="btn btn-primary" onclick="echolinkConnect()">Connect</button>
             <button class="btn btn-danger" onclick="echolinkDisconnect()">Disconnect</button>
           </div>
-          <div class="help-text" style="margin-top:10px">EchoLink voice uses UDP 5198/5199 with GSM-FR audio. Calls can be routed from TETRA service numbers/prefixes to EchoLink targets and inbound EchoLink QSOs can ring the configured TETRA ISSI.</div>
+          <div class="help-text" style="margin-top:10px">EchoLink voice uses UDP 5198/5199 with GSM-FR audio. TETRA service numbers/prefixes route to EchoLink targets as simplex calls; inbound EchoLink QSOs are sent as simplex/P2MP group calls to the configured GSSI.</div>
         </div>
       </div>
 
@@ -7243,7 +7243,7 @@ async function loadEcholink(){
     dapSet('el-service-numbers',echolinkListText(d.service_numbers));
     dapSet('el-source-issi',d.default_tetra_source_issi||9999);
     dapSet('el-dest-issi',d.default_tetra_dest_issi||0);
-    dapCheck('el-dest-group',false);
+    dapCheck('el-dest-group',d.default_tetra_dest_is_group);
     dapSet('el-routes',echolinkRoutesText(d.routes));
     dapSet('el-allowed-calls',echolinkListText(d.allowed_callsigns));
     dapSet('el-allowed-nodes',echolinkListText(d.allowed_node_ids));
@@ -7284,7 +7284,7 @@ async function saveEcholink(){
     service_numbers:echolinkListBody('el-service-numbers'),
     default_tetra_source_issi:dapNum('el-source-issi',9999,1,16777215),
     default_tetra_dest_issi:dapNum('el-dest-issi',0,0,16777215),
-    default_tetra_dest_is_group:false,
+    default_tetra_dest_is_group:document.getElementById('el-dest-group').checked,
     routes,
     allowed_callsigns:echolinkListBody('el-allowed-calls').map(v=>v.toUpperCase()),
     allowed_node_ids:allowedNodes,

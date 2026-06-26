@@ -224,10 +224,7 @@ pub fn apply_echolink_patch(src: CfgEcholinkDto) -> Result<CfgEcholink, String> 
         service_numbers,
         default_tetra_source_issi: src.default_tetra_source_issi.max(1),
         default_tetra_dest_issi: src.default_tetra_dest_issi,
-        // EchoLink voice currently enters CMCE through the individual circuit-call bridge.
-        // Keep the config field for forward compatibility, but normalize it off until the
-        // group-call media path has an EchoLink endpoint.
-        default_tetra_dest_is_group: false,
+        default_tetra_dest_is_group: src.default_tetra_dest_is_group,
         routes,
         allowed_callsigns,
         allowed_node_ids,
