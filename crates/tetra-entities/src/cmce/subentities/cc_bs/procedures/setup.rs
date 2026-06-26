@@ -363,13 +363,19 @@ impl CcBsSubentity {
         let dest_gssi = dest_gssi as u32;
         let dest_addr = TetraAddress::new(dest_gssi, SsiType::Gssi);
 
-        if !self.has_listener(dest_gssi) {
+        if !self.has_listener(dest_gssi) && !self.is_echolink_outbound_group_destination(dest_gssi) {
             tracing::info!(
                 "CMCE: rejecting U-SETUP from issi={} to gssi={} (no listeners)",
                 calling_party.ssi,
                 dest_gssi
             );
             return;
+        } else if !self.has_listener(dest_gssi) {
+            tracing::info!(
+                "CMCE: accepting U-SETUP from issi={} to EchoLink gssi={} without registry listeners",
+                calling_party.ssi,
+                dest_gssi
+            );
         }
 
         if is_emergency_priority(pdu.call_priority) {

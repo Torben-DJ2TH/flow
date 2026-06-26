@@ -28,10 +28,7 @@ impl CcBsSubentity {
 
     fn network_group_call_allowed(&self, network_entity: TetraEntity, dest_gssi: u32) -> bool {
         match network_entity {
-            TetraEntity::Echolink => {
-                let cfg = self.config.effective_echolink();
-                cfg.enabled && cfg.inbound_enabled && cfg.default_tetra_dest_is_group && cfg.default_tetra_dest_issi == dest_gssi
-            }
+            TetraEntity::Echolink => self.is_echolink_inbound_group_destination(dest_gssi),
             _ => brew::is_brew_inbound_allowed_for_entity(&self.config, network_entity, dest_gssi),
         }
     }
@@ -799,7 +796,7 @@ impl CcBsSubentity {
             return;
         }
 
-        if !self.has_listener(dest_gssi) {
+        if !self.has_listener(dest_gssi) && network_entity != TetraEntity::Echolink {
             tracing::info!(
                 "CMCE: ignoring network call start uuid={} gssi={} (no listeners)",
                 brew_uuid,
@@ -809,6 +806,12 @@ impl CcBsSubentity {
 
             self.notify_network_call_end(queue, network_entity, brew_uuid);
             return;
+        } else if !self.has_listener(dest_gssi) {
+            tracing::info!(
+                "CMCE: accepting EchoLink network call uuid={} gssi={} without registry listeners",
+                brew_uuid,
+                dest_gssi
+            );
         }
 
         // Speaker change for an existing GSSI call

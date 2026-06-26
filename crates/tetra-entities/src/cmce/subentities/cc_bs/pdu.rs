@@ -309,6 +309,16 @@ impl CcBsSubentity {
         self.group_listeners.get(&gssi).copied().unwrap_or(0)
     }
 
+    pub(in crate::cmce::subentities::cc_bs) fn is_echolink_inbound_group_destination(&self, gssi: u32) -> bool {
+        let cfg = self.config.effective_echolink();
+        cfg.enabled && cfg.inbound_enabled && cfg.default_tetra_dest_is_group && cfg.default_tetra_dest_issi == gssi
+    }
+
+    pub(in crate::cmce::subentities::cc_bs) fn is_echolink_outbound_group_destination(&self, gssi: u32) -> bool {
+        let cfg = self.config.effective_echolink();
+        cfg.enabled && cfg.outbound_enabled && cfg.default_tetra_dest_is_group && cfg.default_tetra_dest_issi == gssi
+    }
+
     fn has_recent_deaffiliation_listener(&self, gssi: u32) -> bool {
         self.recent_deaffiliations
             .iter()
