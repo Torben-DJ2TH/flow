@@ -60,7 +60,7 @@ struct SipDialog {
     state: DialogState,
     rtp: RtpSession,
     audio: AsteriskAudioTranscoder,
-    media_ready: Option<(u16, u8)>,
+    media_ready: Option<(u16, u16, u8)>,
     inbound: bool,
     request_context: Option<SipRequestContext>,
 }
@@ -147,7 +147,7 @@ pub struct AsteriskEntity {
     sip_socket: UdpSocket,
     remote: SocketAddr,
     dialogs: HashMap<Uuid, SipDialog>,
-    rtp_by_ts: HashMap<u8, Uuid>,
+    rtp_by_slot: HashMap<(u16, u8), Uuid>,
     next_rtp_port: u16,
     branch_counter: u64,
     register_call_id: String,
@@ -181,7 +181,7 @@ impl AsteriskEntity {
             sip_socket,
             remote,
             dialogs: HashMap::new(),
-            rtp_by_ts: HashMap::new(),
+            rtp_by_slot: HashMap::new(),
             branch_counter: 1,
             register_cseq: 1,
             register_auth: None,
@@ -975,11 +975,17 @@ impl AsteriskEntity {
         });
     }
 
-    fn mark_media_ready(&mut self, brew_uuid: Uuid, call_id: u16, ts: u8) {
+    fn mark_media_ready(&mut self, brew_uuid: Uuid, call_id: u16, carrier_num: u16, ts: u8) {
         if let Some(dialog) = self.dialogs.get_mut(&brew_uuid) {
-            dialog.media_ready = Some((call_id, ts));
-            self.rtp_by_ts.insert(ts, brew_uuid);
-            tracing::info!("AsteriskEntity: media ready uuid={} call_id={} ts={}", brew_uuid, call_id, ts);
+            dialog.media_ready = Some((call_id, carrier_num, ts));
+            self.rtp_by_slot.insert((carrier_num, ts), brew_uuid);
+            tracing::info!(
+                "AsteriskEntity: media ready uuid={} call_id={} carrier={} ts={}",
+                brew_uuid,
+                call_id,
+                carrier_num,
+                ts
+            );
         }
     }
 
@@ -1010,8 +1016,8 @@ impl AsteriskEntity {
                 self.send_bye_or_cancel(brew_uuid, cancel);
             }
         }
-        if let Some((_, ts)) = media_ready {
-            self.rtp_by_ts.remove(&ts);
+        if let Some((_, carrier_num, ts)) = media_ready {
+            self.rtp_by_slot.remove(&(carrier_num, ts));
         }
         if let Some(dialog) = self.dialogs.get_mut(&brew_uuid) {
             dialog.state = DialogState::Released;
@@ -1020,7 +1026,7 @@ impl AsteriskEntity {
     }
 
     fn handle_ul_voice(&mut self, prim: TmdCircuitDataInd) {
-        let Some(uuid) = self.rtp_by_ts.get(&prim.ts).copied() else {
+        let Some(uuid) = self.rtp_by_slot.get(&(prim.carrier_num, prim.ts)).copied() else {
             return;
         };
         let mut send_result = None;
@@ -1070,7 +1076,7 @@ impl AsteriskEntity {
         let mut last_error = None;
         let mut buf = [0u8; 1720];
         for dialog in self.dialogs.values_mut() {
-            let Some((_, ts)) = dialog.media_ready else {
+            let Some((_, carrier_num, ts)) = dialog.media_ready else {
                 continue;
             };
             for _ in 0..32 {
@@ -1089,7 +1095,7 @@ impl AsteriskEntity {
                         }
                         dialog.rtp.remote = Some(addr);
                         for frame in dialog.audio.encode_pcmu_to_tmd(payload) {
-                            downlink.push((ts, frame));
+                            downlink.push((carrier_num, ts, frame));
                         }
                     }
                     Err(err) if err.kind() == io::ErrorKind::WouldBlock => break,
@@ -1104,12 +1110,12 @@ impl AsteriskEntity {
             self.last_error = last_error;
         }
 
-        for (ts, data) in downlink {
+        for (carrier_num, ts, data) in downlink {
             queue.push_back(SapMsg {
                 sap: Sap::TmdSap,
                 src: TetraEntity::Asterisk,
                 dest: TetraEntity::Umac,
-                msg: SapMsgInner::TmdCircuitDataReq(TmdCircuitDataReq { ts, data }),
+                msg: SapMsgInner::TmdCircuitDataReq(TmdCircuitDataReq { carrier_num, ts, data }),
             });
         }
     }
@@ -1385,8 +1391,13 @@ impl TetraEntityTrait for AsteriskEntity {
                 self.handle_inbound_connect_request(queue, brew_uuid, call);
             }
             SapMsgInner::CmceCallControl(CallControl::NetworkCircuitConnectConfirm { .. }) => {}
-            SapMsgInner::CmceCallControl(CallControl::NetworkCircuitMediaReady { brew_uuid, call_id, ts }) => {
-                self.mark_media_ready(brew_uuid, call_id, ts);
+            SapMsgInner::CmceCallControl(CallControl::NetworkCircuitMediaReady {
+                brew_uuid,
+                call_id,
+                carrier_num,
+                ts,
+            }) => {
+                self.mark_media_ready(brew_uuid, call_id, carrier_num, ts);
             }
             SapMsgInner::CmceCallControl(CallControl::NetworkCircuitRelease { brew_uuid, cause }) => {
                 self.release_dialog(brew_uuid, true, Some(cause));

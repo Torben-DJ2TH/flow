@@ -76,19 +76,14 @@ impl SoapyIo {
         let rx_ch = sdr_settings.rx_ch;
         let tx_ch = sdr_settings.tx_ch;
 
-        // Get PPM corrected freqs
-        let (dl_corrected, _) = soapy_cfg.dl_freq_corrected();
+        // Get PPM-corrected carrier and SDR center frequencies.
         let (ul_corrected, _) = soapy_cfg.ul_freq_corrected();
+        let (rx_center_corrected, _) = soapy_cfg.effective_rx_center_freq_corrected();
+        let (tx_center_corrected, _) = soapy_cfg.effective_tx_center_freq_corrected();
 
         let (rx_freq, tx_freq) = match mode {
-            StackMode::Bs => (
-                Some(ul_corrected - SOAPY_FREQ_OFFSET), // Offset RX center frequency from carrier frequency
-                Some(dl_corrected),
-            ),
-            StackMode::Ms => (
-                Some(dl_corrected - SOAPY_FREQ_OFFSET), // Offset RX center frequency from carrier frequency
-                Some(ul_corrected),
-            ),
+            StackMode::Bs => (Some(rx_center_corrected - SOAPY_FREQ_OFFSET), Some(tx_center_corrected)),
+            StackMode::Ms => (Some(rx_center_corrected - SOAPY_FREQ_OFFSET), Some(ul_corrected)),
             StackMode::Mon => {
                 unimplemented!("Monitor mode not implemented yet");
             }

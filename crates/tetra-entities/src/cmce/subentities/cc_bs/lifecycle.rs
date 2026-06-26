@@ -5,12 +5,15 @@ pub(super) struct GroupFloorGrant {
     pub(super) call_id: u16,
     pub(super) source_issi: u32,
     pub(super) dest_gssi: u32,
+    pub(super) carrier_num: u16,
     pub(super) ts: u8,
+    pub(super) is_group: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct CallTimeslot {
     pub(super) call_id: u16,
+    pub(super) carrier_num: u16,
     pub(super) ts: u8,
 }
 
@@ -74,6 +77,15 @@ impl CcBsSubentity {
         notify_umac: bool,
         notify_brew: BrewNotification,
     ) {
+        self.emit(crate::net_telemetry::TelemetryEvent::CallSpeakerChanged {
+            call_id: grant.call_id,
+            is_group: grant.is_group,
+            dest_addr: grant.dest_gssi,
+            speaker_issi: grant.source_issi,
+            carrier_num: grant.carrier_num,
+            ts: grant.ts,
+        });
+
         if notify_umac {
             Self::push_control(
                 queue,
@@ -82,6 +94,7 @@ impl CcBsSubentity {
                     call_id: grant.call_id,
                     source_issi: grant.source_issi,
                     dest_gssi: grant.dest_gssi,
+                    carrier_num: grant.carrier_num,
                     ts: grant.ts,
                 },
             );
@@ -95,6 +108,7 @@ impl CcBsSubentity {
                     call_id: grant.call_id,
                     source_issi: grant.source_issi,
                     dest_gssi: grant.dest_gssi,
+                    carrier_num: grant.carrier_num,
                     ts: grant.ts,
                 },
             );
@@ -107,6 +121,7 @@ impl CcBsSubentity {
             TetraEntity::Umac,
             CallControl::RemoteFloorGranted {
                 call_id: slot.call_id,
+                carrier_num: slot.carrier_num,
                 ts: slot.ts,
             },
         );
@@ -125,6 +140,7 @@ impl CcBsSubentity {
                 TetraEntity::Umac,
                 CallControl::FloorReleased {
                     call_id: slot.call_id,
+                    carrier_num: slot.carrier_num,
                     ts: slot.ts,
                 },
             );
@@ -136,6 +152,7 @@ impl CcBsSubentity {
                 brew_entity,
                 CallControl::FloorReleased {
                     call_id: slot.call_id,
+                    carrier_num: slot.carrier_num,
                     ts: slot.ts,
                 },
             );
@@ -149,6 +166,7 @@ impl CcBsSubentity {
                 TetraEntity::Umac,
                 CallControl::CallEnded {
                     call_id: slot.call_id,
+                    carrier_num: slot.carrier_num,
                     ts: slot.ts,
                 },
             );
@@ -160,6 +178,7 @@ impl CcBsSubentity {
                 brew_entity,
                 CallControl::CallEnded {
                     call_id: slot.call_id,
+                    carrier_num: slot.carrier_num,
                     ts: slot.ts,
                 },
             );

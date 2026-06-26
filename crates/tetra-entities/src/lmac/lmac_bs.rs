@@ -218,7 +218,11 @@ impl LmacBs {
             sap: Sap::TmdSap,
             src: TetraEntity::Lmac,
             dest: TetraEntity::Umac,
-            msg: SapMsgInner::TmdCircuitDataInd(tetra_saps::tmd::TmdCircuitDataInd { ts: ul_time.t, data }),
+            msg: SapMsgInner::TmdCircuitDataInd(tetra_saps::tmd::TmdCircuitDataInd {
+                carrier_num: blk.carrier_num,
+                ts: ul_time.t,
+                data,
+            }),
         };
         queue.push_back(msg);
     }

@@ -33,10 +33,14 @@ pub struct PhyConfig<'a> {
     /// Downlink/uplink carrier frequency pairs to monitor.
     /// Uplink frequency can be set to None to monitor downlink only.
     pub monitor_frequencies: &'a [(f64, Option<f64>)],
+    /// Carrier numbers corresponding to `monitor_frequencies`, if any.
+    pub monitor_carrier_numbers: &'a [u16],
     /// Downlink carrier frequencies for a BS.
     pub bs_dl_frequencies: &'a [f64],
     /// Uplink carrier frequencies for a BS.
     pub bs_ul_frequencies: &'a [f64],
+    /// Carrier numbers corresponding to BS uplink/downlink frequencies.
+    pub bs_carrier_numbers: &'a [u16],
 }
 
 pub struct RxTxDevSoapySdr {
@@ -81,10 +85,20 @@ impl RxTxDevSoapySdr {
             ul_corrected / 1e6
         );
 
+        let bs_carriers = config_guard
+            .as_ref()
+            .bs_phase_mod_carriers()
+            .expect("validated carrier configuration should compute");
+        let bs_carrier_numbers = bs_carriers.iter().map(|(carrier_num, _, _)| *carrier_num).collect::<Vec<_>>();
+        let bs_dl_frequencies = bs_carriers.iter().map(|(_, dl_hz, _)| *dl_hz as f64).collect::<Vec<_>>();
+        let bs_ul_frequencies = bs_carriers.iter().map(|(_, _, ul_hz)| *ul_hz as f64).collect::<Vec<_>>();
+
         let phy_config = soapy_dev::PhyConfig {
-            bs_dl_frequencies: &[dl_corrected],
-            bs_ul_frequencies: &[ul_corrected],
-            ..Default::default()
+            monitor_frequencies: &[],
+            monitor_carrier_numbers: &[],
+            bs_dl_frequencies: &bs_dl_frequencies,
+            bs_ul_frequencies: &bs_ul_frequencies,
+            bs_carrier_numbers: &bs_carrier_numbers,
         };
 
         let mut sdr = match soapyio::SoapyIo::new(cfg) {
@@ -225,18 +239,34 @@ impl RxDsp {
             monitors: phy_config
                 .monitor_frequencies
                 .iter()
-                .map(|(dl_freq, ul_freq)| MonitorDlUlPair {
-                    dl: DemodulatorChannel::new(fft_planner, rx_fcfb_params, *dl_freq, demodulator::Mode::DlUnsynchronized),
-                    ul: ul_freq
-                        .as_ref()
-                        .map(|ul_freq| DemodulatorChannel::new(fft_planner, rx_fcfb_params, *ul_freq, demodulator::Mode::Idle)),
+                .enumerate()
+                .map(|(i, (dl_freq, ul_freq))| MonitorDlUlPair {
+                    dl: DemodulatorChannel::new(
+                        fft_planner,
+                        rx_fcfb_params,
+                        *dl_freq,
+                        demodulator::Mode::DlUnsynchronized,
+                        phy_config.monitor_carrier_numbers.get(i).copied().unwrap_or(0),
+                    ),
+                    ul: ul_freq.as_ref().map(|ul_freq| {
+                        DemodulatorChannel::new(
+                            fft_planner,
+                            rx_fcfb_params,
+                            *ul_freq,
+                            demodulator::Mode::Idle,
+                            phy_config.monitor_carrier_numbers.get(i).copied().unwrap_or(0),
+                        )
+                    }),
                 })
                 .collect(),
 
             ul_demodulators: phy_config
                 .bs_ul_frequencies
                 .iter()
-                .map(|ul_freq| DemodulatorChannel::new(fft_planner, rx_fcfb_params, *ul_freq, demodulator::Mode::Ul))
+                .zip(phy_config.bs_carrier_numbers.iter().copied())
+                .map(|(ul_freq, carrier_num)| {
+                    DemodulatorChannel::new(fft_planner, rx_fcfb_params, *ul_freq, demodulator::Mode::Ul, carrier_num)
+                })
                 .collect(),
         }
     }
@@ -494,6 +524,7 @@ impl DemodulatorChannel {
         analysis_in_params: fcfb::AnalysisInputParameters,
         frequency: f64,
         mode: demodulator::Mode,
+        carrier_num: u16,
     ) -> Self {
         Self {
             downconverter: fcfb::AnalysisOutputProcessor::new_with_frequency(
@@ -503,7 +534,7 @@ impl DemodulatorChannel {
                 frequency,
                 Some(25000.0),
             ),
-            demodulator: demodulator::Demodulator::new(mode),
+            demodulator: demodulator::Demodulator::new(mode, carrier_num),
         }
     }
 

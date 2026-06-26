@@ -32,7 +32,7 @@ impl CcBsSubentity {
         if let Some(tasks) = self.circuits.tick_start(dltime) {
             for task in tasks {
                 match task {
-                    CircuitMgrCmd::SendDSetup(call_id, usage, ts) => {
+                    CircuitMgrCmd::SendDSetup(call_id, usage, carrier_num, ts) => {
                         // Peek at routing info first (immutable) so the EE gate — a `&self` method —
                         // can run before we take the mutable borrow on the cached D-SETUP below.
                         let (dest_ssi, resend) = match self.cached_setups.get(&call_id) {
@@ -86,7 +86,7 @@ impl CcBsSubentity {
                             };
                         }
                         let dest_addr = cached.dest_addr;
-                        let (sdu, chan_alloc) = Self::build_d_setup_prim(&cached.pdu, usage, ts, UlDlAssignment::Both);
+                        let (sdu, chan_alloc) = Self::build_d_setup_prim(&cached.pdu, usage, carrier_num, ts, UlDlAssignment::Both);
                         let reporter = TxReporter::new_unacked();
                         let receipt = reporter.clone();
                         cached.tx_receipt = Some(receipt);
@@ -96,7 +96,10 @@ impl CcBsSubentity {
 
                     CircuitMgrCmd::SendClose(call_id, circuit) => {
                         tracing::warn!("need to send CLOSE for call id {}", call_id);
-                        let ts = circuit.ts;
+                        let slot = CarrierSlot {
+                            carrier_num: circuit.carrier_num,
+                            ts: circuit.ts,
+                        };
                         // Safety circuit expiry is not a setup timeout. Do not report it to
                         // handsets as ExpiryOfTimer, which many radios render as "No answer".
                         let disconnect_cause = DisconnectCause::SwmiRequestedDisconnection;
@@ -144,6 +147,7 @@ impl CcBsSubentity {
                                             sdu_calling,
                                             self.dltime,
                                             ind_call.calling_addr,
+                                            ind_call.calling_carrier_num,
                                             ind_call.calling_ts,
                                             Some(ind_call.calling_usage),
                                         )
@@ -165,6 +169,7 @@ impl CcBsSubentity {
                                             sdu_called,
                                             self.dltime,
                                             ind_call.called_addr,
+                                            ind_call.called_carrier_num,
                                             ind_call.called_ts,
                                             Some(ind_call.called_usage),
                                         )
@@ -208,7 +213,7 @@ impl CcBsSubentity {
 
                         // Signal UMAC to release the circuit
                         Self::signal_umac_circuit_close(queue, circuit, self.dltime);
-                        self.release_timeslot(ts);
+                        self.release_timeslot_slot(slot);
 
                         // Dashboard telemetry: the CircuitMgr safety-expiry (`SendClose`) tears a
                         // call down directly here without going through release_group_call /
@@ -232,18 +237,21 @@ impl CcBsSubentity {
     /// the live call tables every tick, so it can never reference a stale/closed circuit.
     pub fn publish_active_call_ts(&self) {
         use std::collections::HashMap;
-        let mut map: HashMap<u32, (u8, u8)> = HashMap::new();
+        let mut map: HashMap<u32, (u16, u8, u8)> = HashMap::new();
         // Group calls: the group address and the current/last speaker ISSI are both on the
         // group's assigned traffic slot.
         for call in self.active_calls.values() {
-            map.insert(call.dest_gssi, (call.ts, call.usage));
-            map.insert(call.source_issi, (call.ts, call.usage));
+            map.insert(call.dest_gssi, (call.carrier_num, call.ts, call.usage));
+            map.insert(call.source_issi, (call.carrier_num, call.ts, call.usage));
         }
         // Individual calls: parties are on a traffic channel only once the call is connected.
         for call in self.individual_calls.values() {
             if call.is_active() {
-                map.insert(call.calling_addr.ssi, (call.calling_ts, call.calling_usage));
-                map.insert(call.called_addr.ssi, (call.called_ts, call.called_usage));
+                map.insert(
+                    call.calling_addr.ssi,
+                    (call.calling_carrier_num, call.calling_ts, call.calling_usage),
+                );
+                map.insert(call.called_addr.ssi, (call.called_carrier_num, call.called_ts, call.called_usage));
             }
         }
         self.config.state_write().active_call_ts = map;
@@ -405,6 +413,7 @@ impl CcBsSubentity {
                 continue;
             };
             let gssi = call.dest_gssi;
+            let carrier_num = call.carrier_num;
             let ts = call.ts;
             let usage = call.usage;
             // The current speaker is awake by definition (it is transmitting); exclude it from
@@ -466,7 +475,7 @@ impl CcBsSubentity {
                 cached.pdu.transmission_grant = TransmissionGrant::GrantedToOtherUser;
                 cached.pdu.transmission_request_permission = false;
                 let dest_addr = cached.dest_addr;
-                let (sdu, chan_alloc) = Self::build_d_setup_prim(&cached.pdu, usage, ts, UlDlAssignment::Both);
+                let (sdu, chan_alloc) = Self::build_d_setup_prim(&cached.pdu, usage, carrier_num, ts, UlDlAssignment::Both);
                 let prim = Self::build_sapmsg(sdu, Some(chan_alloc), self.dltime, dest_addr, None);
                 queue.push_back(prim);
                 tracing::debug!(
@@ -502,11 +511,11 @@ impl CcBsSubentity {
 
     /// Handle UL inactivity timeout from UMAC: a radio disappeared mid-transmission.
     /// Force the group floor to released and enter hangtime.
-    pub(super) fn handle_ul_inactivity_timeout(&mut self, queue: &mut MessageQueue, ts: u8) {
+    pub(super) fn handle_ul_inactivity_timeout_slot(&mut self, queue: &mut MessageQueue, carrier_num: u16, ts: u8) {
         let call_id = self
             .active_calls
             .iter()
-            .find(|(_, call)| call.ts == ts && call.is_tx_active())
+            .find(|(_, call)| call.carrier_num == carrier_num && call.ts == ts && call.is_tx_active())
             .map(|(call_id, _)| *call_id);
 
         let Some(call_id) = call_id else {
@@ -516,15 +525,20 @@ impl CcBsSubentity {
                 }
 
                 match call.floor_holder {
-                    Some(issi) if issi == call.calling_addr.ssi && call.calling_ts == ts => Some((call_id, call.calling_addr)),
-                    Some(issi) if issi == call.called_addr.ssi && call.called_ts == ts => Some((call_id, call.called_addr)),
+                    Some(issi) if issi == call.calling_addr.ssi && call.calling_carrier_num == carrier_num && call.calling_ts == ts => {
+                        Some((call_id, call.calling_addr))
+                    }
+                    Some(issi) if issi == call.called_addr.ssi && call.called_carrier_num == carrier_num && call.called_ts == ts => {
+                        Some((call_id, call.called_addr))
+                    }
                     _ => None,
                 }
             });
 
             if let Some((call_id, sender)) = individual_floor {
                 tracing::warn!(
-                    "UL inactivity timeout on ts={}, forcing simplex individual TX ceased for call_id={}",
+                    "UL inactivity timeout on carrier={} ts={}, forcing simplex individual TX ceased for call_id={}",
+                    carrier_num,
                     ts,
                     call_id
                 );
@@ -541,7 +555,50 @@ impl CcBsSubentity {
                 return;
             }
 
-            tracing::debug!("UL inactivity timeout on ts={} but no active transmitting call found", ts);
+            let duplex_individual = self.individual_calls.iter().find_map(|(&call_id, call)| {
+                if !call.is_active() || call.is_simplex() {
+                    return None;
+                }
+
+                let calling_match = call.calling_carrier_num == carrier_num && call.calling_ts == ts;
+                let called_match = call.called_carrier_num == carrier_num && call.called_ts == ts;
+
+                if !calling_match && !called_match {
+                    return None;
+                }
+
+                let failed_addr = if calling_match && called_match {
+                    if call.calling_over_brew && !call.called_over_brew {
+                        call.called_addr
+                    } else {
+                        call.calling_addr
+                    }
+                } else if calling_match {
+                    call.calling_addr
+                } else {
+                    call.called_addr
+                };
+
+                Some((call_id, failed_addr))
+            });
+
+            if let Some((call_id, failed_addr)) = duplex_individual {
+                tracing::warn!(
+                    "UL inactivity timeout on carrier={} ts={}, releasing duplex individual call_id={} after hard failure from ISSI {}",
+                    carrier_num,
+                    ts,
+                    call_id,
+                    failed_addr.ssi
+                );
+                self.release_individual_call(queue, call_id, DisconnectCause::ExpiryOfTimer);
+                return;
+            }
+
+            tracing::debug!(
+                "UL inactivity timeout on carrier={} ts={} but no active transmitting call found",
+                carrier_num,
+                ts
+            );
             return;
         };
 
@@ -549,13 +606,22 @@ impl CcBsSubentity {
             return;
         };
 
-        tracing::warn!("UL inactivity timeout on ts={}, forcing TX ceased for call_id={}", ts, call_id);
+        tracing::warn!(
+            "UL inactivity timeout on carrier={} ts={}, forcing TX ceased for call_id={}",
+            carrier_num,
+            ts,
+            call_id
+        );
         let dest_gssi = call.dest_gssi;
         let brew_notification = Self::brew_notification_for_group_call(call, call.source_issi);
         call.enter_hangtime(self.dltime);
 
-        self.send_d_tx_ceased_facch(queue, call_id, dest_gssi, ts);
+        self.send_d_tx_ceased_facch(queue, call_id, dest_gssi, carrier_num, ts);
 
-        self.notify_floor_released(queue, CallTimeslot { call_id, ts }, true, brew_notification);
+        self.notify_floor_released(queue, CallTimeslot { call_id, carrier_num, ts }, true, brew_notification);
+    }
+
+    pub(super) fn handle_ul_inactivity_timeout(&mut self, queue: &mut MessageQueue, ts: u8) {
+        self.handle_ul_inactivity_timeout_slot(queue, self.config.config().cell.main_carrier, ts);
     }
 }

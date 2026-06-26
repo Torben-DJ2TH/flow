@@ -83,7 +83,7 @@ struct EcholinkDialog {
     remote_control: SocketAddr,
     state: QsoState,
     audio: EcholinkAudioTranscoder,
-    media_ready: Option<(u16, u8)>,
+    media_ready: Option<(u16, u16, u8)>,
     seq: u16,
     inbound: bool,
     started: Instant,
@@ -106,7 +106,7 @@ pub struct EcholinkEntity {
     audio_bind: Option<String>,
     control_bind: Option<String>,
     dialogs: Vec<EcholinkDialog>,
-    dialog_by_ts: std::collections::HashMap<u8, usize>,
+    dialog_by_slot: std::collections::HashMap<(u16, u8), usize>,
     last_enabled: Option<bool>,
     last_directory_status: String,
     directory_stations: Vec<DirectoryStation>,
@@ -132,7 +132,7 @@ impl EcholinkEntity {
             audio_bind: None,
             control_bind: None,
             dialogs: Vec::new(),
-            dialog_by_ts: std::collections::HashMap::new(),
+            dialog_by_slot: std::collections::HashMap::new(),
             last_enabled: None,
             last_directory_status: "disabled".to_string(),
             directory_stations: Vec::new(),
@@ -470,11 +470,17 @@ impl EcholinkEntity {
         }
     }
 
-    fn mark_media_ready(&mut self, brew_uuid: Uuid, call_id: u16, ts: u8) {
+    fn mark_media_ready(&mut self, brew_uuid: Uuid, call_id: u16, carrier_num: u16, ts: u8) {
         if let Some((idx, dialog)) = self.dialogs.iter_mut().enumerate().find(|(_, d)| d.uuid == Some(brew_uuid)) {
-            dialog.media_ready = Some((call_id, ts));
-            self.dialog_by_ts.insert(ts, idx);
-            tracing::info!("EchoLink: media ready uuid={} call_id={} ts={}", brew_uuid, call_id, ts);
+            dialog.media_ready = Some((call_id, carrier_num, ts));
+            self.dialog_by_slot.insert((carrier_num, ts), idx);
+            tracing::info!(
+                "EchoLink: media ready uuid={} call_id={} carrier={} ts={}",
+                brew_uuid,
+                call_id,
+                carrier_num,
+                ts
+            );
         }
     }
 
@@ -491,8 +497,8 @@ impl EcholinkEntity {
         if send_bye {
             self.send_bye_idx(idx);
         }
-        if let Some((_, ts)) = self.dialogs[idx].media_ready {
-            self.dialog_by_ts.remove(&ts);
+        if let Some((_, carrier_num, ts)) = self.dialogs[idx].media_ready {
+            self.dialog_by_slot.remove(&(carrier_num, ts));
         }
         let uuid = self.dialogs[idx].uuid;
         self.dialogs[idx].state = QsoState::Released;
@@ -512,16 +518,16 @@ impl EcholinkEntity {
     }
 
     fn rebuild_ts_index(&mut self) {
-        self.dialog_by_ts.clear();
+        self.dialog_by_slot.clear();
         for (idx, dialog) in self.dialogs.iter().enumerate() {
-            if let Some((_, ts)) = dialog.media_ready {
-                self.dialog_by_ts.insert(ts, idx);
+            if let Some((_, carrier_num, ts)) = dialog.media_ready {
+                self.dialog_by_slot.insert((carrier_num, ts), idx);
             }
         }
     }
 
     fn handle_ul_voice(&mut self, prim: TmdCircuitDataInd) {
-        let Some(&idx) = self.dialog_by_ts.get(&prim.ts) else {
+        let Some(&idx) = self.dialog_by_slot.get(&(prim.carrier_num, prim.ts)) else {
             return;
         };
         let Some(socket) = self.audio_socket.as_ref().and_then(|s| s.try_clone().ok()) else {
@@ -610,7 +616,7 @@ impl EcholinkEntity {
             tracing::trace!("EchoLink: dropping malformed GSM payload len={}", payload.len());
             return;
         }
-        let (ts, frames) = {
+        let (carrier_num, ts, frames) = {
             let Some(dialog) = self.dialogs.get_mut(idx) else {
                 return;
             };
@@ -619,17 +625,21 @@ impl EcholinkEntity {
             }
             dialog.remote_audio = addr;
             dialog.last_audio_rx = Some(Instant::now());
-            let Some((_, ts)) = dialog.media_ready else {
+            let Some((_, carrier_num, ts)) = dialog.media_ready else {
                 return;
             };
-            (ts, dialog.audio.decode_gsm_payload_to_tmd(payload))
+            (carrier_num, ts, dialog.audio.decode_gsm_payload_to_tmd(payload))
         };
         for frame in frames {
             queue.push_back(SapMsg {
                 sap: Sap::TmdSap,
                 src: TetraEntity::Echolink,
                 dest: TetraEntity::Umac,
-                msg: SapMsgInner::TmdCircuitDataReq(TmdCircuitDataReq { ts, data: frame }),
+                msg: SapMsgInner::TmdCircuitDataReq(TmdCircuitDataReq {
+                    carrier_num,
+                    ts,
+                    data: frame,
+                }),
             });
         }
         self.last_rx = Some(format!("audio {} bytes from {}", packet.len(), addr));
@@ -997,8 +1007,13 @@ impl TetraEntityTrait for EcholinkEntity {
                 });
             }
             SapMsgInner::CmceCallControl(CallControl::NetworkCircuitConnectConfirm { .. }) => {}
-            SapMsgInner::CmceCallControl(CallControl::NetworkCircuitMediaReady { brew_uuid, call_id, ts }) => {
-                self.mark_media_ready(brew_uuid, call_id, ts);
+            SapMsgInner::CmceCallControl(CallControl::NetworkCircuitMediaReady {
+                brew_uuid,
+                call_id,
+                carrier_num,
+                ts,
+            }) => {
+                self.mark_media_ready(brew_uuid, call_id, carrier_num, ts);
             }
             SapMsgInner::CmceCallControl(CallControl::NetworkCircuitRelease { brew_uuid, .. }) => {
                 self.release_dialog_by_uuid(queue, brew_uuid, true);

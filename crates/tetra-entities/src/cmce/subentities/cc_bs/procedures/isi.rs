@@ -266,7 +266,9 @@ impl CcBsSubentity {
                 called_handle: None,
                 called_link_id: None,
                 called_endpoint_id: None,
+                calling_carrier_num: self.config.config().cell.main_carrier,
                 calling_ts: ts,
+                called_carrier_num: self.config.config().cell.main_carrier,
                 called_ts: ts,
                 calling_usage: usage,
                 called_usage: usage,
@@ -384,7 +386,7 @@ impl CcBsSubentity {
         let chan_alloc_calling = CmceChanAllocReq {
             usage: Some(call.calling_usage),
             alloc_type: ChanAllocType::Replace,
-            carrier: None,
+            carrier: Some(call.calling_carrier_num),
             timeslots: calling_timeslots,
             ul_dl_assigned: UlDlAssignment::Both,
         };
@@ -405,12 +407,27 @@ impl CcBsSubentity {
             proprietary: None,
         };
 
+        let circuit = CmceCircuit {
+            ts_created: self.dltime,
+            direction: Direction::Both,
+            ts: call.calling_ts,
+            carrier_num: call.calling_carrier_num,
+            call_id,
+            usage: call.calling_usage,
+            circuit_mode: CircuitModeType::TchS,
+            comm_type: CommunicationType::P2p,
+            simplex_duplex: call.simplex_duplex,
+            speech_service: Some(0),
+            etee_encrypted: false,
+        };
+        Self::signal_umac_circuit_open(queue, &circuit, self.dltime, None, None, CircuitDlMediaSource::SwMI);
+
         tracing::info!("-> {:?}", d_connect);
         let mut connect_sdu = BitBuffer::new_autoexpand(30);
         d_connect.to_bitbuf(&mut connect_sdu).expect("Failed to serialize DConnect");
         connect_sdu.seek(0);
 
-        let connect_msg = SapMsg {
+        let connect_msg_stealing = SapMsg {
             sap: Sap::LcmcSap,
             src: TetraEntity::Cmce,
             dest: TetraEntity::Mle,
@@ -424,28 +441,23 @@ impl CcBsSubentity {
                 layer2service: Layer2Service::Unacknowledged,
                 pdu_prio: 0,
                 layer2_qos: 0,
-                stealing_permission: false,
-                stealing_repeats_flag: false,
-                chan_alloc: Some(chan_alloc_calling),
+                stealing_permission: true,
+                stealing_repeats_flag: true,
+                chan_alloc: Some(chan_alloc_calling.clone()),
                 main_address: call.calling_addr,
                 tx_reporter: None,
             }),
         };
-        queue.push_back(connect_msg);
+        queue.push_back(connect_msg_stealing);
 
-        let circuit = CmceCircuit {
-            ts_created: self.dltime,
-            direction: Direction::Both,
-            ts: call.calling_ts,
-            call_id,
-            usage: call.calling_usage,
-            circuit_mode: CircuitModeType::TchS,
-            comm_type: CommunicationType::P2p,
-            simplex_duplex: call.simplex_duplex,
-            speech_service: Some(0),
-            etee_encrypted: false,
-        };
-        Self::signal_umac_circuit_open(queue, &circuit, self.dltime, None, CircuitDlMediaSource::SwMI);
+        let mut connect_sdu = BitBuffer::new_autoexpand(30);
+        d_connect.to_bitbuf(&mut connect_sdu).expect("Failed to serialize DConnect");
+        connect_sdu.seek(0);
+        // Keep a linkless MCCH copy alongside the traffic-leg send. Reusing the setup LLC link
+        // with chan_alloc here can make UMAC treat D-CONNECT as a random-access response and
+        // leave the local handset in alerting/ringing state after answer.
+        let connect_msg_fallback = Self::build_sapmsg(connect_sdu, Some(chan_alloc_calling), self.dltime, call.calling_addr, None);
+        queue.push_back(connect_msg_fallback);
 
         let activated = match self.fsm_individual_transition_to_active(call_id) {
             Ok(()) => true,
@@ -482,7 +494,9 @@ impl CcBsSubentity {
                     call_id,
                     source_issi: call.calling_addr.ssi,
                     dest_gssi: call.called_addr.ssi,
+                    carrier_num: call.calling_carrier_num,
                     ts: call.calling_ts,
+                    is_group: false,
                 },
                 true,
                 BrewNotification::Never,
@@ -513,6 +527,7 @@ impl CcBsSubentity {
             msg: SapMsgInner::CmceCallControl(CallControl::NetworkCircuitMediaReady {
                 brew_uuid,
                 call_id,
+                carrier_num: call.calling_carrier_num,
                 ts: call.calling_ts,
             }),
         });
@@ -597,7 +612,7 @@ impl CcBsSubentity {
         let chan_alloc_called = CmceChanAllocReq {
             usage: Some(call.called_usage),
             alloc_type: ChanAllocType::Replace,
-            carrier: None,
+            carrier: Some(call.called_carrier_num),
             timeslots: called_timeslots,
             ul_dl_assigned,
         };
@@ -619,29 +634,6 @@ impl CcBsSubentity {
             .expect("Failed to serialize DConnectAcknowledge");
         ack_sdu.seek(0);
 
-        let ack_msg = SapMsg {
-            sap: Sap::LcmcSap,
-            src: TetraEntity::Cmce,
-            dest: TetraEntity::Mle,
-            msg: SapMsgInner::LcmcMleUnitdataReq(LcmcMleUnitdataReq {
-                sdu: ack_sdu,
-                handle: called_handle,
-                endpoint_id: called_endpoint_id,
-                link_id: called_link_id,
-                // Network individual-call D-CONNECT-ACK: the legacy `main` code sent CC PDUs
-                // unacknowledged (FH FIX 2).
-                layer2service: Layer2Service::Unacknowledged,
-                pdu_prio: 0,
-                layer2_qos: 0,
-                stealing_permission: false,
-                stealing_repeats_flag: false,
-                chan_alloc: Some(chan_alloc_called),
-                main_address: call.called_addr,
-                tx_reporter: None,
-            }),
-        };
-        queue.push_back(ack_msg);
-
         let (circuit_mode, comm_type, speech_service, etee_encrypted) = if let Some(cached) = self.cached_setups.get(&call_id) {
             (
                 cached.pdu.basic_service_information.circuit_mode_type,
@@ -657,6 +649,7 @@ impl CcBsSubentity {
             ts_created: self.dltime,
             direction: Direction::Both,
             ts: call.called_ts,
+            carrier_num: call.called_carrier_num,
             call_id,
             usage: call.called_usage,
             circuit_mode,
@@ -665,7 +658,40 @@ impl CcBsSubentity {
             speech_service,
             etee_encrypted,
         };
-        Self::signal_umac_circuit_open(queue, &circuit, self.dltime, None, CircuitDlMediaSource::SwMI);
+        Self::signal_umac_circuit_open(queue, &circuit, self.dltime, None, None, CircuitDlMediaSource::SwMI);
+
+        let ack_msg_stealing = SapMsg {
+            sap: Sap::LcmcSap,
+            src: TetraEntity::Cmce,
+            dest: TetraEntity::Mle,
+            msg: SapMsgInner::LcmcMleUnitdataReq(LcmcMleUnitdataReq {
+                sdu: ack_sdu,
+                handle: called_handle,
+                endpoint_id: called_endpoint_id,
+                link_id: called_link_id,
+                // Network individual-call D-CONNECT-ACK: the legacy `main` code sent CC PDUs
+                // unacknowledged (FH FIX 2).
+                layer2service: Layer2Service::Unacknowledged,
+                pdu_prio: 0,
+                layer2_qos: 0,
+                stealing_permission: true,
+                stealing_repeats_flag: true,
+                chan_alloc: Some(chan_alloc_called.clone()),
+                main_address: call.called_addr,
+                tx_reporter: None,
+            }),
+        };
+        queue.push_back(ack_msg_stealing);
+
+        let mut ack_sdu = BitBuffer::new_autoexpand(28);
+        d_connect_ack
+            .to_bitbuf(&mut ack_sdu)
+            .expect("Failed to serialize DConnectAcknowledge");
+        ack_sdu.seek(0);
+        // Same as the D-CONNECT path above: preserve an MCCH fallback, but keep it linkless so
+        // chan_alloc is not mistaken for a random-access response on the old setup LLC link.
+        let ack_msg_fallback = Self::build_sapmsg(ack_sdu, Some(chan_alloc_called), self.dltime, call.called_addr, None);
+        queue.push_back(ack_msg_fallback);
 
         let activated = match self.fsm_individual_transition_to_active(call_id) {
             Ok(()) => true,
@@ -704,7 +730,9 @@ impl CcBsSubentity {
                             call_id,
                             source_issi: call.called_addr.ssi,
                             dest_gssi: call.calling_addr.ssi,
+                            carrier_num: call.called_carrier_num,
                             ts: call.called_ts,
+                            is_group: false,
                         },
                         true,
                         BrewNotification::Never,
@@ -731,6 +759,7 @@ impl CcBsSubentity {
             msg: SapMsgInner::CmceCallControl(CallControl::NetworkCircuitMediaReady {
                 brew_uuid,
                 call_id,
+                carrier_num: call.called_carrier_num,
                 ts: call.called_ts,
             }),
         });
@@ -846,7 +875,7 @@ impl CcBsSubentity {
             call_id
         );
 
-        Self::signal_umac_circuit_open(queue, &circuit, self.dltime, None, CircuitDlMediaSource::LocalLoopback);
+        Self::signal_umac_circuit_open(queue, &circuit, self.dltime, None, None, CircuitDlMediaSource::LocalLoopback);
 
         tracing::debug!(
             "CMCE: sending D-SETUP for NEW call call_id={} gssi={} (network-initiated)",
@@ -891,7 +920,7 @@ impl CcBsSubentity {
         );
         let d_setup_ref = &self.cached_setups.get(&call_id).unwrap().pdu;
 
-        let (setup_sdu, setup_chan_alloc) = Self::build_d_setup_prim(d_setup_ref, usage, ts, UlDlAssignment::Both);
+        let (setup_sdu, setup_chan_alloc) = Self::build_d_setup_prim(d_setup_ref, usage, circuit.carrier_num, ts, UlDlAssignment::Both);
         let setup_msg = Self::build_sapmsg(setup_sdu, Some(setup_chan_alloc), self.dltime, dest_addr.clone(), None);
         queue.push_back(setup_msg);
 
@@ -946,6 +975,7 @@ impl CcBsSubentity {
                 brew_uuid,
                 dest_gssi,
                 source_issi,
+                circuit.carrier_num,
                 ts,
                 usage,
                 self.dltime,
@@ -959,6 +989,7 @@ impl CcBsSubentity {
             call_id,
             gssi: dest_gssi,
             caller_issi: source_issi,
+            carrier_num: circuit.carrier_num,
             ts,
             priority,
             source: crate::net_telemetry::telemetry_source_for_entity(network_entity).to_string(),
@@ -971,6 +1002,7 @@ impl CcBsSubentity {
             msg: SapMsgInner::CmceCallControl(CallControl::NetworkCallReady {
                 brew_uuid,
                 call_id,
+                carrier_num: circuit.carrier_num,
                 ts,
                 usage,
             }),
