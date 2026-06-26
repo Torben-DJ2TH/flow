@@ -269,6 +269,8 @@ pub struct EcholinkRuntimeOverride {
     pub auto_connect: String,
     pub reconnect_interval_secs: u64,
     pub max_session_secs: u64,
+    pub telegram_session_alerts: bool,
+    pub telegram_session_prefix: String,
 }
 
 /// Runtime override for MeshCom external UDP settings, edited from the dashboard.
@@ -452,6 +454,7 @@ pub struct EcholinkRuntimeStatus {
     pub callsign: String,
     pub connected_target: Option<String>,
     pub routed_tetra_dest: Option<String>,
+    pub last_session_event: Option<String>,
     pub last_rx: Option<String>,
     pub last_tx: Option<String>,
     pub last_error: Option<String>,
@@ -469,6 +472,7 @@ impl Default for EcholinkRuntimeStatus {
             callsign: String::new(),
             connected_target: None,
             routed_tetra_dest: None,
+            last_session_event: None,
             last_rx: None,
             last_tx: None,
             last_error: None,

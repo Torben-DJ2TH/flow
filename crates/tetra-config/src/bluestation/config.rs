@@ -520,6 +520,8 @@ impl SharedConfig {
                 auto_connect: o.auto_connect.clone(),
                 reconnect_interval_secs: o.reconnect_interval_secs.max(1),
                 max_session_secs: o.max_session_secs.max(1),
+                telegram_session_alerts: o.telegram_session_alerts,
+                telegram_session_prefix: o.telegram_session_prefix.clone(),
             }
         } else {
             base

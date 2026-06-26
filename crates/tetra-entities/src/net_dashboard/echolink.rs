@@ -58,7 +58,9 @@ pub fn write_echolink_to_toml(config_path: &str, ov: &EcholinkRuntimeOverride) -
          allowed_node_ids = [{}]\n\
          auto_connect = \"{}\"\n\
          reconnect_interval_secs = {}\n\
-         max_session_secs = {}",
+         max_session_secs = {}\n\
+         telegram_session_alerts = {}\n\
+         telegram_session_prefix = \"{}\"",
         ov.enabled,
         toml_escape(&ov.callsign),
         toml_escape(&ov.password),
@@ -83,6 +85,8 @@ pub fn write_echolink_to_toml(config_path: &str, ov: &EcholinkRuntimeOverride) -
         toml_escape(&ov.auto_connect),
         ov.reconnect_interval_secs.max(1),
         ov.max_session_secs.max(1),
+        ov.telegram_session_alerts,
+        toml_escape(&ov.telegram_session_prefix),
     );
 
     let lines: Vec<&str> = original.lines().collect();

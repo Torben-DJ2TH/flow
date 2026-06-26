@@ -4945,6 +4945,7 @@ fn serve_echolink_get(stream: TcpStream, shared_config: &Option<tetra_config::bl
         "callsign": runtime.callsign,
         "connected_target": runtime.connected_target,
         "routed_tetra_dest": runtime.routed_tetra_dest,
+        "last_session_event": runtime.last_session_event,
         "last_rx": runtime.last_rx,
         "last_tx": runtime.last_tx,
         "last_error": runtime.last_error,
@@ -4975,6 +4976,8 @@ fn serve_echolink_get(stream: TcpStream, shared_config: &Option<tetra_config::bl
         "auto_connect": echolink.auto_connect.clone(),
         "reconnect_interval_secs": echolink.reconnect_interval_secs,
         "max_session_secs": echolink.max_session_secs,
+        "telegram_session_alerts": echolink.telegram_session_alerts,
+        "telegram_session_prefix": echolink.telegram_session_prefix.clone(),
     });
     if let Some(obj) = body.as_object_mut() {
         obj.insert("runtime".to_string(), runtime_body);
@@ -5055,6 +5058,8 @@ fn serve_echolink_post(stream: TcpStream, shared_config: &Option<tetra_config::b
         auto_connect: dapnet_as_string(&json, "auto_connect", &cur.auto_connect),
         reconnect_interval_secs: dapnet_as_u64(&json, "reconnect_interval_secs", cur.reconnect_interval_secs),
         max_session_secs: dapnet_as_u64(&json, "max_session_secs", cur.max_session_secs),
+        telegram_session_alerts: dapnet_as_bool(&json, "telegram_session_alerts", cur.telegram_session_alerts),
+        telegram_session_prefix: dapnet_as_string(&json, "telegram_session_prefix", &cur.telegram_session_prefix),
         extra: HashMap::new(),
     };
     let normalized = match apply_echolink_patch(dto) {
@@ -5072,6 +5077,7 @@ fn serve_echolink_post(stream: TcpStream, shared_config: &Option<tetra_config::b
         normalized.bind_addr.as_str(),
         normalized.outbound_prefix.as_str(),
         normalized.auto_connect.as_str(),
+        normalized.telegram_session_prefix.as_str(),
     ];
     if !text_fields.iter().all(|v| dapnet_text_acceptable(v)) {
         http_response(stream, 400, "Invalid EchoLink setting: control characters are not allowed");
@@ -5103,6 +5109,8 @@ fn serve_echolink_post(stream: TcpStream, shared_config: &Option<tetra_config::b
         auto_connect: normalized.auto_connect,
         reconnect_interval_secs: normalized.reconnect_interval_secs,
         max_session_secs: normalized.max_session_secs,
+        telegram_session_alerts: normalized.telegram_session_alerts,
+        telegram_session_prefix: normalized.telegram_session_prefix,
     };
 
     {
@@ -5117,10 +5125,11 @@ fn serve_echolink_post(stream: TcpStream, shared_config: &Option<tetra_config::b
     }
 
     tracing::info!(
-        "Dashboard: EchoLink updated (enabled={} inbound={} outbound={} routes={})",
+        "Dashboard: EchoLink updated (enabled={} inbound={} outbound={} telegram_session_alerts={} routes={})",
         ov.enabled,
         ov.inbound_enabled,
         ov.outbound_enabled,
+        ov.telegram_session_alerts,
         ov.routes.len()
     );
     http_response(stream, 200, "OK");

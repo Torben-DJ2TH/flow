@@ -158,6 +158,7 @@ fn build_bs_stack(
     cfg: &mut SharedConfig,
     config_path: &str,
     echolink_cmd_rx: tetra_entities::net_echolink::EcholinkCmdReceiver,
+    echolink_telegram_sink: Option<TelegramAlertSink>,
 ) -> (
     MessageRouter,
     Option<TelemetrySource>,
@@ -314,7 +315,7 @@ fn build_bs_stack(
         eprintln!(" -> Asterisk SIP integration configured but not compiled in");
     }
 
-    router.register_entity(Box::new(EcholinkEntity::new(cfg.clone(), echolink_cmd_rx)));
+    router.register_entity(Box::new(EcholinkEntity::new(cfg.clone(), echolink_cmd_rx, echolink_telegram_sink)));
     if cfg.effective_echolink().enabled {
         eprintln!(" -> EchoLink integration enabled");
     }
@@ -394,9 +395,16 @@ fn main() {
     }
 
     let (echolink_cmd_tx, echolink_cmd_rx) = echolink_channel();
-    let (mut router, tsource, cdispatchers, dapnet_telemetry_sink) = build_bs_stack(&mut cfg, &args.config, echolink_cmd_rx);
+    let (telegram_alert_sink, mut telegram_alert_source) = if cfg.config().telegram.is_some() {
+        let (sink, source) = telegram_alert_channel();
+        (Some(sink), Some(source))
+    } else {
+        (None, None)
+    };
+    let (mut router, tsource, cdispatchers, dapnet_telemetry_sink) =
+        build_bs_stack(&mut cfg, &args.config, echolink_cmd_rx, telegram_alert_sink.clone());
     let dapnet_cmd_tx = cdispatchers.get(&TetraEntity::Cmce).map(|dispatcher| dispatcher.clone_sender());
-    let mut dapnet_telegram_sink: Option<TelegramAlertSink> = None;
+    let mut dapnet_telegram_sink = telegram_alert_sink.clone();
     let mut geoalarm_sink: Option<GeoAlarmSink> = None;
 
     let (snom_sink, snom_source) = snom_notify_channel();
@@ -422,8 +430,8 @@ fn main() {
         // Telegram alerter — independent of the dashboard. Spawned whenever [telegram_alerts]
         // exists; it idles when alerts are disabled and reads settings live via
         // effective_telegram(), so toggling from the dashboard takes effect without a restart.
-        let alert_sink = if has_telegram {
-            let (sink, alert_source) = telegram_alert_channel();
+        let alert_sink = telegram_alert_sink.clone();
+        if has_telegram && let Some(alert_source) = telegram_alert_source.take() {
             let alert_cfg = cfg.clone();
             let snom_for_alerts = snom_notify_sink.clone();
             thread::Builder::new()
@@ -432,10 +440,7 @@ fn main() {
                     TelegramAlerter::new(alert_cfg, alert_source).with_snom_sink(snom_for_alerts).run();
                 })
                 .expect("failed to spawn telegram-alerter thread");
-            Some(sink)
-        } else {
-            None
-        };
+        }
         dapnet_telegram_sink = alert_sink.clone();
         geoalarm_sink = spawn_geoalarm_worker(cfg.clone(), dapnet_cmd_tx.clone(), alert_sink.clone(), snom_notify_sink.clone());
 

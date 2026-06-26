@@ -35,6 +35,8 @@ pub struct CfgEcholink {
     pub auto_connect: String,
     pub reconnect_interval_secs: u64,
     pub max_session_secs: u64,
+    pub telegram_session_alerts: bool,
+    pub telegram_session_prefix: String,
 }
 
 impl Default for CfgEcholink {
@@ -93,6 +95,10 @@ pub struct CfgEcholinkDto {
     pub reconnect_interval_secs: u64,
     #[serde(default = "default_max_session_secs")]
     pub max_session_secs: u64,
+    #[serde(default)]
+    pub telegram_session_alerts: bool,
+    #[serde(default = "default_telegram_session_prefix")]
+    pub telegram_session_prefix: String,
 
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
@@ -125,6 +131,8 @@ impl Default for CfgEcholinkDto {
             auto_connect: String::new(),
             reconnect_interval_secs: default_reconnect_interval_secs(),
             max_session_secs: default_max_session_secs(),
+            telegram_session_alerts: false,
+            telegram_session_prefix: default_telegram_session_prefix(),
             extra: HashMap::new(),
         }
     }
@@ -182,6 +190,10 @@ fn default_max_session_secs() -> u64 {
     3600
 }
 
+fn default_telegram_session_prefix() -> String {
+    "EchoLink".to_string()
+}
+
 pub fn apply_echolink_patch(src: CfgEcholinkDto) -> Result<CfgEcholink, String> {
     if src.enabled {
         if src.callsign.trim().is_empty() {
@@ -231,6 +243,8 @@ pub fn apply_echolink_patch(src: CfgEcholinkDto) -> Result<CfgEcholink, String> 
         auto_connect: normalize_echolink_target(&src.auto_connect),
         reconnect_interval_secs: src.reconnect_interval_secs.max(1),
         max_session_secs: src.max_session_secs.max(1),
+        telegram_session_alerts: src.telegram_session_alerts,
+        telegram_session_prefix: non_empty_or(src.telegram_session_prefix, "EchoLink"),
     })
 }
 
@@ -248,6 +262,11 @@ fn normalize_string_list(values: Vec<String>, callsigns: bool) -> Vec<String> {
         .map(|s| if callsigns { normalize_callsign(&s) } else { s.trim().to_string() })
         .filter(|s| !s.is_empty())
         .collect()
+}
+
+fn non_empty_or(value: String, fallback: &str) -> String {
+    let value = value.trim().to_string();
+    if value.is_empty() { fallback.to_string() } else { value }
 }
 
 fn normalize_routes(routes: HashMap<String, String>) -> Result<BTreeMap<String, String>, String> {
