@@ -95,7 +95,11 @@ impl UmacBs {
         if let Some(secondary_carrier) = c.cell.secondary_carrier {
             let mut sched = BsChannelScheduler::new(scrambling_code, precomps.clone());
             sched.set_carrier_num(secondary_carrier);
-            sched.set_downlink_mode(CarrierDownlinkMode::SecondaryBcchNoMcch);
+            sched.set_downlink_mode(CarrierDownlinkMode::TrafficOnly);
+            tracing::info!(
+                "UmacBs: secondary carrier {} configured as traffic-only; idle downlink is suppressed",
+                secondary_carrier
+            );
             secondary_channel_schedulers.push(sched);
         }
         Self {

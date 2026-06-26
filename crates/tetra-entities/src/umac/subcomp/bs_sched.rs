@@ -1410,6 +1410,9 @@ impl BsChannelScheduler {
                     bbk: None,
                     ul_phy_chan: ul_phy,
                 }
+            } else if !emit_bcch && !ul_is_traffic {
+                self.clear_ul_schedule_for_tx_time(ts);
+                return None;
             } else if !emit_bcch {
                 TmvUnitdataReqSlot {
                     carrier_num,
@@ -1908,6 +1911,13 @@ mod tests {
         sched
     }
 
+    fn get_testing_traffic_only_scheduler() -> BsChannelScheduler {
+        let mut sched = get_testing_slotter();
+        sched.set_carrier_num(1002);
+        sched.set_downlink_mode(CarrierDownlinkMode::TrafficOnly);
+        sched
+    }
+
     fn test_circuit(direction: Direction, ts: u8) -> Circuit {
         Circuit {
             direction,
@@ -1949,6 +1959,14 @@ mod tests {
         assert_eq!(slot.ts.t, 1);
         assert_eq!(slot.blk1.as_ref().expect("blk1").logical_channel, LogicalChannel::SchHd);
         assert_eq!(slot.blk2.as_ref().expect("blk2").logical_channel, LogicalChannel::Bnch);
+    }
+
+    #[test]
+    fn test_traffic_only_secondary_idle_does_not_emit() {
+        let mut sched = get_testing_traffic_only_scheduler();
+        sched.set_dl_time(TdmaTime { t: 4, f: 2, m: 1, h: 0 });
+
+        assert!(sched.finalize_secondary_ts_for_tick().is_none());
     }
 
     #[test]
