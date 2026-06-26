@@ -231,7 +231,7 @@ fn build_bs_stack(
 
     // Add remaining components
     let lmac = LmacBs::new(cfg.clone());
-    let umac = UmacBs::new(cfg.clone());
+    let umac = UmacBs::new(cfg.clone(), tsink.clone());
     let llc = Llc::new(cfg.clone());
     let mle = MleBs::new(cfg.clone());
     let mut mm = MmBs::new(cfg.clone(), tsink.clone(), c_e.remove(&TetraEntity::Mm));
