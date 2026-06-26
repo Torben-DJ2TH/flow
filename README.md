@@ -168,14 +168,6 @@ sudo cmake --install build
 sudo ldconfig
 ```
 
-After installation, verify both directions before enabling audio bridges:
-
-```bash
-# Exact command names depend on the codec project version.
-# Follow the codec project's README and confirm:
-# - TETRA ACELP -> PCM decoding works
-# - PCM -> TETRA ACELP encoding works
-```
 
 ### Asterisk packages, source build, and modules
 
