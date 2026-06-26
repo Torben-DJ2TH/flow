@@ -104,7 +104,7 @@ impl CcBsSubentity {
 
         // Local echo has no second MS leg. One bidirectional traffic slot is enough, regardless
         // of whether the requesting terminal marks the P2P call as simplex or duplex.
-        self.preempt_for_priority(queue, 1, pdu.call_priority);
+        self.ensure_timeslots_for_priority(queue, 1, pdu.call_priority);
         let circuit = {
             let mut state = self.config.state_write();
             match self.circuits.allocate_circuit_with_allocator(
@@ -135,15 +135,17 @@ impl CcBsSubentity {
         };
 
         let call_id = circuit.call_id;
+        let carrier_num = circuit.carrier_num;
         let ts = circuit.ts;
         let usage = circuit.usage;
         let call_timeout = Self::p2p_call_timeout(pdu.simplex_duplex_selection);
 
         tracing::info!(
-            "CMCE: local echo U-SETUP from ISSI {} to ISSI {} -> call_id={} ts={} usage={} duplex={}",
+            "CMCE: local echo U-SETUP from ISSI {} to ISSI {} -> call_id={} carrier={} ts={} usage={} duplex={}",
             calling_party.ssi,
             called_addr.ssi,
             call_id,
+            carrier_num,
             ts,
             usage,
             pdu.simplex_duplex_selection
@@ -158,7 +160,9 @@ impl CcBsSubentity {
             called_handle: None,
             called_link_id: None,
             called_endpoint_id: None,
+            calling_carrier_num: carrier_num,
             calling_ts: ts,
+            called_carrier_num: carrier_num,
             called_ts: ts,
             calling_usage: usage,
             called_usage: usage,
@@ -189,7 +193,7 @@ impl CcBsSubentity {
                 prim.handle,
                 prim.link_id,
                 prim.endpoint_id,
-                &[ts],
+                &[CarrierSlot { carrier_num, ts }],
                 DisconnectCause::NoIdleCcEntity,
             );
             return;
@@ -204,13 +208,13 @@ impl CcBsSubentity {
                 prim.handle,
                 prim.link_id,
                 prim.endpoint_id,
-                &[ts],
+                &[CarrierSlot { carrier_num, ts }],
                 DisconnectCause::IncompatibleTrafficCase,
             );
             return;
         }
 
-        Self::signal_umac_circuit_open(queue, &circuit, self.dltime, None, CircuitDlMediaSource::LocalLoopback);
+        Self::signal_umac_circuit_open(queue, &circuit, self.dltime, None, None, CircuitDlMediaSource::LocalLoopback);
 
         self.send_d_call_proceeding(queue, message, pdu, call_id, CallTimeoutSetupPhase::T10s, pdu.hook_method_selection);
 
@@ -219,7 +223,7 @@ impl CcBsSubentity {
         let chan_alloc = CmceChanAllocReq {
             usage: Some(usage),
             alloc_type: ChanAllocType::Replace,
-            carrier: None,
+            carrier: Some(carrier_num),
             timeslots,
             ul_dl_assigned: UlDlAssignment::Both,
         };
@@ -275,7 +279,9 @@ impl CcBsSubentity {
                     call_id,
                     source_issi: calling_party.ssi,
                     dest_gssi: LOCAL_ECHO_ISSI,
+                    carrier_num,
                     ts,
+                    is_group: false,
                 },
                 true,
                 BrewNotification::Never,

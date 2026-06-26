@@ -237,6 +237,7 @@ impl LmacBs {
         }
 
         let block_num = blk.block_num;
+        let carrier_num = blk.carrier_num;
         let rssi_dbfs = blk.rssi_dbfs;
         let (type1bits, crc_pass) = errorcontrol::decode_cp(lchan, blk, Some(self.scrambling_code));
         // decode_cp only returns None when no scrambling code is available; we always pass
@@ -269,6 +270,7 @@ impl LmacBs {
             src: TetraEntity::Lmac,
             dest: TetraEntity::Umac,
             msg: SapMsgInner::TmvUnitdataInd(TmvUnitdataInd {
+                carrier_num,
                 pdu: type1bits,
                 logical_channel: lchan,
                 block_num,
@@ -401,6 +403,7 @@ impl LmacBs {
         };
 
         let mut prim_phy = TpUnitdataReqSlot {
+            carrier_num: prim.carrier_num,
             train_type,
             burst_type,
             bbk: None,

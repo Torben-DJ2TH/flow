@@ -51,6 +51,7 @@ pub enum TelemetryEvent {
         ts: u8,
         priority: u8,
         source: String,
+        carrier_num: u16,
     },
     /// Group call ended
     GroupCallEnded { call_id: u16, gssi: u32 },
@@ -60,6 +61,15 @@ pub enum TelemetryEvent {
         gssi: u32,
         speaker_issi: u32,
         source: String,
+    },
+    /// Speaker changed on an active group or individual/simplex call.
+    CallSpeakerChanged {
+        call_id: u16,
+        is_group: bool,
+        dest_addr: u32,
+        speaker_issi: u32,
+        carrier_num: u16,
+        ts: u8,
     },
     /// Individual (P2P) call started. `priority` is the ETSI call priority (0..=15) from the
     /// originating U-SETUP; 15 denotes an emergency call (appended last for bitcode wire-stability).
@@ -71,6 +81,9 @@ pub enum TelemetryEvent {
         ts: u8,
         priority: u8,
         source: String,
+        carrier_num: u16,
+        peer_carrier_num: Option<u16>,
+        peer_ts: Option<u8>,
     },
     /// Individual call ended
     IndividualCallEnded { call_id: u16 },
@@ -94,7 +107,11 @@ pub enum TelemetryEvent {
         text: String,
     },
     /// Voice frame activity on a traffic timeslot (UL or DL)
-    TsVoiceActivity { ts: u8 },
+    TsVoiceActivity {
+        carrier_num: u16,
+        ts: u8,
+        speaker_issi: Option<u32>,
+    },
     /// Fast visual feed for the RF dashboard: spectrum + constellation + RMS/peak.
     /// Emitted ~5 times per second so spectrum/constellation/waterfall feel fluid.
     /// Cheap to compute (FFT + magnitude). Constellation symbol recovery is the

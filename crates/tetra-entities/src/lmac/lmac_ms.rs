@@ -66,6 +66,7 @@ impl LmacMs {
     fn rx_bbk(&mut self, queue: &mut MessageQueue, bbk: TpUnitdataInd) {
         // tracing::trace!("rx_bbk: {:?}", bbk.block.dump_bin());
 
+        let carrier_num = bbk.carrier_num;
         let type5 = bbk.block;
         tracing::trace!("rx_bbk type5: {:?}", type5.dump_bin_full(true));
 
@@ -83,6 +84,7 @@ impl LmacMs {
             src: TetraEntity::Lmac,
             dest: TetraEntity::Umac,
             msg: SapMsgInner::TmvUnitdataInd(TmvUnitdataInd {
+                carrier_num,
                 pdu: type1,
                 block_num: PhyBlockNum::Undefined,
                 logical_channel: LogicalChannel::Aach,
@@ -149,6 +151,7 @@ impl LmacMs {
 
     fn rx_blk_cp(&mut self, queue: &mut MessageQueue, blk: TpUnitdataInd, lchan: LogicalChannel) {
         let block_num = blk.block_num;
+        let carrier_num = blk.carrier_num;
         let (type1bits, crc_pass) = errorcontrol::decode_cp(lchan, blk, self.scrambling_code);
 
         // Check if we indeed decoded a block, if so, continue
@@ -183,6 +186,7 @@ impl LmacMs {
                 src: TetraEntity::Lmac,
                 dest: TetraEntity::Umac,
                 msg: SapMsgInner::TmvUnitdataInd(TmvUnitdataInd {
+                    carrier_num,
                     pdu: type1bits,
                     block_num,
                     logical_channel: lchan,

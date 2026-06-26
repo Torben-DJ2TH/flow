@@ -383,6 +383,7 @@ impl UmacMs {
                     src: TetraEntity::Umac,
                     dest: TetraEntity::Llc,
                     msg: SapMsgInner::TmaUnitdataInd(TmaUnitdataInd {
+                        carrier_num: prim.carrier_num,
                         pdu: sdu,
                         main_address: pdu.addr.unwrap(),
                         scrambling_code: prim.scrambling_code,
@@ -517,6 +518,7 @@ impl UmacMs {
             src: TetraEntity::Umac,
             dest: TetraEntity::Llc,
             msg: SapMsgInner::TmaUnitdataInd(TmaUnitdataInd {
+                carrier_num: prim.carrier_num,
                 pdu: Some(defragbuf.buffer),
                 main_address: defragbuf.addr,
                 scrambling_code: prim.scrambling_code,

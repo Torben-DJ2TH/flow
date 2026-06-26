@@ -821,19 +821,20 @@ impl SdsBsSubentity {
         };
 
         let (stealing_permission, chan_alloc, layer2service) = match traffic {
-            Some((ts, usage)) if (1..=4).contains(&ts) => {
+            Some((carrier_num, ts, usage)) if (1..=4).contains(&ts) => {
                 let mut timeslots = [false; 4];
                 timeslots[(ts - 1) as usize] = true;
                 tracing::debug!(
-                    "SDS-STATUS: dest {} is on traffic ts {} — delivering D-STATUS via FACCH stealing",
+                    "SDS-STATUS: dest {} is on traffic carrier {} ts {} — delivering D-STATUS via FACCH stealing",
                     dest_issi,
+                    carrier_num,
                     ts
                 );
                 (
                     true,
                     Some(CmceChanAllocReq {
                         usage: Some(usage),
-                        carrier: None,
+                        carrier: Some(carrier_num),
                         timeslots,
                         alloc_type: ChanAllocType::Replace,
                         ul_dl_assigned: UlDlAssignment::Dl,
@@ -1256,15 +1257,20 @@ impl SdsBsSubentity {
         };
 
         let (stealing_permission, chan_alloc) = match traffic {
-            Some((ts, usage)) if (1..=4).contains(&ts) => {
+            Some((carrier_num, ts, usage)) if (1..=4).contains(&ts) => {
                 let mut timeslots = [false; 4];
                 timeslots[(ts - 1) as usize] = true;
-                tracing::debug!("SDS: dest {} is on traffic ts {} — delivering via FACCH stealing", dest_ssi, ts);
+                tracing::debug!(
+                    "SDS: dest {} is on traffic carrier {} ts {} — delivering via FACCH stealing",
+                    dest_ssi,
+                    carrier_num,
+                    ts
+                );
                 (
                     true,
                     Some(CmceChanAllocReq {
                         usage: Some(usage),
-                        carrier: None,
+                        carrier: Some(carrier_num),
                         timeslots,
                         alloc_type: ChanAllocType::Replace,
                         ul_dl_assigned: UlDlAssignment::Dl,

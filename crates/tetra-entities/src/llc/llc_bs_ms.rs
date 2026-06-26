@@ -54,6 +54,7 @@ pub struct ExpectedInAck {
 /// Struct that maintains state for an ACK we still need to send back.
 pub struct ScheduledOutAck {
     pub addr: TetraAddress,
+    pub carrier_num: u16,
     pub t_start: TdmaTime,
     /// Received sequence number
     pub nr: u8,
@@ -91,12 +92,17 @@ impl Llc {
         }
     }
 
+    fn main_carrier(&self) -> u16 {
+        self.config.config().cell.main_carrier
+    }
+
     /// Schedule an ACK to be sent at a later time
-    pub fn schedule_outgoing_ack(&mut self, dltime: TdmaTime, addr: TetraAddress, ns: u8) {
+    pub fn schedule_outgoing_ack(&mut self, dltime: TdmaTime, carrier_num: u16, addr: TetraAddress, ns: u8) {
         self.scheduled_out_acks.push_back(ScheduledOutAck {
             t_start: dltime,
             nr: ns,
             addr,
+            carrier_num,
             ts: dltime.t,
         });
     }
@@ -107,9 +113,9 @@ impl Llc {
     /// state here is still per-subscriber rather than per-(subscriber,timeslot) signalling path.
     /// If we ever need to distinguish concurrent basic-link signalling contexts for the same SSI,
     /// extend this matching to include the target link/timeslot.
-    fn get_out_ack_seq_if_any(&mut self, addr: TetraAddress) -> Option<u8> {
+    fn get_out_ack_seq_if_any(&mut self, addr: TetraAddress, carrier_num: u16) -> Option<u8> {
         for i in 0..self.scheduled_out_acks.len() {
-            if self.scheduled_out_acks[i].addr.ssi == addr.ssi {
+            if self.scheduled_out_acks[i].addr.ssi == addr.ssi && self.scheduled_out_acks[i].carrier_num == carrier_num {
                 let n = self.scheduled_out_acks[i].nr;
                 self.scheduled_out_acks.remove(i);
                 return Some(n);
@@ -204,6 +210,11 @@ impl Llc {
             tracing::error!("BUG: unexpected message or state -- routing error");
             return;
         };
+        let preferred_carrier = prim
+            .chan_alloc
+            .as_ref()
+            .and_then(|ca| ca.carrier)
+            .unwrap_or_else(|| self.main_carrier());
 
         let mut pdu_buf = BitBuffer::new_autoexpand(32);
         let pdu = BlUdata { has_fcs: false };
@@ -218,6 +229,7 @@ impl Llc {
             src: self.entity(),
             dest: TetraEntity::Umac,
             msg: SapMsgInner::TmaUnitdataReq(TmaUnitdataReq {
+                carrier_num: Some(preferred_carrier),
                 req_handle: prim.req_handle,
                 pdu: pdu_buf,
                 main_address: prim.main_address,
@@ -256,11 +268,16 @@ impl Llc {
             tracing::error!("BUG: unexpected message or state -- routing error");
             return;
         };
+        let preferred_carrier = prim
+            .chan_alloc
+            .as_ref()
+            .and_then(|ca| ca.carrier)
+            .unwrap_or_else(|| self.main_carrier());
 
         // Traffic-channel responses may carry the TL-SDU on the BL-ACK itself.
         // This is required for U-Alert and other BL response payloads.
         if prim.stealing_permission {
-            if let Some(out_ack_n) = self.get_out_ack_seq_if_any(prim.main_address) {
+            if let Some(out_ack_n) = self.get_out_ack_seq_if_any(prim.main_address, preferred_carrier) {
                 let mut pdu_buf = BitBuffer::new_autoexpand(32);
                 let pdu = BlAck {
                     has_fcs: prim.fcs_flag,
@@ -277,6 +294,7 @@ impl Llc {
                     src: self.entity(),
                     dest: TetraEntity::Umac,
                     msg: SapMsgInner::TmaUnitdataReq(TmaUnitdataReq {
+                        carrier_num: Some(preferred_carrier),
                         req_handle: prim.req_handle,
                         pdu: pdu_buf,
                         main_address: prim.main_address,
@@ -312,6 +330,7 @@ impl Llc {
                 src: self.entity(),
                 dest: TetraEntity::Umac,
                 msg: SapMsgInner::TmaUnitdataReq(TmaUnitdataReq {
+                    carrier_num: Some(preferred_carrier),
                     req_handle: prim.req_handle,
                     pdu: pdu_buf,
                     main_address: prim.main_address,
@@ -331,7 +350,7 @@ impl Llc {
         }
 
         // If an ack still needs to be sent, get the relevant expected sequence number
-        let out_ack_n = self.get_out_ack_seq_if_any(prim.main_address);
+        let out_ack_n = self.get_out_ack_seq_if_any(prim.main_address, preferred_carrier);
 
         // Get per-link send sequence number N(S) = V(S), then toggle V(S)
         let ns = self.get_next_send_seq(&prim.main_address);
@@ -383,6 +402,7 @@ impl Llc {
             src: self.entity(),
             dest: TetraEntity::Umac,
             msg: SapMsgInner::TmaUnitdataReq(TmaUnitdataReq {
+                carrier_num: Some(preferred_carrier),
                 req_handle: prim.req_handle,
                 pdu: pdu_buf,
                 main_address: prim.main_address,
@@ -573,7 +593,7 @@ impl Llc {
         let msg_dltime = self.dltime.add_timeslots(-2); // Msg on uplink was sent two timeslots ago. 
         if let Some(ns) = ns {
             // Send ACK
-            self.schedule_outgoing_ack(msg_dltime, prim.main_address, ns);
+            self.schedule_outgoing_ack(msg_dltime, prim.carrier_num, prim.main_address, ns);
         }
 
         // if nr is present, we have received an ACK on a previous message
@@ -827,7 +847,7 @@ impl Llc {
                         timeslots,
                         alloc_type: ChanAllocType::Replace,
                         ul_dl_assigned: UlDlAssignment::Both,
-                        carrier: None,
+                        carrier: Some(ack.carrier_num),
                     })
                 }
                 false => None,
@@ -837,6 +857,7 @@ impl Llc {
                 src: TetraEntity::Llc,
                 dest: TetraEntity::Umac,
                 msg: SapMsgInner::TmaUnitdataReq(TmaUnitdataReq {
+                    carrier_num: Some(ack.carrier_num),
                     req_handle: 0, // TODO FIXME
                     pdu: pdu_buf,
                     main_address: ack.addr,

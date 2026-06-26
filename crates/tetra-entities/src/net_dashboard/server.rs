@@ -812,6 +812,7 @@ impl DashboardServer {
                     call_id,
                     gssi,
                     caller_issi,
+                    carrier_num: _,
                     ts,
                     priority,
                     source,
@@ -874,12 +875,33 @@ impl DashboardServer {
                     }
                     s.push_last_heard(*speaker_issi, "call_group", *gssi, source, Some(*call_id));
                 }
+                TelemetryEvent::CallSpeakerChanged {
+                    call_id,
+                    is_group,
+                    dest_addr,
+                    speaker_issi,
+                    carrier_num: _,
+                    ts: _,
+                } => {
+                    if let Some(c) = s.calls.get_mut(call_id) {
+                        c.speaker_issi = Some(*speaker_issi);
+                    }
+                    let activity = if *is_group { "call_group" } else { "call_individual" };
+                    if *is_group && let Some(e) = s.ms_map.get_mut(speaker_issi) {
+                        e.selected_group = Some(*dest_addr);
+                    }
+                    let source = "local".to_string();
+                    s.push_last_heard(*speaker_issi, activity, *dest_addr, &source, Some(*call_id));
+                }
                 TelemetryEvent::IndividualCallStarted {
                     call_id,
                     calling_issi,
                     called_issi,
                     simplex,
+                    carrier_num: _,
                     ts,
+                    peer_carrier_num: _,
+                    peer_ts: _,
                     priority,
                     source,
                 } => {
@@ -1132,7 +1154,7 @@ impl DashboardServer {
             self.broadcast(&json);
         }
         // TsVoiceActivity: rate-limit broadcasts to max 4/sec per TS (250ms cooldown)
-        if let TelemetryEvent::TsVoiceActivity { ts } = &event {
+        if let TelemetryEvent::TsVoiceActivity { ts, .. } = &event {
             let idx = (ts.saturating_sub(1) as usize).min(3);
             let now = std::time::Instant::now();
             if let Ok(mut arr) = self.ts_last_broadcast.try_lock() {
@@ -1182,11 +1204,12 @@ fn event_to_ws_msg(event: &TelemetryEvent) -> Option<String> {
             call_id,
             gssi,
             caller_issi,
+            carrier_num,
             ts,
             priority,
             source,
         } => {
-            serde_json::json!({"type":"call_started","call_id":call_id,"call_type":"group","gssi":gssi,"caller_issi":caller_issi,"ts":ts,"priority":priority,"source":source,"last_heard":{"issi":caller_issi,"activity":"call_group","dest":gssi,"source":source,"call_id":call_id}})
+            serde_json::json!({"type":"call_started","call_id":call_id,"call_type":"group","gssi":gssi,"caller_issi":caller_issi,"carrier_num":carrier_num,"ts":ts,"priority":priority,"source":source,"last_heard":{"issi":caller_issi,"activity":"call_group","dest":gssi,"source":source,"call_id":call_id}})
         }
         TelemetryEvent::GroupCallEnded { call_id, gssi: _ } => serde_json::json!({"type":"call_ended","call_id":call_id}),
         TelemetryEvent::GroupCallSpeakerChanged {
@@ -1197,16 +1220,30 @@ fn event_to_ws_msg(event: &TelemetryEvent) -> Option<String> {
         } => {
             serde_json::json!({"type":"speaker_changed","call_id":call_id,"speaker_issi":speaker_issi,"source":source,"last_heard":{"issi":speaker_issi,"activity":"call_group","dest":gssi,"source":source,"call_id":call_id}})
         }
+        TelemetryEvent::CallSpeakerChanged {
+            call_id,
+            is_group,
+            dest_addr,
+            speaker_issi,
+            carrier_num,
+            ts,
+        } => {
+            let activity = if *is_group { "call_group" } else { "call_individual" };
+            serde_json::json!({"type":"speaker_changed","call_id":call_id,"speaker_issi":speaker_issi,"carrier_num":carrier_num,"ts":ts,"source":"local","last_heard":{"issi":speaker_issi,"activity":activity,"dest":dest_addr,"source":"local","call_id":call_id}})
+        }
         TelemetryEvent::IndividualCallStarted {
             call_id,
             calling_issi,
             called_issi,
             simplex,
+            carrier_num,
             ts,
+            peer_carrier_num,
+            peer_ts,
             priority,
             source,
         } => {
-            serde_json::json!({"type":"call_started","call_id":call_id,"call_type":"individual","caller_issi":calling_issi,"called_issi":called_issi,"simplex":simplex,"ts":ts,"priority":priority,"source":source,"last_heard":{"issi":calling_issi,"activity":"call_individual","dest":called_issi,"source":source,"call_id":call_id}})
+            serde_json::json!({"type":"call_started","call_id":call_id,"call_type":"individual","caller_issi":calling_issi,"called_issi":called_issi,"simplex":simplex,"carrier_num":carrier_num,"ts":ts,"peer_carrier_num":peer_carrier_num,"peer_ts":peer_ts,"priority":priority,"source":source,"last_heard":{"issi":calling_issi,"activity":"call_individual","dest":called_issi,"source":source,"call_id":call_id}})
         }
         TelemetryEvent::IndividualCallEnded { call_id } => serde_json::json!({"type":"call_ended","call_id":call_id}),
         TelemetryEvent::BrewConnected { connected, server_version } => {
@@ -1229,7 +1266,11 @@ fn event_to_ws_msg(event: &TelemetryEvent) -> Option<String> {
         } => {
             serde_json::json!({"type":"sds_log","direction":direction,"source_issi":source_issi,"dest_issi":dest_issi,"is_group":is_group,"protocol_id":protocol_id,"text":text})
         }
-        TelemetryEvent::TsVoiceActivity { ts } => serde_json::json!({"type":"ts_voice","ts":ts}),
+        TelemetryEvent::TsVoiceActivity {
+            carrier_num,
+            ts,
+            speaker_issi,
+        } => serde_json::json!({"type":"ts_voice","carrier_num":carrier_num,"ts":ts,"speaker_issi":speaker_issi}),
         TelemetryEvent::TxVisual {
             sample_rate,
             center_freq_hz,

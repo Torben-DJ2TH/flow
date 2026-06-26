@@ -213,7 +213,7 @@ impl CcBsSubentity {
         call_id: u16,
         sender: TetraAddress,
     ) -> Result<(), GroupTransitionError> {
-        let (ts, queued_request, brew_notification) = {
+        let (ts, carrier_num, queued_request, brew_notification) = {
             let Some(call) = self.active_calls.get_mut(&call_id) else {
                 return Err(GroupTransitionError::UnknownCall(call_id));
             };
