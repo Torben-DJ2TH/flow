@@ -558,7 +558,7 @@ impl CcBsSubentity {
             proprietary: None,
         };
 
-        tracing::info!("-> {:?}", d_connect);
+        tracing::debug!("-> {:?}", d_connect);
         let mut connect_sdu = BitBuffer::new_autoexpand(30);
         d_connect.to_bitbuf(&mut connect_sdu).expect("Failed to serialize DConnect");
         connect_sdu.seek(0);
@@ -608,7 +608,7 @@ impl CcBsSubentity {
             proprietary: None,
         };
 
-        tracing::info!("-> {:?}", d_connect_ack);
+        tracing::debug!("-> {:?}", d_connect_ack);
         let mut ack_sdu = BitBuffer::new_autoexpand(28);
         d_connect_ack
             .to_bitbuf(&mut ack_sdu)

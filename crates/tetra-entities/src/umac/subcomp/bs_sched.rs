@@ -232,7 +232,7 @@ impl BsChannelScheduler {
             self.dl_drop_all_except_stolen(ts);
         }
 
-        tracing::info!(
+        tracing::debug!(
             "BsChannelScheduler: hangtime {} for ts {}",
             if active { "ENABLED" } else { "DISABLED" },
             ts,
@@ -798,7 +798,7 @@ impl BsChannelScheduler {
     /// Enqueue a pre-built STCH block for FACCH/stealing on a traffic timeslot.
     /// The block must be 124 type1 bits containing MAC-U-SIGNAL header + TM-SDU.
     pub fn dl_enqueue_stealing(&mut self, ts: u8, block: BitBuffer, tx_reporter: Option<TxReporter>) {
-        tracing::info!("dl_enqueue_stealing: ts {} enqueueing STCH block ({} bits)", ts, block.get_len());
+        tracing::trace!("dl_enqueue_stealing: ts {} enqueueing STCH block ({} bits)", ts, block.get_len());
         self.dltx_queues[ts as usize - 1].push(DlSchedElem::Stealing(block, tx_reporter));
     }
 
@@ -1344,7 +1344,7 @@ impl BsChannelScheduler {
             let (tch_buf, stch_opt) = self.dl_build_traffic_block(ts);
 
             if let Some(stch_buf) = stch_opt {
-                tracing::info!(
+                tracing::trace!(
                     "finalize_ts_for_tick: FACCH stealing on ts {} (stch={} bits, tch={} bits)",
                     ts.t,
                     stch_buf.get_len(),

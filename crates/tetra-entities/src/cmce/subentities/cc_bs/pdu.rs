@@ -213,7 +213,7 @@ impl CcBsSubentity {
             facility: None,
             proprietary: None,
         };
-        tracing::info!("-> {:?}", pdu);
+        tracing::debug!("-> {:?}", pdu);
 
         let mut sdu = BitBuffer::new_autoexpand(32);
         pdu.to_bitbuf(&mut sdu).expect("Failed to serialize DRelease");
@@ -233,7 +233,7 @@ impl CcBsSubentity {
             facility: None,
             proprietary: None,
         };
-        tracing::info!("-> {:?}", pdu);
+        tracing::debug!("-> {:?}", pdu);
 
         let mut sdu = BitBuffer::new_autoexpand(32);
         pdu.to_bitbuf(&mut sdu).expect("Failed to serialize DDisconnect");
@@ -265,7 +265,7 @@ impl CcBsSubentity {
             dm_ms_address: None,
             proprietary: None,
         };
-        tracing::info!("-> {:?}", pdu);
+        tracing::debug!("-> {:?}", pdu);
 
         let mut sdu = BitBuffer::new_autoexpand(48);
         pdu.to_bitbuf(&mut sdu).expect("Failed to serialize DCallRestore");
@@ -293,7 +293,7 @@ impl CcBsSubentity {
             poll_response_addresses: None,
             proprietary: None,
         };
-        tracing::info!("-> {:?}", pdu);
+        tracing::debug!("-> {:?}", pdu);
 
         let mut sdu = BitBuffer::new_autoexpand(64);
         pdu.to_bitbuf(&mut sdu).expect("Failed to serialize DInfo");
@@ -614,7 +614,7 @@ impl CcBsSubentity {
             proprietary: None,
         };
 
-        tracing::info!("-> {:?}", d_alert);
+        tracing::debug!("-> {:?}", d_alert);
         let mut sdu = BitBuffer::new_autoexpand(32);
         d_alert.to_bitbuf(&mut sdu).expect("Failed to serialize DAlert");
         sdu.seek(0);

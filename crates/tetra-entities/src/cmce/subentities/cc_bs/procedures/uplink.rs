@@ -1023,7 +1023,7 @@ impl CcBsSubentity {
             facility: None,
             proprietary: None,
         };
-        tracing::info!("-> {:?} (to ISSI {})", d_release, sender.ssi);
+        tracing::debug!("-> {:?} (to ISSI {})", d_release, sender.ssi);
 
         let mut sdu = BitBuffer::new_autoexpand(32);
         d_release.to_bitbuf(&mut sdu).expect("Failed to serialize DRelease");

@@ -1934,7 +1934,7 @@ impl UmacBs {
                     return;
                 }
             }
-            tracing::info!(
+            tracing::debug!(
                 "  rx_control_circuit_close: Deferred {:?} circuit close for carrier={} ts {}",
                 dir,
                 carrier_num,
@@ -1962,7 +1962,7 @@ impl UmacBs {
                     if d == Direction::Ul && (1..=4).contains(&ts) {
                         self.last_ul_voice.remove(&(carrier_num, ts));
                     }
-                    tracing::info!(
+                    tracing::debug!(
                         "  rx_control_circuit_close: Closed {:?} circuit for carrier={} ts {}",
                         d,
                         carrier_num,
