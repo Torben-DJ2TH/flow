@@ -33,6 +33,7 @@ pub struct PhyBs<D: RxTxDev> {
     rxtxdev: D,
 
     tick: u64,
+    rxtx_error_count: u64,
 }
 
 impl<D: RxTxDev> PhyBs<D> {
@@ -68,6 +69,7 @@ impl<D: RxTxDev> PhyBs<D> {
             ul_input_file,
             rxtxdev,
             tick: 0,
+            rxtx_error_count: 0,
         }
     }
 
@@ -264,7 +266,32 @@ impl<D: RxTxDev> PhyBs<D> {
             }
         }
 
-        let rx = self.rxtxdev.rxtx_timeslot(&tx_slots).expect("Got error from rxtx_timeslot");
+        let rx = match self.rxtxdev.rxtx_timeslot(&tx_slots) {
+            Ok(rx) => {
+                if self.rxtx_error_count != 0 {
+                    let skipped = self.rxtx_error_count;
+                    self.rxtx_error_count = 0;
+                    tracing::info!(
+                        ts=%self.dltime,
+                        skipped,
+                        "PHY: rxtx_timeslot recovered after SDR read errors"
+                    );
+                }
+                rx
+            }
+            Err(err) => {
+                self.rxtx_error_count = self.rxtx_error_count.saturating_add(1);
+                if self.rxtx_error_count <= 5 || self.rxtx_error_count % 100 == 0 {
+                    tracing::warn!(
+                        ts=%self.dltime,
+                        consecutive_errors=self.rxtx_error_count,
+                        error=?err,
+                        "PHY: rxtx_timeslot failed; dropping this TDMA slot instead of stopping FlowStation"
+                    );
+                }
+                return;
+            }
+        };
 
         for rx_slot in rx {
             if let Some(rx_slot) = rx_slot {
