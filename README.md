@@ -23,6 +23,8 @@ Built in Rust on top of [tetra-bluestation](https://github.com/MidnightBlueLabs/
 
 **Tested hardware:** LimeSDR Mini 2.0 · Motorola MXP600 · Motorola MTM800E · Motorola MTM5400
 
+The current protocol audit and estimated implementation work packages are tracked in [PROTOCOL_AUDIT_PRIORITIES.md](PROTOCOL_AUDIT_PRIORITIES.md).
+
 ---
 
 ## Features
