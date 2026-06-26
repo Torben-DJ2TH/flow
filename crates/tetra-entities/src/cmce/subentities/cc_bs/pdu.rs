@@ -469,7 +469,7 @@ impl CcBsSubentity {
         }
     }
 
-    pub fn handle_subscriber_update(&mut self, queue: &mut MessageQueue, update: MmSubscriberUpdate) {
+    pub fn handle_subscriber_update(&mut self, queue: &mut MessageQueue, source: TetraEntity, update: MmSubscriberUpdate) {
         let issi = update.issi;
         let groups = update.groups;
 
@@ -477,7 +477,7 @@ impl CcBsSubentity {
             BrewSubscriberAction::Register => {
                 let known = self.subscriber_groups.contains_key(&issi);
                 self.subscriber_groups.entry(issi).or_insert_with(HashSet::new);
-                tracing::debug!("CMCE: subscriber register issi={} known={}", issi, known);
+                tracing::debug!("CMCE: subscriber register issi={} known={} source={:?}", issi, known, source);
             }
             BrewSubscriberAction::Deregister => {
                 if let Some(existing) = self.subscriber_groups.remove(&issi) {
@@ -486,9 +486,12 @@ impl CcBsSubentity {
                         self.clear_recent_deaffiliation(issi, gssi);
                         self.drop_group_calls_if_unlistened(queue, gssi);
                     }
+                    self.recent_deaffiliations.retain(|(grace_issi, _), _| *grace_issi != issi);
+                    tracing::debug!("CMCE: subscriber deregister issi={} source={:?}", issi, source);
+                } else {
+                    self.recent_deaffiliations.retain(|(grace_issi, _), _| *grace_issi != issi);
+                    tracing::trace!("CMCE: subscriber deregister ignored unknown issi={} source={:?}", issi, source);
                 }
-                self.recent_deaffiliations.retain(|(grace_issi, _), _| *grace_issi != issi);
-                tracing::debug!("CMCE: subscriber deregister issi={}", issi);
             }
             BrewSubscriberAction::Affiliate => {
                 let mut new_groups = Vec::new();
@@ -1360,6 +1363,7 @@ mod tests {
     use super::CcBsSubentity;
     use crate::MessageQueue;
     use tetra_config::bluestation::SharedConfig;
+    use tetra_core::tetra_entities::TetraEntity;
     use tetra_saps::control::brew::{BrewSubscriberAction, MmSubscriberUpdate};
 
     fn test_cfg() -> SharedConfig {
@@ -1387,6 +1391,16 @@ location_area = 1
         MmSubscriberUpdate { issi, groups, action }
     }
 
+    fn handle_brew_subscriber_update(
+        cc: &mut CcBsSubentity,
+        queue: &mut MessageQueue,
+        issi: u32,
+        groups: Vec<u32>,
+        action: BrewSubscriberAction,
+    ) {
+        cc.handle_subscriber_update(queue, TetraEntity::Brew, subscriber_update(issi, groups, action));
+    }
+
     #[test]
     fn external_subscriber_number_supports_24_digits() {
         let number = "123456789012345678901234";
@@ -1409,14 +1423,11 @@ location_area = 1
         let mut cc = CcBsSubentity::new(test_cfg());
         let mut queue = MessageQueue::new();
 
-        cc.handle_subscriber_update(&mut queue, subscriber_update(2635411, Vec::new(), BrewSubscriberAction::Register));
-        cc.handle_subscriber_update(&mut queue, subscriber_update(2635411, vec![26225], BrewSubscriberAction::Affiliate));
+        handle_brew_subscriber_update(&mut cc, &mut queue, 2635411, Vec::new(), BrewSubscriberAction::Register);
+        handle_brew_subscriber_update(&mut cc, &mut queue, 2635411, vec![26225], BrewSubscriberAction::Affiliate);
         assert!(cc.has_listener(26225));
 
-        cc.handle_subscriber_update(
-            &mut queue,
-            subscriber_update(2635411, vec![26225], BrewSubscriberAction::Deaffiliate),
-        );
+        handle_brew_subscriber_update(&mut cc, &mut queue, 2635411, vec![26225], BrewSubscriberAction::Deaffiliate);
         assert_eq!(cc.group_listener_count(26225), 0);
         assert!(cc.has_listener(26225));
 
@@ -1430,13 +1441,10 @@ location_area = 1
         let mut cc = CcBsSubentity::new(test_cfg());
         let mut queue = MessageQueue::new();
 
-        cc.handle_subscriber_update(&mut queue, subscriber_update(2635411, Vec::new(), BrewSubscriberAction::Register));
-        cc.handle_subscriber_update(&mut queue, subscriber_update(2635411, vec![26225], BrewSubscriberAction::Affiliate));
-        cc.handle_subscriber_update(
-            &mut queue,
-            subscriber_update(2635411, vec![26225], BrewSubscriberAction::Deaffiliate),
-        );
-        cc.handle_subscriber_update(&mut queue, subscriber_update(2635411, vec![26225], BrewSubscriberAction::Affiliate));
+        handle_brew_subscriber_update(&mut cc, &mut queue, 2635411, Vec::new(), BrewSubscriberAction::Register);
+        handle_brew_subscriber_update(&mut cc, &mut queue, 2635411, vec![26225], BrewSubscriberAction::Affiliate);
+        handle_brew_subscriber_update(&mut cc, &mut queue, 2635411, vec![26225], BrewSubscriberAction::Deaffiliate);
+        handle_brew_subscriber_update(&mut cc, &mut queue, 2635411, vec![26225], BrewSubscriberAction::Affiliate);
 
         assert_eq!(cc.group_listener_count(26225), 1);
         assert!(cc.recent_deaffiliations.is_empty());

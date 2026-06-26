@@ -846,7 +846,7 @@ impl BrewEntity {
     fn external_subscriber_allowed(&self, issi: u32, action_label: &str) -> bool {
         if !super::is_brew_external_subscriber_allowed_for_entity(&self.config, self.entity, issi) {
             tracing::debug!(
-                "[{}] BrewEntity: external subscriber issi={} -> {} ignored (local SSI range)",
+                "[{}] BrewEntity: external subscriber issi={} -> {} ignored (local/reserved SSI)",
                 self.log_label(),
                 issi,
                 action_label
