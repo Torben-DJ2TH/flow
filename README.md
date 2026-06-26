@@ -23,6 +23,8 @@ Built in Rust on top of [tetra-bluestation](https://github.com/MidnightBlueLabs/
 
 **Tested hardware:** LimeSDR Mini 2.0 · Motorola MXP600 · Motorola MTM800E · Motorola MTM5400
 
+The current protocol audit and estimated implementation work packages are tracked in [PROTOCOL_AUDIT_PRIORITIES.md](PROTOCOL_AUDIT_PRIORITIES.md).
+
 ---
 
 ## Features
@@ -697,6 +699,8 @@ allowed_node_ids = []
 auto_connect = ""
 reconnect_interval_secs = 30
 max_session_secs = 3600
+telegram_session_alerts = false # optional connect/disconnect alerts via [telegram_alerts]
+telegram_session_prefix = "EchoLink"
 
 default_tetra_source_issi = 9999
 default_tetra_dest_issi = 26225
@@ -704,7 +708,9 @@ default_tetra_dest_is_group = true  # EchoLink inbound uses simplex/P2MP group c
 ```
 
 The EchoLink dashboard page shows directory status, station count, QSO status,
-current route, last TX/error, and the downloaded directory list.
+current route, last TX/error, and the downloaded directory list. Optional
+Telegram session alerts report the remote callsign, connection state, and
+configured TETRA route through the existing `[telegram_alerts]` bot and chats.
 Inbound EchoLink audio is bridged into TETRA as a simplex P2MP group call, so
 `default_tetra_dest_is_group` should be enabled and `default_tetra_dest_issi`
 should be a GSSI. TETRA-originated EchoLink service-number calls are signalled

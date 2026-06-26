@@ -3237,6 +3237,7 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
           <div class="info-grid" style="margin-bottom:14px">
             <div class="info-row"><div class="info-key">Callsign</div><div class="info-val" id="el-status-callsign">—</div></div>
             <div class="info-row"><div class="info-key">TETRA route</div><div class="info-val" id="el-route">—</div></div>
+            <div class="info-row"><div class="info-key">Last event</div><div class="info-val" id="el-last-rx">—</div></div>
             <div class="info-row"><div class="info-key">Last TX</div><div class="info-val" id="el-last-tx">—</div></div>
             <div class="info-row"><div class="info-key">Last error</div><div class="info-val" id="el-last-error">—</div></div>
           </div>
@@ -3316,6 +3317,10 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
                   <input type="number" id="el-reconnect" class="form-input" min="1" placeholder="30">
                   <input type="number" id="el-max-session" class="form-input" min="1" placeholder="3600">
                 </div>
+                <label style="color:var(--muted);font-size:13px">Telegram session alerts</label>
+                <label style="display:flex;align-items:center;gap:10px"><span class="sw"><input type="checkbox" id="el-telegram-session-alerts"><i></i></span><span style="color:var(--muted);font-size:12px">connect and disconnect</span></label>
+                <label style="color:var(--muted);font-size:13px">Telegram prefix</label>
+                <input type="text" id="el-telegram-session-prefix" class="form-input" placeholder="EchoLink">
               </div>
             </div>
           </div>
@@ -7257,12 +7262,15 @@ async function loadEcholink(){
     dapSet('el-auto-connect',d.auto_connect||'');
     dapSet('el-reconnect',d.reconnect_interval_secs||30);
     dapSet('el-max-session',d.max_session_secs||3600);
+    dapCheck('el-telegram-session-alerts',d.telegram_session_alerts);
+    dapSet('el-telegram-session-prefix',d.telegram_session_prefix||'EchoLink');
     dapSet('el-directory',rt.directory_status||'—');
     dapSet('el-qso',rt.qso_status||'—');
     dapSet('el-bind',rt.bind||'—');
     dapSet('el-target',rt.connected_target||'idle');
     dapSet('el-status-callsign',rt.callsign||d.callsign||'—');
     dapSet('el-route',rt.routed_tetra_dest||'not routed');
+    dapSet('el-last-rx',rt.last_session_event||'—');
     dapSet('el-last-tx',rt.last_tx||'—');
     dapSet('el-last-error',rt.last_error||'—');
     setElMsg('',true);
@@ -7297,7 +7305,9 @@ async function saveEcholink(){
     allowed_node_ids:allowedNodes,
     auto_connect:dapVal('el-auto-connect').toUpperCase(),
     reconnect_interval_secs:dapNum('el-reconnect',30,1,86400),
-    max_session_secs:dapNum('el-max-session',3600,1,86400)
+    max_session_secs:dapNum('el-max-session',3600,1,86400),
+    telegram_session_alerts:document.getElementById('el-telegram-session-alerts').checked,
+    telegram_session_prefix:dapVal('el-telegram-session-prefix')||'EchoLink'
   };
   if(echolinkPasswordDirty)body.password=dapVal('el-password');
   try{

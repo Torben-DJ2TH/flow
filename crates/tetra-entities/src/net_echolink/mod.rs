@@ -20,6 +20,7 @@ use tetra_saps::{
 };
 use uuid::Uuid;
 
+use crate::net_telegram::TelegramAlertSink;
 use crate::{MessageQueue, TetraEntityTrait};
 
 use self::audio::{ECHOLINK_GSM_FRAME_BYTES, ECHOLINK_GSM_PACKET_BYTES, EcholinkAudioTranscoder};
@@ -125,10 +126,12 @@ pub struct EcholinkEntity {
     last_rx: Option<String>,
     last_tx: Option<String>,
     last_error: Option<String>,
+    last_session_event: Option<String>,
+    telegram_sink: Option<TelegramAlertSink>,
 }
 
 impl EcholinkEntity {
-    pub fn new(config: SharedConfig, cmd_rx: EcholinkCmdReceiver) -> Self {
+    pub fn new(config: SharedConfig, cmd_rx: EcholinkCmdReceiver, telegram_sink: Option<TelegramAlertSink>) -> Self {
         let (directory_event_tx, directory_event_rx) = crossbeam_channel::unbounded();
         let mut entity = Self {
             config,
@@ -151,6 +154,8 @@ impl EcholinkEntity {
             last_rx: None,
             last_tx: None,
             last_error: None,
+            last_session_event: None,
+            telegram_sink,
         };
         entity.refresh_status();
         entity
@@ -203,6 +208,7 @@ impl EcholinkEntity {
             callsign: cfg.callsign.clone(),
             connected_target: connected,
             routed_tetra_dest: route_label(&cfg),
+            last_session_event: self.last_session_event.clone(),
             last_rx: self.last_rx.clone(),
             last_tx: self.last_tx.clone(),
             last_error: self.last_error.clone(),
@@ -480,9 +486,12 @@ impl EcholinkEntity {
             dialog.remote_floor_ready = false;
             dialog.remote_floor_since = None;
             dialog.last_audio_rx = None;
-            (dialog.uuid, dialog.remote_call.clone(), dialog.media_ready)
+            (dialog.uuid.take(), dialog.remote_call.clone(), dialog.media_ready.take())
         };
 
+        if let Some((_, carrier_num, ts)) = media_ready {
+            self.dialog_by_slot.remove(&(carrier_num, ts));
+        }
         if let Some(uuid) = uuid {
             self.send_group_end_to_cmce(queue, uuid);
             if let Some((call_id, carrier_num, ts)) = media_ready {
@@ -551,6 +560,12 @@ impl EcholinkEntity {
             }
         };
 
+        let notify_connected = matches!(
+            &action,
+            ConnectAction::ConfirmTetraOriginated(_, _) | ConnectAction::StartGroupLeg { .. }
+        );
+        let connected_remote = self.dialogs.get(idx).map(|dialog| dialog.remote_call.clone()).unwrap_or_default();
+
         match action {
             ConnectAction::ConfirmTetraOriginated(uuid, call) => {
                 self.send_alert(queue, uuid);
@@ -585,6 +600,10 @@ impl EcholinkEntity {
                 self.release_dialog_idx(queue, idx, false, true);
             }
             ConnectAction::None => {}
+        }
+        if notify_connected && !connected_remote.is_empty() {
+            self.last_session_event = Some(format!("connected {}", connected_remote));
+            self.notify_session(cfg, &connected_remote, true);
         }
     }
 
@@ -633,6 +652,7 @@ impl EcholinkEntity {
         let (remote_call, media_ready) = {
             let dialog = &mut self.dialogs[idx];
             let media_ready = dialog.media_ready.take();
+            dialog.uuid = None;
             dialog.remote_floor_active = false;
             dialog.remote_floor_ready = false;
             dialog.remote_floor_since = None;
@@ -658,6 +678,7 @@ impl EcholinkEntity {
         }
         let remote_call = self.dialogs[idx].remote_call.clone();
         let remote_control = self.dialogs[idx].remote_control;
+        let was_connected = self.dialogs[idx].state == QsoState::Connected;
         if send_bye {
             self.send_bye_idx(idx);
         }
@@ -678,6 +699,11 @@ impl EcholinkEntity {
         }
         self.dialogs.remove(idx);
         self.rebuild_ts_index();
+        if was_connected {
+            let cfg = self.effective();
+            self.notify_session(&cfg, &remote_call, false);
+            self.last_session_event = Some(format!("disconnected {} from {}", remote_call, remote_control));
+        }
         tracing::info!(
             "EchoLink: session closed remote={} control={} from_cmce={} bye_sent={}",
             remote_call,
@@ -1020,7 +1046,28 @@ impl EcholinkEntity {
             SocketAddr::new(remote_control.ip(), cfg.audio_port),
             cfg.default_tetra_dest_issi
         );
+        self.last_session_event = Some(format!("connected {} from {}", remote_call, remote_control));
+        self.notify_session(cfg, &remote_call, true);
         self.request_group_floor_idx(queue, cfg, idx, "inbound simplex/P2MP QSO");
+    }
+
+    fn notify_session(&self, cfg: &CfgEcholink, remote_call: &str, connected: bool) {
+        if !cfg.telegram_session_alerts {
+            return;
+        }
+        let Some(sink) = &self.telegram_sink else {
+            tracing::debug!(
+                "EchoLink: Telegram session alert skipped for remote={} because Telegram is not configured",
+                remote_call
+            );
+            return;
+        };
+        sink.send_echolink_session(
+            cfg.telegram_session_prefix.clone(),
+            remote_call.to_string(),
+            connected,
+            route_label(cfg).unwrap_or_else(|| "not routed".to_string()),
+        );
     }
 
     fn send_sdes_idx(&mut self, idx: usize, cfg: &CfgEcholink) {

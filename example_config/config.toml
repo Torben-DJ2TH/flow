@@ -639,6 +639,44 @@ voice_service = true
 
 ###############################################################################
 
+# OPTIONAL: EchoLink simplex/P2MP bridge
+#
+# Requires libgsm1-dev at build time. Session alerts reuse the existing
+# [telegram_alerts] bot and chat configuration.
+#
+# [echolink]
+# enabled = false
+# callsign = ""
+# password = ""
+# location = "FlowStation"
+# status_text = "FlowStation EchoLink bridge"
+# directory_servers = ["servers.echolink.org", "backup.echolink.org"]
+# directory_port = 5200
+# bind_addr = "0.0.0.0"
+# audio_port = 5198
+# control_port = 5199
+#
+# inbound_enabled = true
+# outbound_enabled = true
+# outbound_prefix = "92"
+# strip_outbound_prefix = true
+# service_numbers = ["700"]
+# routes = { "700" = "ECHOTEST" }
+# allowed_callsigns = []
+# allowed_node_ids = []
+# auto_connect = ""
+# reconnect_interval_secs = 30
+# max_session_secs = 3600
+#
+# default_tetra_source_issi = 9999
+# default_tetra_dest_issi = 0
+# default_tetra_dest_is_group = true
+#
+# telegram_session_alerts = false
+# telegram_session_prefix = "EchoLink"
+
+###############################################################################
+
 # OPTIONAL: MeshCom external UDP bridge
 #
 # FlowStation can listen for MeshCom extUDP JSON packets (msg/pos/tele) and send

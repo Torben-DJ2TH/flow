@@ -538,6 +538,8 @@ allowed_node_ids = [9999]
 auto_connect = ""
 reconnect_interval_secs = 30
 max_session_secs = 3600
+telegram_session_alerts = true
+telegram_session_prefix = "EchoLink QSO"
 
 [meshcom]
 enabled = true
@@ -665,6 +667,8 @@ sds_queue_critical = 128
         assert_eq!(cfg.echolink.routes.get("700"), Some(&"ECHOTEST".to_string()));
         assert_eq!(cfg.echolink.default_tetra_dest_issi, 80);
         assert!(!cfg.echolink.default_tetra_dest_is_group);
+        assert!(cfg.echolink.telegram_session_alerts);
+        assert_eq!(cfg.echolink.telegram_session_prefix, "EchoLink QSO");
     }
 
     fn minimal_toml(extra_cell: &str) -> String {
