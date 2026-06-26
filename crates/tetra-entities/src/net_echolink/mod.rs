@@ -1,4 +1,4 @@
-//! EchoLink UDP/GSM bridge for circuit-switched individual calls.
+//! EchoLink UDP/GSM bridge for simplex P2MP voice calls.
 
 mod audio;
 
@@ -15,6 +15,7 @@ use tetra_pdus::cmce::enums::call_timeout::CallTimeout;
 use tetra_saps::{
     SapMsg, SapMsgInner,
     control::call_control::{CallControl, NetworkCircuitCall},
+    control::enums::communication_type::CommunicationType,
     tmd::{TmdCircuitDataInd, TmdCircuitDataReq},
 };
 use uuid::Uuid;
@@ -36,6 +37,8 @@ const ECHOLINK_RTP_GSM_PT: u8 = 0x03;
 const ECHOLINK_RTP_HEADER: usize = 12;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
+const AUDIO_RX_ACTIVITY_TIMEOUT: Duration = Duration::from_millis(350);
+const AUDIO_RX_SETUP_TIMEOUT: Duration = Duration::from_secs(1);
 const DIRECTORY_TIMEOUT: Duration = Duration::from_secs(3);
 const DIRECTORY_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const DIRECTORY_DESCRIPTION_MAX_CHARS: usize = 27;
@@ -84,6 +87,9 @@ struct EcholinkDialog {
     state: QsoState,
     audio: EcholinkAudioTranscoder,
     media_ready: Option<(u16, u16, u8)>,
+    remote_floor_active: bool,
+    remote_floor_ready: bool,
+    remote_floor_since: Option<Instant>,
     seq: u16,
     inbound: bool,
     started: Instant,
@@ -277,6 +283,9 @@ impl EcholinkEntity {
                                 state: QsoState::Connecting,
                                 audio,
                                 media_ready: None,
+                                remote_floor_active: false,
+                                remote_floor_ready: false,
+                                remote_floor_since: None,
                                 seq: 1,
                                 inbound: false,
                                 started: Instant::now(),
@@ -305,6 +314,7 @@ impl EcholinkEntity {
             self.reject_setup(queue, brew_uuid, 34);
             return;
         }
+        let call = echolink_simplex_p2mp_call(call);
         let target = normalize_echolink_target(&call.number);
         if target.is_empty() {
             self.set_error(format!("empty EchoLink target for uuid={}", brew_uuid));
@@ -341,6 +351,9 @@ impl EcholinkEntity {
             state: QsoState::Connecting,
             audio,
             media_ready: None,
+            remote_floor_active: false,
+            remote_floor_ready: false,
+            remote_floor_since: None,
             seq: 1,
             inbound: false,
             started: Instant::now(),
@@ -391,10 +404,117 @@ impl EcholinkEntity {
         });
     }
 
+    fn send_group_end_to_cmce(&self, queue: &mut MessageQueue, brew_uuid: Uuid) {
+        queue.push_back(SapMsg {
+            sap: Sap::Control,
+            src: TetraEntity::Echolink,
+            dest: TetraEntity::Cmce,
+            msg: SapMsgInner::CmceCallControl(CallControl::NetworkCallEnd { brew_uuid }),
+        });
+    }
+
+    fn request_group_floor_idx(&mut self, queue: &mut MessageQueue, cfg: &CfgEcholink, idx: usize, reason: &str) -> bool {
+        if idx >= self.dialogs.len() {
+            return false;
+        }
+        if !cfg.inbound_enabled || cfg.default_tetra_dest_issi == 0 {
+            self.set_error("EchoLink received audio but no inbound TETRA route is configured");
+            return false;
+        }
+        if !cfg.default_tetra_dest_is_group {
+            self.set_error("EchoLink received audio but simplex/P2MP requires default_tetra_dest_is_group=true");
+            return false;
+        }
+        if self.dialogs[idx].call.is_some() {
+            return false;
+        }
+
+        let now = Instant::now();
+        let (uuid, remote_call, remote_audio, remote_control) = {
+            let dialog = &mut self.dialogs[idx];
+            if dialog.remote_floor_active {
+                return true;
+            }
+            let uuid = dialog.uuid.unwrap_or_else(Uuid::new_v4);
+            dialog.uuid = Some(uuid);
+            dialog.remote_floor_active = true;
+            dialog.remote_floor_ready = false;
+            dialog.remote_floor_since = Some(now);
+            (uuid, dialog.remote_call.clone(), dialog.remote_audio, dialog.remote_control)
+        };
+
+        queue.push_back(SapMsg {
+            sap: Sap::Control,
+            src: TetraEntity::Echolink,
+            dest: TetraEntity::Cmce,
+            msg: SapMsgInner::CmceCallControl(CallControl::NetworkCallStart {
+                brew_uuid: uuid,
+                source_issi: cfg.default_tetra_source_issi,
+                dest_gssi: cfg.default_tetra_dest_issi,
+                priority: 0,
+            }),
+        });
+        tracing::info!(
+            "EchoLink: {} remote={} audio={} control={} -> GSSI {} source={} uuid={}",
+            reason,
+            remote_call,
+            remote_audio,
+            remote_control,
+            cfg.default_tetra_dest_issi,
+            cfg.default_tetra_source_issi,
+            uuid
+        );
+        true
+    }
+
+    fn release_remote_floor_idx(&mut self, queue: &mut MessageQueue, idx: usize, reason: &str) {
+        if idx >= self.dialogs.len() {
+            return;
+        }
+        let (uuid, remote_call, media_ready) = {
+            let dialog = &mut self.dialogs[idx];
+            if dialog.call.is_some() || !dialog.remote_floor_active {
+                return;
+            }
+            dialog.remote_floor_active = false;
+            dialog.remote_floor_ready = false;
+            dialog.remote_floor_since = None;
+            dialog.last_audio_rx = None;
+            (dialog.uuid, dialog.remote_call.clone(), dialog.media_ready)
+        };
+
+        if let Some(uuid) = uuid {
+            self.send_group_end_to_cmce(queue, uuid);
+            if let Some((call_id, carrier_num, ts)) = media_ready {
+                tracing::info!(
+                    "EchoLink: {} remote={} -> releasing TETRA floor uuid={} call_id={} carrier={} ts={}",
+                    reason,
+                    remote_call,
+                    uuid,
+                    call_id,
+                    carrier_num,
+                    ts
+                );
+            } else {
+                tracing::info!(
+                    "EchoLink: {} remote={} -> cancelling pending TETRA floor uuid={}",
+                    reason,
+                    remote_call,
+                    uuid
+                );
+            }
+        }
+    }
+
     fn maybe_connect_dialog(&mut self, queue: &mut MessageQueue, cfg: &CfgEcholink, idx: usize) {
         enum ConnectAction {
             ConfirmTetraOriginated(Uuid, NetworkCircuitCall),
-            StartTetraLeg(Uuid, NetworkCircuitCall),
+            StartGroupLeg {
+                uuid: Uuid,
+                source_issi: u32,
+                dest_gssi: u32,
+                remote_call: String,
+            },
             Release(String),
             None,
         }
@@ -409,35 +529,22 @@ impl EcholinkEntity {
             dialog.state = QsoState::Connected;
 
             if let (Some(uuid), Some(call)) = (dialog.uuid, dialog.call.clone()) {
-                ConnectAction::ConfirmTetraOriginated(uuid, call)
+                ConnectAction::ConfirmTetraOriginated(uuid, echolink_simplex_p2mp_call(call))
             } else if dialog.uuid.is_none() {
                 if !cfg.inbound_enabled || cfg.default_tetra_dest_issi == 0 {
                     ConnectAction::Release("no inbound TETRA route configured for EchoLink dashboard connect".to_string())
-                } else if cfg.default_tetra_dest_is_group {
-                    ConnectAction::Release(
-                        "inbound EchoLink group destinations are not supported by the circuit-call bridge yet".to_string(),
-                    )
+                } else if !cfg.default_tetra_dest_is_group {
+                    ConnectAction::Release("EchoLink simplex/P2MP requires default_tetra_dest_is_group=true".to_string())
                 } else {
                     let uuid = Uuid::new_v4();
-                    let call = NetworkCircuitCall {
-                        source_issi: cfg.default_tetra_source_issi,
-                        destination: cfg.default_tetra_dest_issi,
-                        number: dialog.remote_call.clone(),
-                        priority: 0,
-                        service: 0,
-                        mode: 0,
-                        duplex: 1,
-                        method: 0,
-                        communication: 0,
-                        grant: 0,
-                        permission: 0,
-                        timeout: CallTimeout::Infinite.into_raw() as u8,
-                        ownership: 0,
-                        queued: 0,
-                    };
+                    let remote_call = dialog.remote_call.clone();
                     dialog.uuid = Some(uuid);
-                    dialog.call = Some(call.clone());
-                    ConnectAction::StartTetraLeg(uuid, call)
+                    ConnectAction::StartGroupLeg {
+                        uuid,
+                        source_issi: cfg.default_tetra_source_issi,
+                        dest_gssi: cfg.default_tetra_dest_issi,
+                        remote_call,
+                    }
                 }
             } else {
                 ConnectAction::None
@@ -454,13 +561,24 @@ impl EcholinkEntity {
                     msg: SapMsgInner::CmceCallControl(CallControl::NetworkCircuitConnectRequest { brew_uuid: uuid, call }),
                 });
             }
-            ConnectAction::StartTetraLeg(uuid, call) => {
+            ConnectAction::StartGroupLeg {
+                uuid,
+                source_issi,
+                dest_gssi,
+                remote_call,
+            } => {
                 queue.push_back(SapMsg {
                     sap: Sap::Control,
                     src: TetraEntity::Echolink,
                     dest: TetraEntity::Cmce,
-                    msg: SapMsgInner::CmceCallControl(CallControl::NetworkCircuitSetupRequest { brew_uuid: uuid, call }),
+                    msg: SapMsgInner::CmceCallControl(CallControl::NetworkCallStart {
+                        brew_uuid: uuid,
+                        source_issi,
+                        dest_gssi,
+                        priority: 0,
+                    }),
                 });
+                tracing::info!("EchoLink: dashboard QSO {} -> GSSI {}", remote_call, dest_gssi);
             }
             ConnectAction::Release(reason) => {
                 self.set_error(reason);
@@ -473,9 +591,13 @@ impl EcholinkEntity {
     fn mark_media_ready(&mut self, brew_uuid: Uuid, call_id: u16, carrier_num: u16, ts: u8) {
         if let Some((idx, dialog)) = self.dialogs.iter_mut().enumerate().find(|(_, d)| d.uuid == Some(brew_uuid)) {
             dialog.media_ready = Some((call_id, carrier_num, ts));
+            dialog.remote_floor_active = true;
+            dialog.remote_floor_ready = true;
+            dialog.remote_floor_since = Some(Instant::now());
             self.dialog_by_slot.insert((carrier_num, ts), idx);
             tracing::info!(
-                "EchoLink: media ready uuid={} call_id={} carrier={} ts={}",
+                "EchoLink: media ready remote={} uuid={} call_id={} carrier={} ts={}",
+                dialog.remote_call,
                 brew_uuid,
                 call_id,
                 carrier_num,
@@ -490,10 +612,52 @@ impl EcholinkEntity {
         }
     }
 
+    fn release_dialog_by_call_id(&mut self, queue: &mut MessageQueue, call_id: u16, from_cmce: bool) {
+        if let Some(idx) = self
+            .dialogs
+            .iter()
+            .position(|d| d.media_ready.map(|(ready_call_id, _, _)| ready_call_id) == Some(call_id))
+        {
+            if from_cmce && self.dialogs.get(idx).is_some_and(|d| d.call.is_none()) {
+                self.clear_group_media_idx(idx, "CMCE released TETRA group leg");
+            } else {
+                self.release_dialog_idx(queue, idx, from_cmce, true);
+            }
+        }
+    }
+
+    fn clear_group_media_idx(&mut self, idx: usize, reason: &str) {
+        if idx >= self.dialogs.len() {
+            return;
+        }
+        let (remote_call, media_ready) = {
+            let dialog = &mut self.dialogs[idx];
+            let media_ready = dialog.media_ready.take();
+            dialog.remote_floor_active = false;
+            dialog.remote_floor_ready = false;
+            dialog.remote_floor_since = None;
+            dialog.last_audio_rx = None;
+            (dialog.remote_call.clone(), media_ready)
+        };
+        if let Some((call_id, carrier_num, ts)) = media_ready {
+            self.dialog_by_slot.remove(&(carrier_num, ts));
+            tracing::debug!(
+                "EchoLink: {} remote={} call_id={} carrier={} ts={} (session kept)",
+                reason,
+                remote_call,
+                call_id,
+                carrier_num,
+                ts
+            );
+        }
+    }
+
     fn release_dialog_idx(&mut self, queue: &mut MessageQueue, idx: usize, from_cmce: bool, send_bye: bool) {
         if idx >= self.dialogs.len() {
             return;
         }
+        let remote_call = self.dialogs[idx].remote_call.clone();
+        let remote_control = self.dialogs[idx].remote_control;
         if send_bye {
             self.send_bye_idx(idx);
         }
@@ -501,14 +665,26 @@ impl EcholinkEntity {
             self.dialog_by_slot.remove(&(carrier_num, ts));
         }
         let uuid = self.dialogs[idx].uuid;
+        let is_circuit_call = self.dialogs[idx].call.is_some();
         self.dialogs[idx].state = QsoState::Released;
         if !from_cmce {
             if let Some(uuid) = uuid {
-                self.send_release_to_cmce(queue, uuid, 16);
+                if is_circuit_call {
+                    self.send_release_to_cmce(queue, uuid, 16);
+                } else {
+                    self.send_group_end_to_cmce(queue, uuid);
+                }
             }
         }
         self.dialogs.remove(idx);
         self.rebuild_ts_index();
+        tracing::info!(
+            "EchoLink: session closed remote={} control={} from_cmce={} bye_sent={}",
+            remote_call,
+            remote_control,
+            from_cmce,
+            send_bye
+        );
     }
 
     fn disconnect_all(&mut self, queue: &mut MessageQueue, send_bye: bool) {
@@ -600,6 +776,10 @@ impl EcholinkEntity {
     }
 
     fn handle_audio_packet(&mut self, queue: &mut MessageQueue, packet: &[u8], addr: SocketAddr) {
+        if packet.starts_with(b"oNDATA") {
+            tracing::debug!("EchoLink: oNDATA probe from {}", addr);
+            return;
+        }
         if packet.len() < ECHOLINK_RTP_HEADER || packet[0] != 0xc0 {
             return;
         }
@@ -616,20 +796,97 @@ impl EcholinkEntity {
             tracing::trace!("EchoLink: dropping malformed GSM payload len={}", payload.len());
             return;
         }
-        let (carrier_num, ts, frames) = {
+
+        enum AudioAction {
+            Forward {
+                carrier_num: u16,
+                ts: u8,
+                frames: Vec<Vec<u8>>,
+                remote_call: String,
+                first_packet: bool,
+            },
+            RequestFloor {
+                remote_call: String,
+            },
+            DropPending {
+                remote_call: String,
+            },
+        }
+
+        let now = Instant::now();
+        let action = {
             let Some(dialog) = self.dialogs.get_mut(idx) else {
                 return;
             };
             if dialog.state != QsoState::Connected {
                 return;
             }
+            let remote_call = dialog.remote_call.clone();
+            let first_packet = dialog.last_audio_rx.is_none();
             dialog.remote_audio = addr;
-            dialog.last_audio_rx = Some(Instant::now());
-            let Some((_, carrier_num, ts)) = dialog.media_ready else {
-                return;
-            };
-            (carrier_num, ts, dialog.audio.decode_gsm_payload_to_tmd(payload))
+            dialog.last_audio_rx = Some(now);
+
+            if dialog.call.is_none() && !dialog.remote_floor_active {
+                AudioAction::RequestFloor { remote_call }
+            } else if dialog.call.is_none() && (!dialog.remote_floor_ready || dialog.media_ready.is_none()) {
+                AudioAction::DropPending { remote_call }
+            } else if let Some((_, carrier_num, ts)) = dialog.media_ready {
+                AudioAction::Forward {
+                    carrier_num,
+                    ts,
+                    frames: dialog.audio.decode_gsm_payload_to_tmd(payload),
+                    remote_call,
+                    first_packet,
+                }
+            } else {
+                AudioAction::DropPending { remote_call }
+            }
         };
+
+        let (carrier_num, ts, frames, remote_call, first_packet) = match action {
+            AudioAction::Forward {
+                carrier_num,
+                ts,
+                frames,
+                remote_call,
+                first_packet,
+            } => (carrier_num, ts, frames, remote_call, first_packet),
+            AudioAction::RequestFloor { remote_call } => {
+                let cfg = self.effective();
+                tracing::info!(
+                    "EchoLink: RTP audio burst from {} at {} -> requesting TETRA floor",
+                    remote_call,
+                    addr
+                );
+                self.request_group_floor_idx(queue, &cfg, idx, "RTP audio burst");
+                self.last_rx = Some(format!("audio pending floor from {}", addr));
+                return;
+            }
+            AudioAction::DropPending { remote_call } => {
+                tracing::debug!("EchoLink: dropping RTP audio from {} while TETRA floor is not ready", remote_call);
+                self.last_rx = Some(format!("audio pending media from {}", addr));
+                return;
+            }
+        };
+
+        if first_packet {
+            tracing::info!(
+                "EchoLink: RTP audio started remote={} audio={} -> carrier={} ts={}",
+                remote_call,
+                addr,
+                carrier_num,
+                ts
+            );
+        } else {
+            tracing::debug!(
+                "EchoLink: RTP audio remote={} bytes={} -> carrier={} ts={}",
+                remote_call,
+                packet.len(),
+                carrier_num,
+                ts
+            );
+        }
+
         for frame in frames {
             queue.push_back(SapMsg {
                 sap: Sap::TmdSap,
@@ -665,9 +922,16 @@ impl EcholinkEntity {
     fn handle_control_packet(&mut self, queue: &mut MessageQueue, cfg: &CfgEcholink, packet: &[u8], addr: SocketAddr) {
         if is_rtcp_bye(packet) {
             if let Some(idx) = self.find_dialog_by_ip(addr.ip()) {
+                let remote_call = self
+                    .dialogs
+                    .get(idx)
+                    .map(|dialog| dialog.remote_call.clone())
+                    .unwrap_or_else(|| "-".to_string());
                 self.last_rx = Some(format!("BYE from {}", addr));
+                tracing::info!("EchoLink: BYE from remote={} control={}", remote_call, addr);
                 self.release_dialog_idx(queue, idx, false, false);
             } else {
+                tracing::debug!("EchoLink: BYE from unknown control={} -> replying BYE", addr);
                 self.send_bye_to(addr);
             }
             return;
@@ -681,6 +945,12 @@ impl EcholinkEntity {
             self.last_rx = Some(format!("SDES {} from {}", remote_call, addr));
             if let Some(idx) = self.find_dialog_by_ip(addr.ip()) {
                 if let Some(dialog) = self.dialogs.get_mut(idx) {
+                    tracing::debug!(
+                        "EchoLink: SDES refresh remote={} control={} previous_remote={}",
+                        remote_call,
+                        addr,
+                        dialog.remote_call
+                    );
                     dialog.remote_control = addr;
                     dialog.remote_audio = SocketAddr::new(addr.ip(), cfg.audio_port);
                     dialog.remote_call = remote_call;
@@ -694,16 +964,22 @@ impl EcholinkEntity {
                 self.send_bye_to(addr);
                 return;
             }
-            if cfg.default_tetra_dest_is_group {
-                self.set_error("inbound EchoLink group destinations are not supported by the circuit-call bridge yet");
+            if !cfg.default_tetra_dest_is_group {
+                self.set_error("inbound EchoLink requires default_tetra_dest_is_group=true for simplex/P2MP");
                 self.send_bye_to(addr);
                 return;
             }
             if !target_allowed(cfg, &remote_call) {
                 self.set_error(format!("inbound target {remote_call} is not allowed by EchoLink routing"));
+                tracing::info!(
+                    "EchoLink: rejecting inbound SDES remote={} control={} (not allowed)",
+                    remote_call,
+                    addr
+                );
                 self.send_bye_to(addr);
                 return;
             }
+            tracing::info!("EchoLink: inbound SDES remote={} control={} accepted", remote_call, addr);
             self.start_inbound_call(queue, cfg, remote_call, addr);
         }
     }
@@ -714,26 +990,9 @@ impl EcholinkEntity {
             self.send_bye_to(remote_control);
             return;
         };
-        let uuid = Uuid::new_v4();
-        let call = NetworkCircuitCall {
-            source_issi: cfg.default_tetra_source_issi,
-            destination: cfg.default_tetra_dest_issi,
-            number: remote_call.clone(),
-            priority: 0,
-            service: 0,
-            mode: 0,
-            duplex: 1,
-            method: 0,
-            communication: 0,
-            grant: 0,
-            permission: 0,
-            timeout: CallTimeout::Infinite.into_raw() as u8,
-            ownership: 0,
-            queued: 0,
-        };
         let dialog = EcholinkDialog {
-            uuid: Some(uuid),
-            call: Some(call.clone()),
+            uuid: None,
+            call: None,
             target: remote_call.clone(),
             remote_call: remote_call.clone(),
             remote_ip: remote_control.ip(),
@@ -742,6 +1001,9 @@ impl EcholinkEntity {
             state: QsoState::Connected,
             audio,
             media_ready: None,
+            remote_floor_active: false,
+            remote_floor_ready: false,
+            remote_floor_since: None,
             seq: 1,
             inbound: true,
             started: Instant::now(),
@@ -751,19 +1013,14 @@ impl EcholinkEntity {
         self.dialogs.push(dialog);
         let idx = self.dialogs.len() - 1;
         self.send_sdes_idx(idx, cfg);
-        queue.push_back(SapMsg {
-            sap: Sap::Control,
-            src: TetraEntity::Echolink,
-            dest: TetraEntity::Cmce,
-            msg: SapMsgInner::CmceCallControl(CallControl::NetworkCircuitSetupRequest { brew_uuid: uuid, call }),
-        });
         tracing::info!(
-            "EchoLink: inbound QSO {} from {} -> {} {}",
+            "EchoLink: inbound session opened remote={} control={} audio={} -> GSSI {}",
             remote_call,
             remote_control,
-            if cfg.default_tetra_dest_is_group { "GSSI" } else { "ISSI" },
+            SocketAddr::new(remote_control.ip(), cfg.audio_port),
             cfg.default_tetra_dest_issi
         );
+        self.request_group_floor_idx(queue, cfg, idx, "inbound simplex/P2MP QSO");
     }
 
     fn send_sdes_idx(&mut self, idx: usize, cfg: &CfgEcholink) {
@@ -778,6 +1035,7 @@ impl EcholinkEntity {
                     if let Some(dialog) = self.dialogs.get_mut(idx) {
                         dialog.last_sdes = Instant::now();
                     }
+                    tracing::debug!("EchoLink: SDES sent to {}", addr);
                     self.last_tx = Some(format!("SDES to {}", addr));
                 }
                 Err(err) => self.set_error(format!("SDES send to {} failed: {}", addr, err)),
@@ -798,6 +1056,7 @@ impl EcholinkEntity {
         if let Some(socket) = self.control_socket.as_ref().and_then(|s| s.try_clone().ok()) {
             match socket.send_to(&packet, addr) {
                 Ok(_) => {
+                    tracing::info!("EchoLink: BYE sent to {}", addr);
                     self.last_tx = Some(format!("BYE to {}", addr));
                 }
                 Err(err) => self.set_error(format!("BYE send to {} failed: {}", addr, err)),
@@ -829,6 +1088,44 @@ impl EcholinkEntity {
             } else {
                 idx += 1;
             }
+        }
+        self.maybe_release_stale_remote_floors(queue, now);
+    }
+
+    fn maybe_release_stale_remote_floors(&mut self, queue: &mut MessageQueue, now: Instant) {
+        let mut stale = Vec::new();
+        for (idx, dialog) in self.dialogs.iter().enumerate() {
+            if dialog.state != QsoState::Connected || dialog.call.is_some() || !dialog.remote_floor_active {
+                continue;
+            }
+            let timed_out = if !dialog.remote_floor_ready {
+                dialog
+                    .remote_floor_since
+                    .map(|since| now.duration_since(since) >= AUDIO_RX_SETUP_TIMEOUT)
+                    .unwrap_or(false)
+            } else if dialog.media_ready.is_some() {
+                dialog
+                    .last_audio_rx
+                    .map(|last| now.duration_since(last) >= AUDIO_RX_ACTIVITY_TIMEOUT)
+                    .unwrap_or_else(|| {
+                        dialog
+                            .remote_floor_since
+                            .map(|since| now.duration_since(since) >= AUDIO_RX_SETUP_TIMEOUT)
+                            .unwrap_or(false)
+                    })
+            } else {
+                dialog
+                    .remote_floor_since
+                    .map(|since| now.duration_since(since) >= AUDIO_RX_SETUP_TIMEOUT)
+                    .unwrap_or(false)
+            };
+            if timed_out {
+                stale.push(idx);
+            }
+        }
+
+        for idx in stale.into_iter().rev() {
+            self.release_remote_floor_idx(queue, idx, "RTP audio inactive");
         }
     }
 
@@ -980,6 +1277,21 @@ impl TetraEntityTrait for EcholinkEntity {
             SapMsgInner::CmceCallControl(CallControl::NetworkCircuitSetupRequest { brew_uuid, call }) => {
                 self.start_outbound_call(queue, &cfg, brew_uuid, call);
             }
+            SapMsgInner::CmceCallControl(CallControl::NetworkCallReady {
+                brew_uuid,
+                call_id,
+                carrier_num,
+                ts,
+                ..
+            }) => {
+                self.mark_media_ready(brew_uuid, call_id, carrier_num, ts);
+            }
+            SapMsgInner::CmceCallControl(CallControl::NetworkCallEnd { brew_uuid }) => {
+                self.release_dialog_by_uuid(queue, brew_uuid, true);
+            }
+            SapMsgInner::CmceCallControl(CallControl::CallEnded { call_id, .. }) => {
+                self.release_dialog_by_call_id(queue, call_id, true);
+            }
             SapMsgInner::CmceCallControl(CallControl::NetworkCircuitSetupAccept { brew_uuid }) => {
                 tracing::info!("EchoLink: inbound setup accepted by CMCE uuid={}", brew_uuid);
             }
@@ -992,7 +1304,7 @@ impl TetraEntityTrait for EcholinkEntity {
             }
             SapMsgInner::CmceCallControl(CallControl::NetworkCircuitConnectRequest { brew_uuid, call }) => {
                 if let Some(dialog) = self.dialogs.iter_mut().find(|d| d.uuid == Some(brew_uuid)) {
-                    dialog.call = Some(call);
+                    dialog.call = Some(echolink_simplex_p2mp_call(call));
                     dialog.state = QsoState::Connected;
                 }
                 queue.push_back(SapMsg {
@@ -1096,6 +1408,13 @@ fn station_matches_target(station: &str, target: &str) -> bool {
         return true;
     }
     station.trim_matches('*').eq_ignore_ascii_case(target.trim_matches('*'))
+}
+
+fn echolink_simplex_p2mp_call(mut call: NetworkCircuitCall) -> NetworkCircuitCall {
+    call.duplex = 0;
+    call.communication = CommunicationType::P2Mp.into_raw() as u8;
+    call.timeout = CallTimeout::T5m.into_raw() as u8;
+    call
 }
 
 fn route_label(cfg: &CfgEcholink) -> Option<String> {

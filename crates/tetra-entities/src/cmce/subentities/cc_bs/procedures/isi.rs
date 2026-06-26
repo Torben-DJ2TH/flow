@@ -26,6 +26,13 @@ impl CcBsSubentity {
         }
     }
 
+    fn network_group_call_allowed(&self, network_entity: TetraEntity, dest_gssi: u32) -> bool {
+        match network_entity {
+            TetraEntity::Echolink => self.is_echolink_inbound_group_destination(dest_gssi),
+            _ => brew::is_brew_inbound_allowed_for_entity(&self.config, network_entity, dest_gssi),
+        }
+    }
+
     /// Handle network-initiated circuit setup request (network bridge -> local called MS).
     pub(in crate::cmce::subentities::cc_bs) fn fsm_on_network_circuit_setup_request(
         &mut self,
@@ -779,7 +786,7 @@ impl CcBsSubentity {
         // per-entity inbound predicate which — unlike is_brew_gssi_routable — must NOT
         // apply the outbound whitelist. A GSSI that is not admissible is dropped
         // gracefully instead of crashing the base station.
-        if !brew::is_brew_inbound_allowed_for_entity(&self.config, network_entity, dest_gssi) {
+        if !self.network_group_call_allowed(network_entity, dest_gssi) {
             tracing::info!(
                 "CMCE: ignoring network call start uuid={} gssi={} (inbound not allowed)",
                 brew_uuid,
@@ -789,7 +796,7 @@ impl CcBsSubentity {
             return;
         }
 
-        if !self.has_listener(dest_gssi) {
+        if !self.has_listener(dest_gssi) && network_entity != TetraEntity::Echolink {
             tracing::info!(
                 "CMCE: ignoring network call start uuid={} gssi={} (no listeners)",
                 brew_uuid,
@@ -799,6 +806,12 @@ impl CcBsSubentity {
 
             self.notify_network_call_end(queue, network_entity, brew_uuid);
             return;
+        } else if !self.has_listener(dest_gssi) {
+            tracing::info!(
+                "CMCE: accepting EchoLink network call uuid={} gssi={} without registry listeners",
+                brew_uuid,
+                dest_gssi
+            );
         }
 
         // Speaker change for an existing GSSI call

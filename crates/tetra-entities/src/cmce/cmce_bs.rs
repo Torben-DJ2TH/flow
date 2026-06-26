@@ -255,18 +255,26 @@ impl TetraEntityTrait for CmceBs {
                     let SapMsgInner::MmSubscriberUpdate(update) = message.msg else {
                         unreachable!();
                     };
-                    if matches!(source, TetraEntity::Brew | TetraEntity::Brew2)
-                        && update.action == BrewSubscriberAction::Register
-                        && update.groups.is_empty()
-                    {
-                        tracing::trace!(
-                            "CMCE: ignoring external Brew presence register without groups issi={} source={:?}",
-                            update.issi,
-                            source
-                        );
-                        return;
+                    if matches!(source, TetraEntity::Brew | TetraEntity::Brew2) {
+                        if !crate::net_brew::is_brew_external_subscriber_allowed_for_entity(&self.config, source, update.issi) {
+                            tracing::trace!(
+                                "CMCE: ignoring external Brew subscriber update issi={} action={:?} source={:?}",
+                                update.issi,
+                                update.action,
+                                source
+                            );
+                            return;
+                        }
+                        if update.action == BrewSubscriberAction::Register && update.groups.is_empty() {
+                            tracing::trace!(
+                                "CMCE: ignoring external Brew presence register without groups issi={} source={:?}",
+                                update.issi,
+                                source
+                            );
+                            return;
+                        }
                     }
-                    self.cc.handle_subscriber_update(queue, update);
+                    self.cc.handle_subscriber_update(queue, source, update);
                 }
                 ControlRoute::SdsRc => {
                     self.sds.rx_sds_from_brew(queue, message);

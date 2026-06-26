@@ -136,11 +136,26 @@ pub fn is_brew_inbound_allowed_for_entity(config: &SharedConfig, entity: TetraEn
 /// Brew servers can announce remote subscribers with REGISTER/REREGISTER/AFFILIATE/DEAFFILIATE
 /// events. Those are useful for network-only listeners, but they must never create a CMCE
 /// subscriber entry for a local-only service SSI (for example the BS control/source ISSI).
-/// `local_ssi_ranges` is the existing local-only boundary used for inbound Brew traffic, so use
-/// the same boundary for external subscriber state.
+/// `local_ssi_ranges` is the existing local-only boundary used for inbound Brew traffic. Explicit
+/// Brew `local_issi_allowlist` entries are also local-only here: if a local terminal is assigned to
+/// a Brew server, no Brew server may mirror that same ISSI back into CMCE as an external subscriber.
 #[inline]
 pub fn is_brew_external_subscriber_allowed_for_entity(config: &SharedConfig, entity: TetraEntity, issi: u32) -> bool {
-    is_active_for_entity(config, entity) && !config.config().cell.local_ssi_ranges.contains(issi)
+    if brew_config_for_entity(config, entity).is_none() {
+        return false;
+    }
+    if config.config().cell.local_ssi_ranges.contains(issi) {
+        return false;
+    }
+    for brew_entity in BREW_ENTITIES {
+        let Some(candidate) = brew_config_for_entity(config, brew_entity) else {
+            continue;
+        };
+        if candidate.has_local_issi_allowlist() && candidate.local_issi_allowed(issi) {
+            return false;
+        }
+    }
+    true
 }
 
 /// Determine if a given ISSI should be sent to the Brew server.
@@ -215,5 +230,52 @@ password = ""
         assert!(!is_brew_external_subscriber_allowed_for_entity(&cfg, TetraEntity::Brew, 999));
         assert!(!is_brew_external_subscriber_allowed_for_entity(&cfg, TetraEntity::Brew, 9999));
         assert!(is_brew_external_subscriber_allowed_for_entity(&cfg, TetraEntity::Brew, 2632585));
+    }
+
+    #[test]
+    fn external_subscriber_state_respects_explicit_local_issi_allowlists() {
+        let toml = r#"
+config_version = "0.6"
+stack_mode = "Bs"
+
+[phy_io]
+backend = "None"
+
+[net_info]
+mcc = 901
+mnc = 9999
+
+[cell_info]
+main_carrier = 1584
+freq_band = 4
+freq_offset = 0
+duplex_spacing = 4
+reverse_operation = false
+location_area = 1
+
+[brew]
+host = "example.invalid"
+port = 443
+tls = true
+username = 0
+password = ""
+local_issi_allowlist = [2632585]
+
+[brew2]
+host = "example2.invalid"
+port = 443
+tls = true
+username = 0
+password = ""
+local_issi_allowlist = [2633869]
+"#;
+        let cfg = SharedConfig::from_parts(from_toml_str(toml).expect("test config parses"), None);
+
+        assert!(!is_brew_external_subscriber_allowed_for_entity(&cfg, TetraEntity::Brew, 2632585));
+        assert!(!is_brew_external_subscriber_allowed_for_entity(&cfg, TetraEntity::Brew2, 2632585));
+        assert!(!is_brew_external_subscriber_allowed_for_entity(&cfg, TetraEntity::Brew, 2633869));
+        assert!(!is_brew_external_subscriber_allowed_for_entity(&cfg, TetraEntity::Brew2, 2633869));
+        assert!(is_brew_external_subscriber_allowed_for_entity(&cfg, TetraEntity::Brew, 2147004));
+        assert!(is_brew_external_subscriber_allowed_for_entity(&cfg, TetraEntity::Brew2, 2147004));
     }
 }
