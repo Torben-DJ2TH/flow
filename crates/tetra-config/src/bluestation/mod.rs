@@ -61,6 +61,9 @@ pub use sec_telegram::*;
 pub mod sec_recovery;
 pub use sec_recovery::*;
 
+pub mod sec_rf_test;
+pub use sec_rf_test::*;
+
 pub mod sec_emergency;
 pub use sec_emergency::*;
 

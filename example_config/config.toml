@@ -370,6 +370,19 @@ voice_service = true
 
 ###############################################################################
 
+# OPTIONAL: RF lab test routing (FlowStation)
+#
+# Forces the local voice echo service (ISSI 999) onto a configured carrier.
+# This is useful to verify a traffic-only secondary carrier without filling all
+# primary carrier traffic slots first. When unset, local echo uses the normal
+# traffic-slot allocator. If set and the target carrier is full, FlowStation
+# rejects the echo call instead of silently falling back to another carrier.
+#
+# [rf_test]
+# local_echo_carrier = 1531
+
+###############################################################################
+
 # OPTIONAL: ISSI access control — whitelist (FlowStation)
 #
 # When issi_whitelist is non-empty, only listed ISSIs can register.

@@ -20,6 +20,7 @@ use super::sec_geoalarm::{CfgGeoalarmDto, apply_geoalarm_patch};
 use super::sec_health::{CfgHealthDto, apply_health_patch};
 use super::sec_meshcom::{CfgMeshcomDto, apply_meshcom_patch};
 use super::sec_recovery::{CfgRecoveryDto, apply_recovery_patch};
+use super::sec_rf_test::{CfgRfTestDto, apply_rf_test_patch};
 use super::sec_security::{CfgSecurityDto, apply_security_patch};
 use super::sec_snom_notify::{CfgSnomNotifyDto, apply_snom_notify_patch};
 use super::sec_telegram::{CfgTelegramDto, apply_telegram_patch};
@@ -199,6 +200,13 @@ pub fn from_toml_str(toml_str: &str) -> Result<StackConfig, Box<dyn std::error::
         return Err(format!("Unrecognized fields in recovery config: {:?}", sorted_keys(&recovery.extra)).into());
     }
 
+    // Optional rf_test section — reject typos so lab-only carrier routing never silently misses.
+    if let Some(ref rf_test) = root.rf_test
+        && !rf_test.extra.is_empty()
+    {
+        return Err(format!("Unrecognized fields in rf_test config: {:?}", sorted_keys(&rf_test.extra)).into());
+    }
+
     // Optional health section — reject typos so a mis-spelled watchdog/threshold key is caught.
     if let Some(ref health) = root.health
         && !health.extra.is_empty()
@@ -264,6 +272,7 @@ pub fn from_toml_str(toml_str: &str) -> Result<StackConfig, Box<dyn std::error::
         security: apply_security_patch(root.security.unwrap_or_default()),
         wx_service: apply_wx_service_patch(root.wx_service.unwrap_or_default()),
         recovery: apply_recovery_patch(root.recovery.unwrap_or_default()),
+        rf_test: apply_rf_test_patch(root.rf_test.unwrap_or_default()),
         telegram: None,
         health: apply_health_patch(root.health.unwrap_or_default()),
         emergency: apply_emergency_patch(root.emergency.unwrap_or_default()),
@@ -347,6 +356,7 @@ struct TomlConfigRoot {
     #[serde(rename = "wx_service")]
     wx_service: Option<CfgWxServiceDto>,
     recovery: Option<CfgRecoveryDto>,
+    rf_test: Option<CfgRfTestDto>,
     #[serde(rename = "telegram_alerts")]
     telegram_alerts: Option<CfgTelegramDto>,
     health: Option<CfgHealthDto>,

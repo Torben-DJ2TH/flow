@@ -245,6 +245,19 @@ impl CircuitMgr {
         self.open_circuit(dir, circuit)
     }
 
+    pub fn allocate_circuit_on_slot(
+        &mut self,
+        dir: Direction,
+        comm_type: CommunicationType,
+        simplex_duplex: bool,
+        slot: CarrierSlot,
+    ) -> Result<&CmceCircuit, CircuitErr> {
+        let call_id = self.get_next_call_id();
+        let usage = self.get_next_usage_number();
+        let circuit = self.make_circuit(dir, slot, call_id, usage, comm_type, simplex_duplex);
+        self.open_circuit(dir, circuit)
+    }
+
     pub fn allocate_circuit_for_call_with_allocator(
         &mut self,
         call_id: CallId,

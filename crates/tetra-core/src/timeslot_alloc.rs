@@ -14,6 +14,10 @@ pub struct CarrierSlot {
 pub enum TimeslotAllocErr {
     InvalidTimeslot(u8),
     InvalidCarrier(u16),
+    NoFreeOnCarrier {
+        carrier_num: u16,
+        owner: TimeslotOwner,
+    },
     InUse {
         carrier_num: u16,
         ts: u8,
@@ -117,6 +121,20 @@ impl TimeslotAllocator {
             }
         }
         None
+    }
+
+    pub fn allocate_any_slot_on_carrier(&mut self, owner: TimeslotOwner, carrier_num: u16) -> Result<CarrierSlot, TimeslotAllocErr> {
+        let carrier_i = self.carrier_idx(carrier_num)?;
+        let ts_range = if carrier_i == 0 { 2..=4 } else { 1..=4 };
+        for ts in ts_range {
+            let slot = &mut self.owners[carrier_i][ts as usize - 1];
+            if slot.is_none() {
+                *slot = Some(owner);
+                return Ok(CarrierSlot { carrier_num, ts });
+            }
+        }
+
+        Err(TimeslotAllocErr::NoFreeOnCarrier { carrier_num, owner })
     }
 
     pub fn reserve(&mut self, owner: TimeslotOwner, ts: u8) -> Result<(), TimeslotAllocErr> {
@@ -251,6 +269,51 @@ mod tests {
         assert_eq!(
             alloc.slot_owner(CarrierSlot { carrier_num: 1585, ts: 1 }),
             Some(TimeslotOwner::Cmce)
+        );
+    }
+
+    #[test]
+    fn allocate_on_specific_carrier_uses_that_carriers_traffic_slots() {
+        let mut alloc = TimeslotAllocator::default();
+        alloc.configure_carriers(&[1529, 1531]);
+
+        let secondary_slot = alloc
+            .allocate_any_slot_on_carrier(TimeslotOwner::Cmce, 1531)
+            .expect("secondary slot");
+        assert_eq!(secondary_slot, CarrierSlot { carrier_num: 1531, ts: 1 });
+
+        let primary_slot = alloc.allocate_any_slot_on_carrier(TimeslotOwner::Cmce, 1529).expect("primary slot");
+        assert_eq!(primary_slot, CarrierSlot { carrier_num: 1529, ts: 2 });
+
+        assert_eq!(
+            alloc.allocate_any_slot_on_carrier(TimeslotOwner::Cmce, 9999),
+            Err(TimeslotAllocErr::InvalidCarrier(9999))
+        );
+    }
+
+    #[test]
+    fn allocate_on_specific_carrier_reports_when_full() {
+        let mut alloc = TimeslotAllocator::default();
+        alloc.configure_carriers(&[1529, 1531]);
+
+        for expected_ts in 1..=4 {
+            assert_eq!(
+                alloc
+                    .allocate_any_slot_on_carrier(TimeslotOwner::Cmce, 1531)
+                    .expect("secondary slot"),
+                CarrierSlot {
+                    carrier_num: 1531,
+                    ts: expected_ts,
+                }
+            );
+        }
+
+        assert_eq!(
+            alloc.allocate_any_slot_on_carrier(TimeslotOwner::Cmce, 1531),
+            Err(TimeslotAllocErr::NoFreeOnCarrier {
+                carrier_num: 1531,
+                owner: TimeslotOwner::Cmce,
+            })
         );
     }
 

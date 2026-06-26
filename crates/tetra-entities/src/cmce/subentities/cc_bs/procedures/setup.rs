@@ -105,31 +105,89 @@ impl CcBsSubentity {
         // Local echo has no second MS leg. One bidirectional traffic slot is enough, regardless
         // of whether the requesting terminal marks the P2P call as simplex or duplex.
         self.ensure_timeslots_for_priority(queue, 1, pdu.call_priority);
+        let rf_test_local_echo_carrier = self.config.config().rf_test.local_echo_carrier;
         let circuit = {
             let mut state = self.config.state_write();
-            match self.circuits.allocate_circuit_with_allocator(
-                Direction::Both,
-                pdu.basic_service_information.communication_type,
-                pdu.simplex_duplex_selection,
-                &mut state.timeslot_alloc,
-                TimeslotOwner::Cmce,
-            ) {
-                Ok(circuit) => circuit.clone(),
-                Err(e) => {
-                    tracing::info!(
-                        "CMCE: rejecting local echo U-SETUP from ISSI {} (no free channel: {:?})",
-                        calling_party.ssi,
-                        e
-                    );
-                    drop(state);
-                    self.reject_setup_request(
-                        queue,
-                        message,
-                        calling_party,
-                        DisconnectCause::CongestionInInfrastructure,
-                        "failed to allocate local echo circuit",
-                    );
-                    return;
+            if let Some(carrier_num) = rf_test_local_echo_carrier {
+                tracing::info!(
+                    "CMCE: rf_test forcing local echo ISSI {} from caller {} onto carrier {}",
+                    LOCAL_ECHO_ISSI,
+                    calling_party.ssi,
+                    carrier_num
+                );
+
+                let slot = match state.timeslot_alloc.allocate_any_slot_on_carrier(TimeslotOwner::Cmce, carrier_num) {
+                    Ok(slot) => slot,
+                    Err(e) => {
+                        tracing::info!(
+                            "CMCE: rejecting local echo U-SETUP from ISSI {} (rf_test local_echo_carrier={} no free channel: {:?})",
+                            calling_party.ssi,
+                            carrier_num,
+                            e
+                        );
+                        drop(state);
+                        self.reject_setup_request(
+                            queue,
+                            message,
+                            calling_party,
+                            DisconnectCause::CongestionInInfrastructure,
+                            "failed to allocate rf_test local echo circuit",
+                        );
+                        return;
+                    }
+                };
+
+                match self.circuits.allocate_circuit_on_slot(
+                    Direction::Both,
+                    pdu.basic_service_information.communication_type,
+                    pdu.simplex_duplex_selection,
+                    slot,
+                ) {
+                    Ok(circuit) => circuit.clone(),
+                    Err(e) => {
+                        let _ = state.timeslot_alloc.release_slot(TimeslotOwner::Cmce, slot);
+                        tracing::info!(
+                            "CMCE: rejecting local echo U-SETUP from ISSI {} (rf_test local_echo_carrier={} circuit open failed: {:?})",
+                            calling_party.ssi,
+                            carrier_num,
+                            e
+                        );
+                        drop(state);
+                        self.reject_setup_request(
+                            queue,
+                            message,
+                            calling_party,
+                            DisconnectCause::CongestionInInfrastructure,
+                            "failed to open rf_test local echo circuit",
+                        );
+                        return;
+                    }
+                }
+            } else {
+                match self.circuits.allocate_circuit_with_allocator(
+                    Direction::Both,
+                    pdu.basic_service_information.communication_type,
+                    pdu.simplex_duplex_selection,
+                    &mut state.timeslot_alloc,
+                    TimeslotOwner::Cmce,
+                ) {
+                    Ok(circuit) => circuit.clone(),
+                    Err(e) => {
+                        tracing::info!(
+                            "CMCE: rejecting local echo U-SETUP from ISSI {} (no free channel: {:?})",
+                            calling_party.ssi,
+                            e
+                        );
+                        drop(state);
+                        self.reject_setup_request(
+                            queue,
+                            message,
+                            calling_party,
+                            DisconnectCause::CongestionInInfrastructure,
+                            "failed to allocate local echo circuit",
+                        );
+                        return;
+                    }
                 }
             }
         };

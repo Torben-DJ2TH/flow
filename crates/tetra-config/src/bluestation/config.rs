@@ -9,6 +9,7 @@ use crate::bluestation::{
 
 use super::sec_brew::CfgBrew;
 use super::sec_dashboard::CfgDashboard;
+use super::sec_rf_test::CfgRfTest;
 use super::sec_telegram::CfgTelegram;
 use super::sec_telemetry::CfgTelemetry;
 
@@ -117,6 +118,9 @@ pub struct StackConfig {
     /// Restart-recovery configuration (proactive cold-start re-registration). Default disabled.
     pub recovery: CfgRecovery,
 
+    /// RF/debug test routing. Default disabled.
+    pub rf_test: CfgRfTest,
+
     /// Telegram alerts configuration (None = no `[telegram_alerts]` section in the config file).
     pub telegram: Option<CfgTelegram>,
 
@@ -172,6 +176,15 @@ impl StackConfig {
             && secondary_carrier == self.cell.main_carrier
         {
             return Err("cell.secondary_carrier must differ from cell.main_carrier");
+        }
+
+        if let Some(local_echo_carrier) = self.rf_test.local_echo_carrier {
+            let carriers = self
+                .bs_phase_mod_carriers()
+                .map_err(|_| "Invalid cell info frequency settings for rf_test.local_echo_carrier")?;
+            if !carriers.iter().any(|(carrier_num, _, _)| *carrier_num == local_echo_carrier) {
+                return Err("rf_test.local_echo_carrier must match cell.main_carrier or cell.secondary_carrier");
+            }
         }
 
         // Sanity check on computed BS carrier frequencies and SDR settings.

@@ -363,9 +363,26 @@ reaches CMCE.
 
 | ISSI | Service | Notes |
 |---:|---|---|
-| `999` | Local voice echo / loopback | P2P calls to `999` are intercepted before the local registration check and before Brew/Asterisk/EchoLink routing. FlowStation allocates one bidirectional traffic slot, sends `D-CALL-PROCEEDING` and `D-CONNECT` with channel allocation to the caller, opens UMAC with `LocalLoopback`, and reflects the caller's own uplink audio back to the same terminal. The virtual `999` party does not need to be registered. |
+| `999` | Local voice echo / loopback | P2P calls to `999` are intercepted before the local registration check and before Brew/Asterisk/EchoLink routing. FlowStation allocates one bidirectional traffic slot, sends `D-CALL-PROCEEDING` and `D-CONNECT` with channel allocation to the caller, opens UMAC with `LocalLoopback`, and reflects the caller's own uplink audio back to the same terminal. The virtual `999` party does not need to be registered. For RF tests, `[rf_test].local_echo_carrier` can force this service onto a specific configured carrier. |
 | `9998` | WX/METAR SDS service | Optional weather SDS service when `[wx_service]` is enabled. |
 | `9999` | BS control/source ISSI | Used by SDS command control, local control messages, and as the default source ISSI for injected SDS, DAPNET, MeshCom, GeoAlarm, Snom, and TPG2200 actions. SDS ACKs for `9999` are absorbed locally and are not forwarded to Brew. |
+
+### RF lab tests
+
+Secondary carriers are traffic-only unless the stack has a reason to allocate a
+traffic channel there. For a deterministic RF check, you can force the local echo
+service `999` onto a configured carrier:
+
+```toml
+[rf_test]
+local_echo_carrier = 1531
+```
+
+With `main_carrier = 1529` and `secondary_carrier = 1531`, a P2P call from a
+radio to `999` should allocate `C 1531 · TS 1` and key the secondary downlink.
+If C1531 is full or not configured, FlowStation rejects the echo call rather
+than falling back to C1529, so RF measurements stay unambiguous. Omit the block
+to restore the normal allocator.
 
 ### Brew interconnect (BrandMeister / TetraPack)
 
