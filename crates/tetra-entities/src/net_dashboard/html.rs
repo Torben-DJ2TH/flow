@@ -6955,10 +6955,16 @@ function dapnetLogRegex(id,label){
   try{return new RegExp(raw,'i');}
   catch(e){return {error:`${label}: ${e.message||'invalid regex'}`};}
 }
+function dapnetLogCallsign(e){
+  const callsign=String(e?.callsign||'').trim();
+  const recipient=String(e?.recipient||'').trim();
+  if(callsign&&recipient&&callsign===recipient&&/^RIC\s+\d+/i.test(callsign))return '';
+  return callsign;
+}
 function dapnetLogFiltered(){
   const status=document.getElementById('dapnetlog-filter-status');
   const filters=[
-    {label:'Callsign',re:dapnetLogRegex('dapnetlog-callsign-filter','Callsign'),value:e=>e.callsign||''},
+    {label:'Callsign',re:dapnetLogRegex('dapnetlog-callsign-filter','Callsign'),value:e=>dapnetLogCallsign(e)},
     {label:'Recipient',re:dapnetLogRegex('dapnetlog-recipient-filter','Recipient'),value:e=>e.recipient||''},
     {label:'Message',re:dapnetLogRegex('dapnetlog-message-filter','Message'),value:e=>e.text||''},
   ];
@@ -6977,7 +6983,8 @@ function dapnetLogFiltered(){
 }
 function dapnetLogFilterChanged(){dapnetLogPageIndex=0;renderDapnetLog();}
 function dapnetRow(e){
-  return `<tr><td class="sds-time">${escHtml(e.ts||'')}</td><td>${dirBadge(e.direction)}</td><td>${escHtml(e.callsign||'')}</td><td>${escHtml(e.recipient||'')}</td><td>${dapPaths(e.paths)}</td><td class="sds-msg">${escHtml(e.text||'')}</td></tr>`;
+  const callsign=dapnetLogCallsign(e);
+  return `<tr><td class="sds-time">${escHtml(e.ts||'')}</td><td>${dirBadge(e.direction)}</td><td>${callsign?escHtml(callsign):'<span class="sds-empty">—</span>'}</td><td>${escHtml(e.recipient||'')}</td><td>${dapPaths(e.paths)}</td><td class="sds-msg">${escHtml(e.text||'')}</td></tr>`;
 }
 function renderDapnetLog(){
   const tb=document.getElementById('dapnetlog-tbody');if(!tb)return;
@@ -7005,7 +7012,7 @@ function exportDapnetLog(){
     lines.push([
       e.ts||'',
       (e.direction||'').toUpperCase(),
-      e.callsign||'',
+      dapnetLogCallsign(e),
       e.recipient||'',
       (e.paths||[]).join(','),
       e.text||''
