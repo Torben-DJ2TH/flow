@@ -812,7 +812,7 @@ impl DashboardServer {
                     call_id,
                     gssi,
                     caller_issi,
-                    carrier_num: _,
+                    carrier_num,
                     ts,
                     priority,
                     source,
@@ -828,6 +828,7 @@ impl DashboardServer {
                             speaker_issi: Some(*caller_issi),
                             started_at: Instant::now(),
                             simplex: false,
+                            carrier_num: *carrier_num,
                             ts: *ts,
                             priority: *priority,
                         },
@@ -898,7 +899,7 @@ impl DashboardServer {
                     calling_issi,
                     called_issi,
                     simplex,
-                    carrier_num: _,
+                    carrier_num,
                     ts,
                     peer_carrier_num: _,
                     peer_ts: _,
@@ -916,6 +917,7 @@ impl DashboardServer {
                             speaker_issi: None,
                             started_at: Instant::now(),
                             simplex: *simplex,
+                            carrier_num: *carrier_num,
                             ts: *ts,
                             priority: *priority,
                         },
@@ -1414,6 +1416,26 @@ fn event_to_ws_msg(event: &TelemetryEvent) -> Option<String> {
         }),
     };
     serde_json::to_string(&v).ok()
+}
+
+fn dashboard_carriers(shared_config: &Option<tetra_config::bluestation::SharedConfig>) -> Vec<serde_json::Value> {
+    let Some(cfg) = shared_config else {
+        return Vec::new();
+    };
+    let config = cfg.config();
+    match config.bs_phase_mod_carriers() {
+        Ok(carriers) => carriers
+            .into_iter()
+            .map(|(carrier_num, dl_freq_hz, ul_freq_hz)| {
+                serde_json::json!({
+                    "carrier_num": carrier_num,
+                    "dl_freq_hz": dl_freq_hz,
+                    "ul_freq_hz": ul_freq_hz,
+                })
+            })
+            .collect(),
+        Err(_) => vec![serde_json::json!({"carrier_num": config.cell.main_carrier})],
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1992,7 +2014,7 @@ fn handle_connection(
     }
 
     if req_line.contains("/ws") {
-        handle_ws(stream, state, clients, cmd_tx, update_state, auth);
+        handle_ws(stream, state, clients, cmd_tx, update_state, auth, shared_config);
     } else if req_line.contains("GET /api/system/brightness") {
         // Backlight status probe (FH-FEAT-008) — lets the UI hide the slider on a panel-less host.
         drain_http_headers(&mut stream);
@@ -2676,6 +2698,7 @@ fn handle_ws(
     cmd_tx: Arc<Mutex<Option<CmdSender>>>,
     update_state: SharedUpdateState,
     _auth: Option<(String, String)>,
+    shared_config: Option<tetra_config::bluestation::SharedConfig>,
 ) {
     let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(50)));
 
@@ -2716,10 +2739,12 @@ fn handle_ws(
         let last_sdr_health = s.last_sdr_health.clone();
         let last_sys_health = s.last_sys_health.clone();
         let last_health = s.last_health.clone();
+        let carriers = dashboard_carriers(&shared_config);
         drop(s);
         if let Ok(json) = serde_json::to_string(&serde_json::json!({
             "type": "snapshot", "ms": ms, "calls": calls, "emergencies": emergencies, "log": logs,
             "brew_online": brew_online, "brew_version": brew_version, "last_heard": last_heard,
+            "carriers": carriers,
             "fallback_config_active": fallback_active, "fallback_config_reason": fallback_reason,
             "last_tx_visual": last_tx_visual,
             "last_tx_quality": last_tx_quality,

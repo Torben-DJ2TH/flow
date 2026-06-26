@@ -2597,79 +2597,7 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
         <div class="card-head">
           <div class="card-title">RF Channel — Timeslots</div>
         </div>
-        <div class="ts-grid" id="ts-grid">
-          <div class="ts-block mcch" id="ts-block-1">
-            <div class="ts-num">TS 1</div>
-            <div class="ts-led"></div>
-            <div class="ts-wave">
-              <div class="ts-wave-bar" style="height:8px"></div>
-              <div class="ts-wave-bar" style="height:14px"></div>
-              <div class="ts-wave-bar" style="height:10px"></div>
-              <div class="ts-wave-bar" style="height:16px"></div>
-              <div class="ts-wave-bar" style="height:8px"></div>
-              <div class="ts-wave-bar" style="height:12px"></div>
-              <div class="ts-wave-bar" style="height:6px"></div>
-            </div>
-            <div class="ts-label">MCCH</div>
-            <div class="ts-sub">ACTIVE</div>
-            <div class="ts-flash"></div>
-            <div class="ts-duration-bar"></div>
-          </div>
-          <div class="ts-block" id="ts-block-2">
-            <div class="ts-num">TS 2</div>
-            <div class="ts-timer"></div>
-            <div class="ts-led"></div>
-            <div class="ts-wave">
-              <div class="ts-wave-bar" style="height:3px"></div>
-              <div class="ts-wave-bar" style="height:3px"></div>
-              <div class="ts-wave-bar" style="height:3px"></div>
-              <div class="ts-wave-bar" style="height:3px"></div>
-              <div class="ts-wave-bar" style="height:3px"></div>
-              <div class="ts-wave-bar" style="height:3px"></div>
-              <div class="ts-wave-bar" style="height:3px"></div>
-            </div>
-            <div class="ts-label">—</div>
-            <div class="ts-sub">Idle</div>
-            <div class="ts-flash"></div>
-            <div class="ts-duration-bar"></div>
-          </div>
-          <div class="ts-block" id="ts-block-3">
-            <div class="ts-num">TS 3</div>
-            <div class="ts-timer"></div>
-            <div class="ts-led"></div>
-            <div class="ts-wave">
-              <div class="ts-wave-bar" style="height:3px"></div>
-              <div class="ts-wave-bar" style="height:3px"></div>
-              <div class="ts-wave-bar" style="height:3px"></div>
-              <div class="ts-wave-bar" style="height:3px"></div>
-              <div class="ts-wave-bar" style="height:3px"></div>
-              <div class="ts-wave-bar" style="height:3px"></div>
-              <div class="ts-wave-bar" style="height:3px"></div>
-            </div>
-            <div class="ts-label">—</div>
-            <div class="ts-sub">Idle</div>
-            <div class="ts-flash"></div>
-            <div class="ts-duration-bar"></div>
-          </div>
-          <div class="ts-block" id="ts-block-4">
-            <div class="ts-num">TS 4</div>
-            <div class="ts-timer"></div>
-            <div class="ts-led"></div>
-            <div class="ts-wave">
-              <div class="ts-wave-bar" style="height:3px"></div>
-              <div class="ts-wave-bar" style="height:3px"></div>
-              <div class="ts-wave-bar" style="height:3px"></div>
-              <div class="ts-wave-bar" style="height:3px"></div>
-              <div class="ts-wave-bar" style="height:3px"></div>
-              <div class="ts-wave-bar" style="height:3px"></div>
-              <div class="ts-wave-bar" style="height:3px"></div>
-            </div>
-            <div class="ts-label">—</div>
-            <div class="ts-sub">Idle</div>
-            <div class="ts-flash"></div>
-            <div class="ts-duration-bar"></div>
-          </div>
-        </div>
+        <div class="ts-grid" id="ts-grid"></div>
       </div>
 
       <!-- Table -->
@@ -5506,7 +5434,7 @@ async function wifiCall(url, body){
 function escAttr(s){ return String(s).replace(/&/g,'&amp;').replace(/'/g,"&#39;").replace(/"/g,'&quot;'); }
 
 // ── State + WS ────────────────────────────────────────────────────────────
-let ws=null,state={ms:{},calls:{},emergencies:{},lastHeard:[],sdsLog:[],dapnetLog:[],echolinkDirectory:[],echolinkDirectoryStatus:'',meshcomNodes:[],meshcomMessages:[],geoalarmEvents:[],geoalarmConfig:null,brewOnline:false,brewVer:0,brewStatus:null,brewStatusLoadedAt:0},sdsDest=0;
+let ws=null,state={ms:{},calls:{},emergencies:{},lastHeard:[],carriers:[],sdsLog:[],dapnetLog:[],echolinkDirectory:[],echolinkDirectoryStatus:'',meshcomNodes:[],meshcomMessages:[],geoalarmEvents:[],geoalarmConfig:null,brewOnline:false,brewVer:0,brewStatus:null,brewStatusLoadedAt:0},sdsDest=0;
 
 // ── RadioID callsigns (indicativ) ──────────────────────────────────────────────
 // issi -> {cs:"CALLSIGN", fl:"🇷🇴"} (found; fl is the country flag emoji from the prefix, or "")
@@ -5716,13 +5644,16 @@ function handleMsg(msg){
   switch(msg.type){
     case 'snapshot':
       state.ms={};state.calls={};state.emergencies={};state.lastHeard=msg.last_heard||[];
+      state.carriers=Array.isArray(msg.carriers)?msg.carriers:[];
+      tsReset();
+      ensureTsGrid();
       (msg.emergencies||[]).forEach(e=>{state.emergencies[e.issi]={...e};});
       (msg.ms||[]).forEach(m=>{state.ms[m.issi]={...m,_last_seen_ts:Date.now()-(m.last_seen_secs_ago||0)*1000,energy_saving_mode:m.energy_saving_mode||0};});
       (msg.calls||[]).forEach(c=>{
         state.calls[c.call_id]={...c,started_at:Date.now()-(c.started_secs_ago||0)*1000};
-        if(c.ts&&c.ts>=2){
+        if(c.ts&&c.ts>=1){
           const sub=c.call_type==='group'?t('call_group'):(c.simplex?t('call_p2p_s'):t('call_p2p_d'));
-          tsSetCall(c.ts,{...c,sub});
+          tsSetCall(c.carrier_num,c.ts,{...c,sub});
         }
       });
       if(msg.log&&msg.log.length){document.getElementById('log-container').innerHTML='';msg.log.forEach(e=>appendLog(e));}
@@ -5777,9 +5708,9 @@ function handleMsg(msg){
       // The caller keyed up on this GSSI → it's their actively-selected TG.
       if(msg.call_type==='group'&&msg.gssi!=null&&state.ms[msg.caller_issi]){state.ms[msg.caller_issi].selected_group=msg.gssi;renderStations();}
       if(msg.last_heard)pushLastHeard(msg.last_heard);
-      if(msg.ts&&msg.ts>=2){
+      if(msg.ts&&msg.ts>=1){
         const sub=msg.call_type==='group'?t('call_group'):(msg.simplex?t('call_p2p_s'):t('call_p2p_d'));
-        tsSetCall(msg.ts,{...msg,sub});
+        tsSetCall(msg.carrier_num,msg.ts,{...msg,sub});
         updateTsBlocks();
       }
       renderCalls();renderLastHeard();break;
@@ -5789,11 +5720,11 @@ function handleMsg(msg){
       tsClearCall(msg.call_id);updateTsBlocks();
       delete state.calls[msg.call_id];renderCalls();renderLastHeard();break;
     case 'ts_voice':
-      tsVoice(msg.ts);break;
+      tsVoice(msg.carrier_num,msg.ts,msg.speaker_issi);break;
     case 'speaker_changed':
       if(state.calls[msg.call_id])state.calls[msg.call_id].active_speaker=msg.speaker_issi;
       // Reflect the new speaker on the timeslot visualizer immediately.
-      tsSetSpeaker(msg.call_id,msg.speaker_issi);updateTsBlocks();
+      tsSetSpeaker(msg.call_id,msg.speaker_issi,msg.carrier_num,msg.ts);updateTsBlocks();
       // The new speaker has this call's GSSI selected (looked up from the active call).
       {const sg=state.calls[msg.call_id]&&state.calls[msg.call_id].gssi;
        if(sg!=null&&state.ms[msg.speaker_issi]){state.ms[msg.speaker_issi].selected_group=sg;renderStations();}}
@@ -5954,55 +5885,120 @@ function toggleLastHeardSource(source){
 function renderAll(){renderStations();renderCalls();renderLastHeard();updateTsBlocks();}
 
 // ── TS Visualizer ─────────────────────────────────────────────────────────
-// tsState[ts-1]: {call_id, call_type, label, sub, voice_ts, started_at}
-const tsState=[null,null,null,null];
+// tsState key is "carrier:ts": {call_id, call_type, label, sub, voice_ts, started_at}
+const TS_SLOTS_PER_CARRIER=4;
+const tsState=new Map();
 const TS_VOICE_DECAY_MS=800;
-// Random wave heights per bar per TS — regenerated on each voice frame
-const tsWaveHeights=[[],[],[],[]];
+// Random wave heights per bar per carrier/TS — regenerated on each voice frame
+const tsWaveHeights=new Map();
+let tsGridSignature='';
 
-function tsRandWave(ts){
-  const bars=7;
-  tsWaveHeights[ts-1]=Array.from({length:bars},()=>Math.floor(Math.random()*14)+4);
+function tsConfiguredCarriers(){
+  const carriers=(state.carriers||[])
+    .map(c=>Number(c&&c.carrier_num))
+    .filter(n=>Number.isFinite(n)&&n>0);
+  const unique=[];
+  carriers.forEach(c=>{if(!unique.includes(c))unique.push(c);});
+  if(unique.length)return unique;
+  const fallback=Number.parseInt((document.getElementById('bts-carrier')||{}).textContent||'',10);
+  return Number.isFinite(fallback)&&fallback>0?[fallback]:[0];
 }
-function tsApplyWave(ts,active){
-  const block=document.getElementById('ts-block-'+ts);
+function tsPrimaryCarrier(){return tsConfiguredCarriers()[0]||0;}
+function tsCarrierNum(carrierNum){
+  const n=Number(carrierNum);
+  return Number.isFinite(n)&&n>0?n:tsPrimaryCarrier();
+}
+function tsKey(carrierNum,ts){return tsCarrierNum(carrierNum)+':'+Number(ts);}
+function tsDomId(carrierNum,ts){return 'ts-block-c'+tsCarrierNum(carrierNum)+'-ts'+Number(ts);}
+function tsIsMcch(carrierNum,ts){return Number(ts)===1&&tsCarrierNum(carrierNum)===tsPrimaryCarrier();}
+function tsIsTrafficSlot(carrierNum,ts){
+  const slot=Number(ts);
+  return slot>=1&&slot<=TS_SLOTS_PER_CARRIER&&!tsIsMcch(carrierNum,slot);
+}
+function tsReset(){
+  tsState.clear();
+  tsWaveHeights.clear();
+}
+function tsEnsureCarrier(carrierNum){
+  const carrier=tsCarrierNum(carrierNum);
+  if(!(state.carriers||[]).some(c=>Number(c&&c.carrier_num)===carrier)){
+    state.carriers=[...(state.carriers||[]),{carrier_num:carrier}];
+    tsGridSignature='';
+  }
+  ensureTsGrid();
+}
+function tsBlockHtml(carrierNum,ts,multiCarrier){
+  const isMcch=tsIsMcch(carrierNum,ts);
+  const heights=isMcch?[8,14,10,16,8,12,6]:[3,3,3,3,3,3,3];
+  const label=multiCarrier?`C ${carrierNum} · TS ${ts}`:`TS ${ts}`;
+  return `<div class="ts-block ${isMcch?'mcch':''}" id="${tsDomId(carrierNum,ts)}">
+    <div class="ts-num">${label}</div>
+    <div class="ts-timer"></div>
+    <div class="ts-led"></div>
+    <div class="ts-wave">${heights.map(h=>`<div class="ts-wave-bar" style="height:${h}px"></div>`).join('')}</div>
+    <div class="ts-label">${isMcch?'MCCH':'—'}</div>
+    <div class="ts-sub">${isMcch?'ACTIVE':'Idle'}</div>
+    <div class="ts-flash"></div>
+    <div class="ts-duration-bar"></div>
+  </div>`;
+}
+function ensureTsGrid(){
+  const grid=document.getElementById('ts-grid');
+  if(!grid)return;
+  const carriers=tsConfiguredCarriers();
+  const sig=carriers.join(',');
+  if(sig===tsGridSignature&&grid.children.length)return;
+  tsGridSignature=sig;
+  grid.innerHTML=carriers.map(c=>
+    Array.from({length:TS_SLOTS_PER_CARRIER},(_,i)=>tsBlockHtml(c,i+1,carriers.length>1)).join('')
+  ).join('');
+}
+
+function tsRandWave(carrierNum,ts){
+  const bars=7;
+  tsWaveHeights.set(tsKey(carrierNum,ts),Array.from({length:bars},()=>Math.floor(Math.random()*14)+4));
+}
+function tsApplyWave(carrierNum,ts,active){
+  const block=document.getElementById(tsDomId(carrierNum,ts));
   if(!block)return;
   const bars=block.querySelectorAll('.ts-wave-bar');
   if(active){
-    tsWaveHeights[ts-1].forEach((h,i)=>{if(bars[i])bars[i].style.height=h+'px';});
+    (tsWaveHeights.get(tsKey(carrierNum,ts))||[]).forEach((h,i)=>{if(bars[i])bars[i].style.height=h+'px';});
   } else {
     bars.forEach(b=>b.style.height='3px');
   }
 }
 
 function updateTsBlocks(){
+  ensureTsGrid();
   const now=Date.now();
-  for(let i=0;i<4;i++){
-    const ts=i+1;
-    const block=document.getElementById('ts-block-'+ts);
+  for(const carrier of tsConfiguredCarriers()){
+    for(let ts=1;ts<=TS_SLOTS_PER_CARRIER;ts++){
+    const block=document.getElementById(tsDomId(carrier,ts));
     if(!block)continue;
     const label=block.querySelector('.ts-label');
     const sub=block.querySelector('.ts-sub');
     const dur=block.querySelector('.ts-duration-bar');
+    const timer=block.querySelector('.ts-timer');
 
-    if(ts===1){
+    if(tsIsMcch(carrier,ts)){
       block.className='ts-block mcch';
       label.textContent='MCCH';
       sub.textContent='ACTIVE';
       // subtle MCCH wave animation
-      if(!tsWaveHeights[0].length)tsRandWave(1);
-      tsApplyWave(1,true);
+      if(!(tsWaveHeights.get(tsKey(carrier,ts))||[]).length)tsRandWave(carrier,ts);
+      tsApplyWave(carrier,ts,true);
+      if(timer)timer.textContent='';
       if(dur)dur.style.width='0%';
       continue;
     }
 
-    const st=tsState[i];
-    const timer=block.querySelector('.ts-timer');
+    const st=tsState.get(tsKey(carrier,ts));
     if(!st){
       block.className='ts-block';
       label.textContent='—';
       sub.textContent='Idle';
-      tsApplyWave(ts,false);
+      tsApplyWave(carrier,ts,false);
       if(timer)timer.textContent='';
       if(dur)dur.style.width='0%';
       continue;
@@ -6027,12 +6023,13 @@ function updateTsBlocks(){
       const elapsed=Math.floor((now-(st.started_at||now))/1000);
       timer.textContent=elapsed>0?formatDur(elapsed):'';
     }
-    tsApplyWave(ts, voiceRecent);
+    tsApplyWave(carrier,ts,voiceRecent);
 
     // Duration bar — fills over 120s then stays full
     if(dur&&st.started_at){
       const pct=Math.min(100,((now-st.started_at)/120000)*100);
       dur.style.width=pct+'%';
+    }
     }
   }
 }
@@ -6063,31 +6060,43 @@ function tsLines(st){
   // so it never shows a bare "ISSI" that reads like a misplaced GSSI.
   return {top:'PRIVATE', bottom: tsIssiText(speaker)};
 }
-function tsSetCall(ts, call){
-  if(ts<2||ts>4)return;
-  tsState[ts-1]={
+function tsSetCall(carrierNum,ts,call){
+  const carrier=tsCarrierNum(carrierNum);
+  if(!tsIsTrafficSlot(carrier,ts))return;
+  tsEnsureCarrier(carrier);
+  tsState.set(tsKey(carrier,ts),{
     call_id:call.call_id, call_type:call.call_type,
+    carrier_num:carrier,
     gssi:call.gssi, called_issi:call.called_issi, caller_issi:call.caller_issi,
     speaker_issi:call.active_speaker||call.speaker_issi||call.caller_issi,
     simplex:call.simplex, sub:call.sub, priority:call.priority||0,
     voice_ts:null, started_at:Date.now()
-  };
+  });
 }
 // Point a timeslot at the ISSI now transmitting (group-call speaker hand-offs).
-function tsSetSpeaker(call_id, speaker_issi){
-  for(let i=1;i<4;i++){if(tsState[i]&&tsState[i].call_id===call_id)tsState[i].speaker_issi=speaker_issi;}
+function tsSetSpeaker(call_id,speaker_issi,carrierNum,ts){
+  if(carrierNum&&ts){
+    const st=tsState.get(tsKey(carrierNum,ts));
+    if(st&&st.call_id===call_id){st.speaker_issi=speaker_issi;return;}
+  }
+  tsState.forEach(st=>{if(st&&st.call_id===call_id)st.speaker_issi=speaker_issi;});
 }
 function tsClearCall(call_id){
-  for(let i=1;i<4;i++){if(tsState[i]&&tsState[i].call_id===call_id)tsState[i]=null;}
+  for(const [key,st] of tsState.entries()){if(st&&st.call_id===call_id)tsState.delete(key);}
 }
-function tsVoice(ts){
-  if(ts<2||ts>4)return;
-  if(!tsState[ts-1])tsState[ts-1]={call_id:0,call_type:'',gssi:null,voice_ts:null,started_at:Date.now()};
-  tsState[ts-1].voice_ts=Date.now();
+function tsVoice(carrierNum,ts,speaker_issi){
+  const carrier=tsCarrierNum(carrierNum);
+  if(!tsIsTrafficSlot(carrier,ts))return;
+  tsEnsureCarrier(carrier);
+  const key=tsKey(carrier,ts);
+  if(!tsState.has(key))tsState.set(key,{call_id:0,call_type:'',carrier_num:carrier,gssi:null,voice_ts:null,started_at:Date.now()});
+  const st=tsState.get(key);
+  st.voice_ts=Date.now();
+  if(speaker_issi!=null)st.speaker_issi=speaker_issi;
   // Randomize waveform bars on each voice frame for live feel
-  tsRandWave(ts);
+  tsRandWave(carrier,ts);
   // Flash effect
-  const block=document.getElementById('ts-block-'+ts);
+  const block=document.getElementById(tsDomId(carrier,ts));
   if(block){
     const flash=block.querySelector('.ts-flash');
     if(flash){flash.style.animation='none';void flash.offsetWidth;flash.style.animation='ts-flash-in 0.08s ease-out forwards';}
