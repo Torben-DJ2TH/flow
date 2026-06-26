@@ -324,7 +324,7 @@ impl BrewEntity {
                     tracing::debug!("[{}] BrewEntity: SDS report uuid={} status={}", self.log_label(), uuid, status);
                 }
                 BrewEvent::SubscriberEvent { msg_type, issi, groups } => {
-                    tracing::debug!(
+                    tracing::trace!(
                         "[{}] BrewEntity: subscriber event type={} issi={} groups={:?}",
                         self.log_label(),
                         msg_type,
@@ -337,14 +337,21 @@ impl BrewEntity {
                     // causing BS to reject U-SETUP with "no listeners".
                     match msg_type {
                         t if t == self.brew_config.subscriber_type_register => {
-                            tracing::debug!("[{}] BrewEntity: external subscriber issi={} -> REGISTER", self.log_label(), issi);
-                            if self.queue_external_subscriber_update(queue, issi, Vec::new(), BrewSubscriberAction::Register, "REGISTER") {
+                            tracing::trace!(
+                                "[{}] BrewEntity: external subscriber issi={} -> REGISTER (presence only)",
+                                self.log_label(),
+                                issi
+                            );
+                            if self.external_subscriber_allowed(issi, "REGISTER") {
                                 self.emit_external_subscriber_registered(issi);
                             }
                         }
                         t if t == self.brew_config.subscriber_type_reregister => {
-                            tracing::debug!("[{}] BrewEntity: external subscriber issi={} -> REREGISTER", self.log_label(), issi);
-                            self.queue_external_subscriber_update(queue, issi, Vec::new(), BrewSubscriberAction::Register, "REREGISTER");
+                            tracing::trace!(
+                                "[{}] BrewEntity: external subscriber issi={} -> REREGISTER (presence only)",
+                                self.log_label(),
+                                issi
+                            );
                         }
                         t if t == self.brew_config.subscriber_type_affiliate => {
                             if !groups.is_empty() {
@@ -381,7 +388,7 @@ impl BrewEntity {
                             }
                         }
                         t if t == self.brew_config.subscriber_type_deregister => {
-                            tracing::debug!("[{}] BrewEntity: external subscriber issi={} -> DEREGISTER", self.log_label(), issi);
+                            tracing::trace!("[{}] BrewEntity: external subscriber issi={} -> DEREGISTER", self.log_label(), issi);
                             if self.queue_external_subscriber_update(
                                 queue,
                                 issi,
@@ -836,6 +843,19 @@ impl BrewEntity {
         });
     }
 
+    fn external_subscriber_allowed(&self, issi: u32, action_label: &str) -> bool {
+        if !super::is_brew_external_subscriber_allowed_for_entity(&self.config, self.entity, issi) {
+            tracing::debug!(
+                "[{}] BrewEntity: external subscriber issi={} -> {} ignored (local SSI range)",
+                self.log_label(),
+                issi,
+                action_label
+            );
+            return false;
+        }
+        true
+    }
+
     fn queue_external_subscriber_update(
         &self,
         queue: &mut MessageQueue,
@@ -844,13 +864,7 @@ impl BrewEntity {
         action: BrewSubscriberAction,
         action_label: &str,
     ) -> bool {
-        if !super::is_brew_external_subscriber_allowed_for_entity(&self.config, self.entity, issi) {
-            tracing::debug!(
-                "[{}] BrewEntity: external subscriber issi={} -> {} ignored (local SSI range)",
-                self.log_label(),
-                issi,
-                action_label
-            );
+        if !self.external_subscriber_allowed(issi, action_label) {
             return false;
         }
 
