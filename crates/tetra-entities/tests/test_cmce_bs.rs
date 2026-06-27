@@ -640,10 +640,10 @@ fn test_individual_connect_mcch_fallback_uses_linkless_delivery() {
 }
 
 #[test]
-#[ignore = "Collateral Brew connect-signaling rider (NOT dual-carrier): fails on beta as merged. The \
-Brew-routed setup is rejected before NetworkCircuitSetupRequest because this harness does not wire the \
-backhaul state + source/destination ISSI whitelist the Brew gates require (see setup.rs gates). Per audit \
-§4 the Brew fix belongs in a separate PR with on-radio validation; re-enable it there."]
+#[ignore = "Brew connect-signaling rider, not dual-carrier: the Brew-routed setup is rejected before \
+NetworkCircuitSetupRequest because this harness doesn't wire the backhaul state + source/destination \
+ISSI whitelist the Brew gates require (see setup.rs). Belongs in its own PR with on-radio validation; \
+re-enable it there."]
 fn test_brew_connect_request_mcch_fallback_uses_linkless_delivery() {
     debug::setup_logging_verbose();
 
