@@ -2546,11 +2546,7 @@ fn serve_bts_info(mut stream: TcpStream, shared_config: &Option<tetra_config::bl
 /// GET /api/dualcarrier — current Dual-Carrier ON/OFF state for the first-page toggle.
 /// Reads the switch + configured secondary carrier from the TOML (so the number is shown even while
 /// off), plus the running effective state and the main carrier.
-fn serve_dual_carrier_get(
-    mut stream: TcpStream,
-    shared_config: &Option<tetra_config::bluestation::SharedConfig>,
-    config_path: &str,
-) {
+fn serve_dual_carrier_get(mut stream: TcpStream, shared_config: &Option<tetra_config::bluestation::SharedConfig>, config_path: &str) {
     let st = crate::net_dashboard::dual_carrier::read_dual_carrier(config_path);
     let main_carrier = shared_config.as_ref().map(|c| c.config().cell.main_carrier);
     // What the running stack is actually doing right now (may lag the file until the restart lands).
@@ -2653,10 +2649,7 @@ fn serve_dual_carrier_post(
         if enabled { "ON" } else { "OFF" },
         secondary
     );
-    crate::service_control::schedule_service_action(
-        crate::service_control::ServiceAction::Restart,
-        std::time::Duration::from_secs(2),
-    );
+    crate::service_control::schedule_service_action(crate::service_control::ServiceAction::Restart, std::time::Duration::from_secs(2));
 
     http_response(
         stream,
@@ -3519,7 +3512,9 @@ fn read_http_body(stream: &mut TcpStream) -> Vec<u8> {
             break;
         }
     }
-    if content_length == 0 { return Vec::new(); }
+    if content_length == 0 {
+        return Vec::new();
+    }
     let mut body = vec![0u8; content_length.min(512 * 1024)];
     let _ = stream.read_exact(&mut body);
     body
@@ -4410,10 +4405,7 @@ fn serve_dapnet_post(stream: TcpStream, shared_config: &Option<tetra_config::blu
 }
 
 /// GET /api/meshcom — return effective MeshCom settings and runtime status as JSON.
-fn serve_meshcom_get(
-    stream: TcpStream,
-    shared_config: &Option<tetra_config::bluestation::SharedConfig>,
-) {
+fn serve_meshcom_get(stream: TcpStream, shared_config: &Option<tetra_config::bluestation::SharedConfig>) {
     let (meshcom, runtime) = match shared_config {
         Some(cfg) => (cfg.effective_meshcom(), cfg.state_read().meshcom_status.clone()),
         None => (
@@ -4508,15 +4500,8 @@ fn serve_meshcom_get(
 
 /// POST /api/meshcom — update MeshCom UDP settings. Applies immediately through StackState
 /// override and rewrites `[meshcom]` in config.toml.
-fn serve_meshcom_post(
-    stream: TcpStream,
-    shared_config: &Option<tetra_config::bluestation::SharedConfig>,
-    config_path: &str,
-    body: &str,
-) {
-    use tetra_config::bluestation::{
-        CfgMeshcomDto, MeshcomRuntimeOverride, apply_meshcom_patch,
-    };
+fn serve_meshcom_post(stream: TcpStream, shared_config: &Option<tetra_config::bluestation::SharedConfig>, config_path: &str, body: &str) {
+    use tetra_config::bluestation::{CfgMeshcomDto, MeshcomRuntimeOverride, apply_meshcom_patch};
 
     let json: serde_json::Value = match serde_json::from_str(body.trim()) {
         Ok(v) => v,
@@ -4531,33 +4516,21 @@ fn serve_meshcom_post(
     };
 
     let cur = cfg.effective_meshcom();
-    let sds_allowed_sources = match meshcom_source_list_from_json(
-        &json,
-        "sds_allowed_sources",
-        &cur.sds_allowed_sources,
-    ) {
+    let sds_allowed_sources = match meshcom_source_list_from_json(&json, "sds_allowed_sources", &cur.sds_allowed_sources) {
         Ok(v) => v,
         Err(err) => {
             http_response(stream, 400, &err);
             return;
         }
     };
-    let sip_allowed_sources = match meshcom_source_list_from_json(
-        &json,
-        "sip_allowed_sources",
-        &cur.sip_allowed_sources,
-    ) {
+    let sip_allowed_sources = match meshcom_source_list_from_json(&json, "sip_allowed_sources", &cur.sip_allowed_sources) {
         Ok(v) => v,
         Err(err) => {
             http_response(stream, 400, &err);
             return;
         }
     };
-    let telegram_allowed_sources = match meshcom_source_list_from_json(
-        &json,
-        "telegram_allowed_sources",
-        &cur.telegram_allowed_sources,
-    ) {
+    let telegram_allowed_sources = match meshcom_source_list_from_json(&json, "telegram_allowed_sources", &cur.telegram_allowed_sources) {
         Ok(v) => v,
         Err(err) => {
             http_response(stream, 400, &err);
@@ -4599,9 +4572,7 @@ fn serve_meshcom_post(
         normalized.sip_title_prefix.as_str(),
         normalized.telegram_prefix.as_str(),
     ];
-    if !text_fields
-        .iter()
-        .all(|v| dapnet_text_acceptable(v))
+    if !text_fields.iter().all(|v| dapnet_text_acceptable(v))
         || !normalized
             .sds_allowed_sources
             .iter()
@@ -4658,11 +4629,7 @@ fn serve_meshcom_post(
 }
 
 /// POST /api/meshcom/send — send one MeshCom text message through the configured UDP target.
-fn serve_meshcom_send(
-    stream: TcpStream,
-    shared_config: &Option<tetra_config::bluestation::SharedConfig>,
-    body: &str,
-) {
+fn serve_meshcom_send(stream: TcpStream, shared_config: &Option<tetra_config::bluestation::SharedConfig>, body: &str) {
     let json: serde_json::Value = match serde_json::from_str(body.trim()) {
         Ok(v) => v,
         Err(e) => {
@@ -4675,30 +4642,38 @@ fn serve_meshcom_send(
         }
     };
     let Some(cfg) = shared_config else {
-        http_json_response(stream, 503, &serde_json::json!({"ok": false, "error": "Config not available"}).to_string());
+        http_json_response(
+            stream,
+            503,
+            &serde_json::json!({"ok": false, "error": "Config not available"}).to_string(),
+        );
         return;
     };
     let meshcom = cfg.effective_meshcom();
     if !meshcom.enabled {
-        http_json_response(stream, 400, &serde_json::json!({"ok": false, "error": "MeshCom is disabled"}).to_string());
+        http_json_response(
+            stream,
+            400,
+            &serde_json::json!({"ok": false, "error": "MeshCom is disabled"}).to_string(),
+        );
         return;
     }
-    let dst = json
-        .get("dst")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .unwrap_or("");
-    let msg = json
-        .get("msg")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .unwrap_or("");
+    let dst = json.get("dst").and_then(|v| v.as_str()).map(str::trim).unwrap_or("");
+    let msg = json.get("msg").and_then(|v| v.as_str()).map(str::trim).unwrap_or("");
     if dst.is_empty() || msg.is_empty() {
-        http_json_response(stream, 400, &serde_json::json!({"ok": false, "error": "dst and msg are required"}).to_string());
+        http_json_response(
+            stream,
+            400,
+            &serde_json::json!({"ok": false, "error": "dst and msg are required"}).to_string(),
+        );
         return;
     }
     if !dapnet_text_acceptable(dst) || !dapnet_text_acceptable(msg) {
-        http_json_response(stream, 400, &serde_json::json!({"ok": false, "error": "control characters are not allowed"}).to_string());
+        http_json_response(
+            stream,
+            400,
+            &serde_json::json!({"ok": false, "error": "control characters are not allowed"}).to_string(),
+        );
         return;
     }
 
@@ -4709,11 +4684,10 @@ fn serve_meshcom_send(
     })
     .to_string();
     let target = format!("{}:{}", meshcom.tx_host, meshcom.tx_port);
-    let result = UdpSocket::bind("0.0.0.0:0")
-        .and_then(|socket| {
-            socket.set_broadcast(meshcom.allow_broadcast)?;
-            socket.send_to(wire.as_bytes(), &target)
-        });
+    let result = UdpSocket::bind("0.0.0.0:0").and_then(|socket| {
+        socket.set_broadcast(meshcom.allow_broadcast)?;
+        socket.send_to(wire.as_bytes(), &target)
+    });
     match result {
         Ok(bytes) => {
             let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();

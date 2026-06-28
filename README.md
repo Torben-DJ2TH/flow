@@ -913,14 +913,10 @@ Asterisk AMI; it does not require the feature-gated SIP/RTP bridge.
 
 ### GeoAlarm
 
-GeoAlarm watches decoded TETRA LIP SDS positions. When an allowed device enters
-the configured radius around FlowStation, it can trigger TPG2200 Call-Out,
-normal SDS, Snom/SIP display notification, and Telegram forwarding. Blacklists
-always win; empty whitelists mean "all".
-
-The `*_meshcom*` toggles below are accepted by the parser but inert in this
-build: FlowStation does not ship a MeshCom source, so positions come from TETRA
-LIP only. Leave the MeshCom options at their defaults.
+GeoAlarm watches decoded TETRA LIP SDS positions and MeshCom position packets.
+When an allowed device enters the configured radius around FlowStation, it can
+trigger TPG2200 Call-Out, normal SDS, Snom/SIP display notification, and
+Telegram forwarding. Blacklists always win; empty whitelists mean "all".
 
 ```toml
 [geoalarm]
@@ -940,7 +936,7 @@ forward_telegram = false
 
 tetra_issi_whitelist = []       # empty = all TETRA ISSIs
 tetra_issi_blacklist = []
-meshcom_source_whitelist = []   # inert: no MeshCom source in this build
+meshcom_source_whitelist = []   # empty = all MeshCom sources
 meshcom_source_blacklist = []
 
 sds_source_issi = 9999
@@ -987,6 +983,10 @@ station list, connect/disconnect controls, and last error.
 
 **MeshCom** — extUDP receive/transmit settings, live MeshCom node table, message
 log, and forwarding controls for SDS, SIP/Snom, and Telegram.
+
+**Maps** — OpenStreetMap overview combining TETRA LIP, MeshCom, GeoAlarm, and
+configured FlowStation coordinates. Position links throughout the dashboard
+open the corresponding location in this view.
 
 **Telegram** — bot token, chat detection, destination chat IDs, and alert
 category toggles.

@@ -13,11 +13,11 @@ use super::config::{StackConfig, StackMode};
 use super::sec_asterisk::{CfgAsteriskDto, apply_asterisk_patch};
 use super::sec_brew::{CfgBrewDto, apply_brew_patch};
 use super::sec_dapnet::{CfgDapnetDto, apply_dapnet_patch};
-use super::sec_meshcom::{CfgMeshcomDto, apply_meshcom_patch};
 use super::sec_dashboard::{CfgDashboardDto, apply_dashboard_patch};
 use super::sec_emergency::{CfgEmergencyDto, apply_emergency_patch};
 use super::sec_geoalarm::{CfgGeoalarmDto, apply_geoalarm_patch};
 use super::sec_health::{CfgHealthDto, apply_health_patch};
+use super::sec_meshcom::{CfgMeshcomDto, apply_meshcom_patch};
 use super::sec_recovery::{CfgRecoveryDto, apply_recovery_patch};
 use super::sec_security::{CfgSecurityDto, apply_security_patch};
 use super::sec_snom_notify::{CfgSnomNotifyDto, apply_snom_notify_patch};
@@ -146,9 +146,10 @@ pub fn from_toml_str(toml_str: &str) -> Result<StackConfig, Box<dyn std::error::
 
     // Optional meshcom section
     if let Some(ref meshcom) = root.meshcom
-        && !meshcom.extra.is_empty() {
-            return Err(format!("Unrecognized fields in meshcom config: {:?}", sorted_keys(&meshcom.extra)).into());
-        }
+        && !meshcom.extra.is_empty()
+    {
+        return Err(format!("Unrecognized fields in meshcom config: {:?}", sorted_keys(&meshcom.extra)).into());
+    }
 
     // Optional tpg2200_action section
     if let Some(ref action) = root.tpg2200_action

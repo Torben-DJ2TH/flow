@@ -735,6 +735,19 @@ input[type="radio"]{accent-color:var(--accent);}
 /* Page sections */
 .page{display:none;}
 .page.active{display:block;}
+.maps-layout{display:grid;grid-template-columns:minmax(320px,1.6fr) minmax(260px,.8fr);gap:14px;align-items:stretch;}
+.maps-stage{min-height:560px;border:1px solid var(--border);border-radius:var(--r);overflow:hidden;background:var(--bg1);}
+.maps-stage iframe{display:block;width:100%;height:560px;border:0;filter:saturate(.9) contrast(.95);}
+.maps-list{max-height:560px;overflow:auto;border:1px solid var(--border);border-radius:var(--r);background:var(--bg1);}
+.maps-list-row{display:grid;grid-template-columns:auto 1fr;gap:10px;padding:11px 12px;border-bottom:1px solid var(--border);cursor:pointer;}
+.maps-list-row:last-child{border-bottom:0;}
+.maps-list-row:hover{background:var(--bg3);}
+.maps-list-type{font:800 10px var(--mono);text-transform:uppercase;color:var(--text3);padding-top:3px;}
+.maps-list-title{font-weight:800;color:var(--text);}
+.maps-list-meta{font:700 11px/1.5 var(--mono);color:var(--text3);}
+.maps-list-detail{font-size:12px;color:var(--text2);line-height:1.45;margin-top:4px;}
+.maps-empty{padding:28px;text-align:center;color:var(--text3);font:700 12px var(--mono);}
+@media(max-width:1100px){.maps-layout{grid-template-columns:1fr}.maps-stage,.maps-stage iframe{min-height:430px;height:430px}.maps-list{max-height:360px;}}
 
 /* ── Stat cards ── */
 .stat-grid{
@@ -2260,6 +2273,10 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
       <span class="nav-icon">⌁</span>
       <span class="nav-label" data-i18n="meshcom">MeshCom</span>
     </div>
+    <div class="nav-item" onclick="showPage('maps',this)" id="nav-maps">
+      <span class="nav-icon">⌖</span>
+      <span class="nav-label" data-i18n="maps">Maps</span>
+    </div>
     <div class="nav-item" onclick="showPage('telegram',this)" id="nav-telegram">
       <span class="nav-icon" data-icon="telegram"></span>
       <span class="nav-label" data-i18n="telegram">Telegram</span>
@@ -3633,6 +3650,36 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
       </div>
     </div>
 
+    <!-- ── MAPS ── -->
+    <div class="page" id="page-maps">
+      <div class="section-label" data-i18n-section="monitor">Monitor</div>
+      <div class="hero">
+        <span class="hero-dot is-idle" id="maps-hero-dot"></span>
+        <div class="hero-main">
+          <div class="hero-title" data-i18n="maps_title">Maps</div>
+          <div class="hero-sub" id="maps-hero-sub">OpenStreetMap positions</div>
+        </div>
+        <div class="hero-metrics">
+          <span class="pill pill-idle" id="maps-count">0 markers</span>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title" data-i18n="maps_title">Maps</div>
+          <div class="card-actions">
+            <button class="btn btn-sm" onclick="refreshMapsData()">⟳ <span data-i18n="refresh">Refresh</span></button>
+            <button class="btn btn-sm" onclick="openMapsOsm()">Open OSM</button>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="maps-layout">
+            <div class="maps-stage"><iframe id="maps-frame" title="OpenStreetMap map" loading="lazy"></iframe></div>
+            <div class="maps-list" id="maps-list"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- ── TELEGRAM ALERTS ──
          Owner-facing push notifications via a Telegram bot. The owner pastes their
          @BotFather token, detects their chat ID with one click (getUpdates), picks
@@ -4195,7 +4242,7 @@ const LANGS={
   en:{
     bts_ip:'BTS IP',offline:'OFFLINE',online:'ONLINE',
     brew_online:'ONLINE',brew_offline:'OFFLINE',
-    stations:'Radios',calls:'Calls',lastheard:'Last Heard',log:'Log',rf:'RF',health:'Health',asterisk:'Asterisk SIP',dapnet:'DAPNET',echolink:'EchoLink',echolink_title:'EchoLink',meshcom:'MeshCom',meshcom_title:'MeshCom',geoalarm:'GeoAlarm',geoalarm_title:'GeoAlarm',config:'Config',
+    stations:'Radios',calls:'Calls',lastheard:'Last Heard',log:'Log',rf:'RF',health:'Health',asterisk:'Asterisk SIP',dapnet:'DAPNET',echolink:'EchoLink',echolink_title:'EchoLink',meshcom:'MeshCom',meshcom_title:'MeshCom',maps:'Maps',maps_title:'Maps',geoalarm:'GeoAlarm',geoalarm_title:'GeoAlarm',config:'Config',
     sdslog:'SDS Log',th_dir:'Dir',th_from:'From',th_to:'To',th_message:'Message',no_sds:'No SDS messages yet',sds_refresh:'Refresh',
     rf_freq:'Center freq',rf_rate:'Sample rate',rf_rms:'RMS',rf_peak:'Peak',rf_age:'Snapshot',
     rf_waiting:'waiting…',rf_live:'live',rf_stale:'stale',
@@ -4416,7 +4463,7 @@ const LANGS={
   de:{
     bts_ip:'BTS-IP',offline:'OFFLINE',online:'ONLINE',
     brew_online:'ONLINE',brew_offline:'OFFLINE',
-    stations:'Radios',calls:'Anrufe',lastheard:'Zuletzt Gehört',log:'Log',rf:'RF',health:'Health',asterisk:'Asterisk SIP',dapnet:'DAPNET',echolink:'EchoLink',echolink_title:'EchoLink',meshcom:'MeshCom',meshcom_title:'MeshCom',geoalarm:'GeoAlarm',geoalarm_title:'GeoAlarm',config:'Config',
+    stations:'Radios',calls:'Anrufe',lastheard:'Zuletzt Gehört',log:'Log',rf:'RF',health:'Health',asterisk:'Asterisk SIP',dapnet:'DAPNET',echolink:'EchoLink',echolink_title:'EchoLink',meshcom:'MeshCom',meshcom_title:'MeshCom',maps:'Karte',maps_title:'Karte',geoalarm:'GeoAlarm',geoalarm_title:'GeoAlarm',config:'Config',
     sdslog:'SDS-Log',th_dir:'Ri.',th_from:'Von',th_to:'An',th_message:'Nachricht',no_sds:'Noch keine SDS-Nachrichten',sds_refresh:'Aktualisieren',
     rf_freq:'Mittenfrequenz',rf_rate:'Abtastrate',rf_rms:'RMS',rf_peak:'Spitze',rf_age:'Aufnahme',
     rf_waiting:'wartet…',rf_live:'live',rf_stale:'veraltet',
@@ -4800,7 +4847,7 @@ function closeMobileSidebar(){
 }
 
 // ── Page navigation ───────────────────────────────────────────────────────
-const PAGE_TITLES={stations:'stations',calls:'calls',lastheard:'lastheard',log:'log',sdslog:'sdslog',rf:'rf',health:'health',asterisk:'asterisk',dapnet:'dapnet',echolink:'echolink',meshcom:'meshcom',geoalarm:'geoalarm',config:'config',system:'system'};
+const PAGE_TITLES={stations:'stations',calls:'calls',lastheard:'lastheard',log:'log',sdslog:'sdslog',rf:'rf',health:'health',asterisk:'asterisk',dapnet:'dapnet',echolink:'echolink',meshcom:'meshcom',maps:'maps',geoalarm:'geoalarm',config:'config',system:'system'};
 function showPage(name,el){
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
@@ -4815,6 +4862,7 @@ function showPage(name,el){
   if(name==='dapnet'){loadDapnet();loadDapnetLog();}
   if(name==='geoalarm'){loadGeoalarm();}
   if(name==='meshcom'){loadMeshcom();}
+  if(name==='maps'){refreshMapsData();}
   if(name==='config'){loadConfig();loadWhitelist();loadWx();}
   if(name==='telegram'){loadTelegram();}
   if(name==='system'){loadSystemInfo();loadConfigProfiles();loadLiveSds();loadBrightness();}
@@ -5135,7 +5183,7 @@ async function wifiCall(url, body){
 function escAttr(s){ return String(s).replace(/&/g,'&amp;').replace(/'/g,"&#39;").replace(/"/g,'&quot;'); }
 
 // ── State + WS ────────────────────────────────────────────────────────────
-let ws=null,state={ms:{},calls:{},emergencies:{},lastHeard:[],sdsLog:[],dapnetLog:[],geoalarmEvents:[],meshcomNodes:[],meshcomMessages:[],brewOnline:false,brewVer:0},sdsDest=0;
+let ws=null,state={ms:{},calls:{},emergencies:{},lastHeard:[],sdsLog:[],dapnetLog:[],geoalarmEvents:[],geoalarmConfig:null,meshcomNodes:[],meshcomMessages:[],brewOnline:false,brewVer:0},sdsDest=0;
 
 // ── RadioID callsigns (indicativ) ──────────────────────────────────────────────
 // issi -> {cs:"CALLSIGN", fl:"🇷🇴"} (found; fl is the country flag emoji from the prefix, or "")
@@ -5377,7 +5425,7 @@ function handleMsg(msg){
       if(!state.sdsLog)state.sdsLog=[];
       state.sdsLog.unshift({ts:nowStamp(),direction:msg.direction,source_issi:msg.source_issi,dest_issi:msg.dest_issi,is_group:msg.is_group,protocol_id:msg.protocol_id,text:msg.text});
       if(state.sdsLog.length>500)state.sdsLog.pop();
-      renderSdsLog();refreshCallsigns();break;
+      renderSdsLog();renderMapsIfActive();refreshCallsigns();break;
     case 'dapnet_log':
       if(!state.dapnetLog)state.dapnetLog=[];
       state.dapnetLog.unshift({ts:nowStamp(),direction:msg.direction,id:msg.id,callsign:msg.callsign,recipient:msg.recipient,text:msg.text,priority:msg.priority,paths:msg.paths||[]});
@@ -6287,9 +6335,8 @@ async function sendDapnetMessage(){
 function meshMapLink(lat,lon,label){
   if(lat===null||lat===undefined||lon===null||lon===undefined)return '—';
   const la=Number(lat),lo=Number(lon);
-  if(!Number.isFinite(la)||!Number.isFinite(lo))return '—';
-  const url=`https://maps.google.com/?q=${encodeURIComponent(la+','+lo)}`;
-  return `<a class="sds-map-link" href="${url}" target="_blank" rel="noopener noreferrer">${escHtml(label||`${la.toFixed(5)}, ${lo.toFixed(5)}`)}</a>`;
+  if(!validMapLatLon(la,lo))return '—';
+  return `<a class="sds-map-link" href="javascript:void(0)" onclick="event.preventDefault();openMapsAt(${la},${lo})">${escHtml(label||`${la.toFixed(5)}, ${lo.toFixed(5)}`)}</a>`;
 }
 function meshRfText(row){
   const parts=[];
@@ -6308,6 +6355,84 @@ function meshSourceListBody(id){
 function meshPaths(paths){
   if(!Array.isArray(paths)||!paths.length)return '<span class="sds-empty">—</span>';
   return paths.map(p=>`<span class="badge badge-blue" style="font-size:10px">${escHtml(p)}</span>`).join(' ');
+}
+
+// ── Maps: TETRA LIP, MeshCom and GeoAlarm positions on OpenStreetMap ─────
+let mapsFocus=null,mapsCurrentBounds=null;
+function validMapLatLon(lat,lon){
+  const la=Number(lat),lo=Number(lon);
+  return Number.isFinite(la)&&Number.isFinite(lo)&&la>=-90&&la<=90&&lo>=-180&&lo<=180;
+}
+function mapsMarker(type,title,lat,lon,detail,ts){
+  const la=Number(lat),lo=Number(lon);
+  if(!validMapLatLon(la,lo)||(la===0&&lo===0))return null;
+  return {type,title:title||'Position',lat:la,lon:lo,detail:detail||'',ts:ts||''};
+}
+function mapsCollect(){
+  const rows=[];
+  const geo=state.geoalarmConfig||{};
+  const station=mapsMarker('station','FlowStation',geo.flowstation_lat,geo.flowstation_lon,'GeoAlarm station position','');
+  if(station)rows.push(station);
+  (state.sdsLog||[]).forEach(e=>{
+    const lip=lipPositionFromText(e.text);if(!lip)return;
+    const cs=callsigns[e.source_issi]?.cs;
+    rows.push(mapsMarker('tetra',`TETRA ${[e.source_issi,cs].filter(Boolean).join(' ')||'LIP'}`,lip.lat,lip.lon,
+      `SDS ${String(e.direction||'').toUpperCase()} ${e.source_issi||'—'} → ${e.dest_issi||'—'}`,e.ts));
+  });
+  (state.meshcomNodes||[]).forEach(n=>{
+    const details=[n.last_type,meshRfText(n),n.batt!=null?`Battery ${meshBatteryText(n.batt)}`:''].filter(v=>v&&v!=='—').join(' · ');
+    rows.push(mapsMarker('mesh',`MeshCom ${n.src||'—'}`,n.lat,n.lon,details,n.last_seen));
+  });
+  (state.meshcomMessages||[]).forEach(m=>{
+    rows.push(mapsMarker('mesh',`MeshCom ${m.src||'—'}`,m.lat,m.lon,m.msg||m.msg_type||'position',m.ts));
+  });
+  (state.geoalarmEvents||[]).forEach(e=>{
+    const detail=[e.inside_radius?'inside radius':'outside radius',Number.isFinite(Number(e.distance_m))?`${Number(e.distance_m).toFixed(0)} m`:'',Array.isArray(e.paths)?e.paths.join(', '):''].filter(Boolean).join(' · ');
+    rows.push(mapsMarker(e.alarmed?'alarm':'geo',`GeoAlarm ${e.device||'—'}`,e.lat,e.lon,detail,e.ts));
+  });
+  return rows.filter(Boolean).sort((a,b)=>String(b.ts||'').localeCompare(String(a.ts||'')));
+}
+function mapsBounds(markers){
+  if(mapsFocus)return {minLon:mapsFocus.lon-.01,minLat:mapsFocus.lat-.006,maxLon:mapsFocus.lon+.01,maxLat:mapsFocus.lat+.006};
+  if(!markers.length)return {minLon:5.5,minLat:47,maxLon:15.5,maxLat:55.5};
+  let minLat=90,maxLat=-90,minLon=180,maxLon=-180;
+  markers.forEach(m=>{minLat=Math.min(minLat,m.lat);maxLat=Math.max(maxLat,m.lat);minLon=Math.min(minLon,m.lon);maxLon=Math.max(maxLon,m.lon);});
+  const latPad=Math.max(.006,(maxLat-minLat)*.18),lonPad=Math.max(.01,(maxLon-minLon)*.18);
+  return {minLon:Math.max(-180,minLon-lonPad),minLat:Math.max(-85,minLat-latPad),maxLon:Math.min(180,maxLon+lonPad),maxLat:Math.min(85,maxLat+latPad)};
+}
+function mapsEmbedUrl(b){
+  return `https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent(`${b.minLon},${b.minLat},${b.maxLon},${b.maxLat}`)}&layer=mapnik`;
+}
+function renderMapsPage(){
+  const markers=mapsCollect(),bounds=mapsBounds(markers);
+  mapsCurrentBounds=bounds;
+  const frame=document.getElementById('maps-frame'),list=document.getElementById('maps-list');
+  const count=document.getElementById('maps-count'),sub=document.getElementById('maps-hero-sub'),dot=document.getElementById('maps-hero-dot');
+  if(frame){const url=mapsEmbedUrl(bounds);if(frame.getAttribute('src')!==url)frame.src=url;}
+  if(count){count.textContent=`${markers.length} marker${markers.length===1?'':'s'}`;count.className=`pill ${markers.length?'pill-ok':'pill-idle'}`;}
+  if(sub)sub.textContent=markers.length?'TETRA LIP · MeshCom · GeoAlarm · FlowStation':'No positions collected yet';
+  if(dot)dot.className=`hero-dot ${markers.length?'is-ok':'is-idle'}`;
+  if(list)list.innerHTML=markers.length?markers.map(m=>`<div class="maps-list-row" onclick="openMapsAt(${m.lat},${m.lon})">
+    <div class="maps-list-type">${escHtml(m.type)}</div><div><div class="maps-list-title">${escHtml(m.title)}</div>
+    <div class="maps-list-meta">${m.ts?escHtml(m.ts)+' · ':''}${m.lat.toFixed(6)}, ${m.lon.toFixed(6)}</div>
+    ${m.detail?`<div class="maps-list-detail">${escHtml(m.detail)}</div>`:''}</div></div>`).join(''):'<div class="maps-empty">No positions yet</div>';
+  mapsFocus=null;
+}
+function mapsActive(){return !!document.getElementById('page-maps')?.classList.contains('active');}
+function renderMapsIfActive(){if(mapsActive())renderMapsPage();}
+function openMapsAt(lat,lon){
+  if(!validMapLatLon(lat,lon))return;
+  mapsFocus={lat:Number(lat),lon:Number(lon)};
+  showPage('maps',document.getElementById('nav-maps'));
+}
+function openMapsOsm(){
+  const b=mapsCurrentBounds||mapsBounds([]);
+  const lat=(b.minLat+b.maxLat)/2,lon=(b.minLon+b.maxLon)/2;
+  window.open(`https://www.openstreetmap.org/#map=12/${encodeURIComponent(lat)}/${encodeURIComponent(lon)}`,'_blank','noopener,noreferrer');
+}
+function refreshMapsData(){
+  renderMapsPage();
+  Promise.allSettled([loadSdsLog(),loadMeshcom(),loadGeoalarm()]).then(renderMapsPage);
 }
 
 // ── GeoAlarm ──────────────────────────────────────────────────────────────
@@ -6398,8 +6523,10 @@ async function loadGeoalarm(){
       d.enabled?(geoErr?t('integ_error'):t('integ_enabled')):t('integ_disabled'),
       rt.center||`${d.flowstation_lat??0}, ${d.flowstation_lon??0}`);
     state.geoalarmEvents=d.events||[];
+    state.geoalarmConfig=d;
     geoalarmPageIndex=0;
     renderGeoalarmEvents();
+    renderMapsIfActive();
     setGeoMsg('',true);
   }catch{setGeoMsg(t('conn_error'),false);setIntegrationHero('geo',false,false,t('conn_error'),'');}
 }
@@ -6443,19 +6570,6 @@ async function saveGeoalarm(){
 }
 function setGeoMsg(txt,ok){const el=document.getElementById('geo-msg');if(!el)return;el.textContent=txt;el.style.color=ok?'var(--accent)':'var(--danger)';if(txt)setTimeout(()=>{if(el.textContent===txt)el.textContent='';},5000);}
 
-function meshMapLink(lat,lon,label){
-  if(lat===null||lat===undefined||lon===null||lon===undefined)return '—';
-  const la=Number(lat),lo=Number(lon);
-  if(!Number.isFinite(la)||!Number.isFinite(lo))return '—';
-  const url=`https://maps.google.com/?q=${encodeURIComponent(la+','+lo)}`;
-  return `<a class="sds-map-link" href="${url}" target="_blank" rel="noopener noreferrer">${escHtml(label||`${la.toFixed(5)}, ${lo.toFixed(5)}`)}</a>`;
-}
-function meshRfText(row){
-  const parts=[];
-  if(row.rssi!==null&&row.rssi!==undefined)parts.push(`RSSI ${row.rssi}`);
-  if(row.snr!==null&&row.snr!==undefined)parts.push(`SNR ${row.snr}`);
-  return parts.join(' · ')||'—';
-}
 function meshBatteryText(v){
   if(v===null||v===undefined||v==='')return '—';
   const n=Number(v);
@@ -6570,6 +6684,7 @@ async function loadMeshcom(){
     meshNodePageIndex=0;meshMsgPageIndex=0;
     renderMeshcomNodes();
     renderMeshcomMessages();
+    renderMapsIfActive();
     setMeshMsg('',true);
   }catch{setMeshMsg(t('conn_error'),false);}
 }

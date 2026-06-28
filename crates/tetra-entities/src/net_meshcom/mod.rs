@@ -11,11 +11,10 @@ use std::thread;
 use std::time::Duration;
 
 use serde_json::Value;
-use tetra_config::bluestation::{
-    CfgMeshcom, MeshcomMessageStatus, MeshcomNodeStatus, MeshcomRuntimeStatus, SharedConfig,
-};
+use tetra_config::bluestation::{CfgMeshcom, MeshcomMessageStatus, MeshcomNodeStatus, MeshcomRuntimeStatus, SharedConfig};
 
 use crate::net_control::commands::ControlCommand;
+use crate::net_geoalarm::GeoAlarmSink;
 use crate::net_snom::SnomNotifySink;
 use crate::net_telegram::TelegramAlertSink;
 use crate::tpg2200::build_sds_text_payload;
@@ -31,10 +30,11 @@ pub fn spawn_meshcom_worker(
     cmce_cmd_tx: Option<CmdSender>,
     telegram_sink: Option<TelegramAlertSink>,
     snom_sink: Option<SnomNotifySink>,
+    geoalarm_sink: Option<GeoAlarmSink>,
 ) -> Option<thread::JoinHandle<()>> {
     match thread::Builder::new()
         .name("meshcom-worker".into())
-        .spawn(move || MeshcomWorker::new(cfg, cmce_cmd_tx, telegram_sink, snom_sink).run())
+        .spawn(move || MeshcomWorker::new(cfg, cmce_cmd_tx, telegram_sink, snom_sink, geoalarm_sink).run())
     {
         Ok(handle) => Some(handle),
         Err(err) => {
@@ -49,6 +49,7 @@ struct MeshcomWorker {
     cmce_cmd_tx: Option<CmdSender>,
     telegram_sink: Option<TelegramAlertSink>,
     snom_sink: Option<SnomNotifySink>,
+    geoalarm_sink: Option<GeoAlarmSink>,
     socket: Option<UdpSocket>,
     bind_key: String,
     rx_packets: u64,
@@ -63,12 +64,14 @@ impl MeshcomWorker {
         cmce_cmd_tx: Option<CmdSender>,
         telegram_sink: Option<TelegramAlertSink>,
         snom_sink: Option<SnomNotifySink>,
+        geoalarm_sink: Option<GeoAlarmSink>,
     ) -> Self {
         Self {
             cfg,
             cmce_cmd_tx,
             telegram_sink,
             snom_sink,
+            geoalarm_sink,
             socket: None,
             bind_key: String::new(),
             rx_packets: 0,
@@ -135,9 +138,7 @@ impl MeshcomWorker {
                         }
                     }
                 }
-                Err(err)
-                    if err.kind() == std::io::ErrorKind::WouldBlock
-                        || err.kind() == std::io::ErrorKind::TimedOut => {}
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock || err.kind() == std::io::ErrorKind::TimedOut => {}
                 Err(err) => {
                     let msg = format!("UDP receive failed: {err}");
                     tracing::warn!("MeshCom: {}", msg);
@@ -204,6 +205,10 @@ impl MeshcomWorker {
             msg.as_deref(),
             msg_id.as_deref(),
         );
+
+        if let (Some(sink), Some(source), Some(lat), Some(lon)) = (&self.geoalarm_sink, src.as_ref(), lat, lon) {
+            sink.send_meshcom_position(source.clone(), lat, lon);
+        }
 
         self.rx_packets = self.rx_packets.saturating_add(1);
         let event = MeshcomMessageStatus {
@@ -326,9 +331,7 @@ impl MeshcomWorker {
             }
         }
 
-        if paths.is_empty()
-            && (meshcom.forward_sds || meshcom.forward_sip || meshcom.forward_telegram)
-        {
+        if paths.is_empty() && (meshcom.forward_sds || meshcom.forward_sip || meshcom.forward_telegram) {
             tracing::info!(
                 "MeshCom: received message src={} dst={} with no successful forwarding target",
                 src,
@@ -365,14 +368,7 @@ impl MeshcomWorker {
         .map_err(|e| format!("send to CMCE failed: {}", e))
     }
 
-    fn forward_sip(
-        &self,
-        meshcom: &CfgMeshcom,
-        src: &str,
-        dst: Option<&str>,
-        text: &str,
-        msg_id: Option<&str>,
-    ) -> Result<(), String> {
+    fn forward_sip(&self, meshcom: &CfgMeshcom, src: &str, dst: Option<&str>, text: &str, msg_id: Option<&str>) -> Result<(), String> {
         let Some(sink) = &self.snom_sink else {
             return Err("Snom notify sink unavailable".to_string());
         };
@@ -390,31 +386,17 @@ impl MeshcomWorker {
         let Some(sink) = &self.telegram_sink else {
             return Err("Telegram alert sink unavailable".to_string());
         };
-        sink.send_meshcom(
-            meshcom.telegram_prefix.clone(),
-            src.to_string(),
-            text.to_string(),
-        );
+        sink.send_meshcom(meshcom.telegram_prefix.clone(), src.to_string(), text.to_string());
         Ok(())
     }
 
-    fn publish_status(
-        &self,
-        meshcom: &CfgMeshcom,
-        last_rx: Option<String>,
-        last_error: Option<String>,
-    ) {
+    fn publish_status(&self, meshcom: &CfgMeshcom, last_rx: Option<String>, last_error: Option<String>) {
         let mut state = self.cfg.state_write();
         let previous_tx_packets = state.meshcom_status.tx_packets;
         let previous_last_tx = state.meshcom_status.last_tx.clone();
         let previous_last_rx = state.meshcom_status.last_rx.clone();
         let mut messages: Vec<MeshcomMessageStatus> = self.messages.iter().cloned().collect();
-        for msg in state
-            .meshcom_status
-            .messages
-            .iter()
-            .filter(|msg| msg.direction == "tx")
-        {
+        for msg in state.meshcom_status.messages.iter().filter(|msg| msg.direction == "tx") {
             if messages.len() >= meshcom.max_messages {
                 break;
             }
@@ -453,10 +435,9 @@ fn string_field(value: &Value, key: &str) -> Option<String> {
 }
 
 fn f64_field(value: &Value, key: &str) -> Option<f64> {
-    value.get(key).and_then(|v| {
-        v.as_f64()
-            .or_else(|| v.as_str().and_then(|s| s.trim().parse::<f64>().ok()))
-    })
+    value
+        .get(key)
+        .and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(|s| s.trim().parse::<f64>().ok())))
 }
 
 fn i64_field(value: &Value, key: &str) -> Option<i64> {
